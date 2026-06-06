@@ -114,11 +114,16 @@ fn anthropic_stream_parses_as_a_text_reply() {
 }
 
 #[test]
-fn anthropic_tool_call_stop_reason_is_rendered() {
-    // A reply that ends in a tool-use hand-off renders stop_reason "tool_use"
-    // even though the tool_use content block itself is M5 (text-only here).
+fn anthropic_tool_call_renders_tool_use_block_and_stop_reason() {
+    // M5 acceptance: a ToolCall turn renders a `tool_use` content block carrying
+    // the id and name, with `input_json_delta` fragments for the arguments, and
+    // the terminal message_delta reports stop_reason "tool_use".
     let reply = Reply {
-        turns: vec![Turn::Text("partial".to_string())],
+        turns: vec![Turn::ToolCall {
+            id: "toolu_1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({ "path": "out.txt" }),
+        }],
         usage: Usage::default(),
         stop: StopReason::ToolCalls,
     };
@@ -133,6 +138,26 @@ fn anthropic_tool_call_stop_reason_is_rendered() {
     );
     let events = parse_sse(&body);
 
+    // A tool_use content block opens, carrying the id and name.
+    let tool_start = events
+        .iter()
+        .find(|e| e.event == "content_block_start" && e.data["content_block"]["type"] == "tool_use")
+        .expect("a tool_use content_block_start");
+    assert_eq!(tool_start.data["content_block"]["id"], "toolu_1");
+    assert_eq!(tool_start.data["content_block"]["name"], "write");
+
+    // The arguments stream as input_json_delta partial_json fragments that
+    // reassemble into the original JSON.
+    let partial: String = events
+        .iter()
+        .filter(|e| e.event == "content_block_delta")
+        .filter(|e| e.data["delta"]["type"] == "input_json_delta")
+        .filter_map(|e| e.data["delta"]["partial_json"].as_str())
+        .collect();
+    let parsed: Value = serde_json::from_str(&partial).expect("partial_json is valid JSON");
+    assert_eq!(parsed, serde_json::json!({ "path": "out.txt" }));
+
+    // The terminal message_delta carries the tool-use stop reason.
     let message_delta = events
         .iter()
         .find(|e| e.event == "message_delta")

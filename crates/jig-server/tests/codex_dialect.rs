@@ -173,6 +173,72 @@ fn codex_rule_branches_on_prior_tool_results() {
 }
 
 #[test]
+fn codex_tool_call_renders_function_call_item_and_arguments() {
+    // M5 acceptance: a ToolCall turn renders a function_call output item
+    // (response.output_item.added) carrying the call_id and name, with
+    // response.function_call_arguments.delta fragments for the arguments and a
+    // response.output_item.done before the terminal response.completed.
+    let reply = Reply {
+        turns: vec![Turn::ToolCall {
+            id: "call_1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({ "path": "out.txt" }),
+        }],
+        usage: Usage::default(),
+        stop: StopReason::ToolCalls,
+    };
+    let fake = start_with(Script::Fixed(reply));
+
+    let body = post_responses(
+        &fake,
+        serde_json::json!({
+            "model": "gpt-fake",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "go" }],
+                },
+            ],
+        }),
+    );
+    let events = parse_sse(&body);
+
+    // The function_call output item is added, carrying call_id and name.
+    let added = events
+        .iter()
+        .find(|e| e.event == "response.output_item.added")
+        .expect("a response.output_item.added frame");
+    assert_eq!(added.data["item"]["type"], "function_call");
+    assert_eq!(added.data["item"]["call_id"], "call_1");
+    assert_eq!(added.data["item"]["name"], "write");
+
+    // The arguments stream as function_call_arguments.delta fragments that
+    // reassemble into the original JSON.
+    let args: String = events
+        .iter()
+        .filter(|e| e.event == "response.function_call_arguments.delta")
+        .filter_map(|e| e.data["delta"].as_str())
+        .collect();
+    let parsed: Value = serde_json::from_str(&args).expect("arguments are valid JSON");
+    assert_eq!(parsed, serde_json::json!({ "path": "out.txt" }));
+
+    // The item is finalized with output_item.done, and the stream still
+    // terminates with response.completed.
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event == "response.output_item.done"),
+        "expected a response.output_item.done frame"
+    );
+    assert_eq!(
+        events.last().map(|e| e.event.as_str()),
+        Some("response.completed"),
+        "stream must terminate with response.completed; body was:\n{body}"
+    );
+}
+
+#[test]
 fn unknown_path_is_404() {
     let fake = start_with(Script::Fixed(Reply::text("unused")));
     let client = reqwest::blocking::Client::new();

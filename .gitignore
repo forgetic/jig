@@ -1,2 +1,8 @@
 /target
 **/*.rs.bk
+
+# Recorder API-key secrets, mirroring the forgejo-mcp.env pattern. The recorder
+# is a transparent proxy — the key lives on the client it drives — so this file
+# holds the env the official client reads (e.g. OPENAI_API_KEY). Never commit it.
+*.secrets.env
+/crates/jig-record/record.env

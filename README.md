@@ -95,11 +95,22 @@ code-only and has no file representation; use the in-process API for that. See
 [`crates/jig-core/src/script_file.rs`](crates/jig-core/src/script_file.rs) for the
 authoritative schema and `jig_core::ScriptFile` to load it programmatically.
 
+## Recording real interactions
+
+`jig record` is a passthrough recorder: it proxies a real client ↔ real backend
+exchange to redacted, client/role-tagged fixtures so the scripted replies above
+can be derived from ground truth. Recording is manual (it needs a live API key
+and network); the captured taxonomy and workflow live in
+[`crates/jig-record/README.md`](crates/jig-record/README.md).
+
 ## Workspace layout
 
 - `crates/jig-core` — dialect-agnostic, async-free core: `Reply`/`Turn`/`Usage`/
   `StopReason`, `Script`, the SSE renderers, and the `ScriptFile` file format.
 - `crates/jig-server` — the embeddable service API (`FakeLlm`): spawns the
   runtime thread, runs the HTTP server, routes per dialect, renders replies.
-- `src/main.rs` — thin glue binary: load a script file, `FakeLlm::start`, print
-  `base_url`, block.
+- `crates/jig-record` — the passthrough recorder: forwards a client request to
+  the real upstream over HTTPS, streams the response back unbuffered, and writes
+  a redacted fixture (redactor + fixture writer are unit-tested, network-free).
+- `src/main.rs` — thin glue binary: serve a script (`FakeLlm::start`) or run one
+  passthrough capture (`record`).

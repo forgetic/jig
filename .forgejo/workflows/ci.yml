@@ -17,6 +17,11 @@ jobs:
         working-directory: ${{ env.HOME }}/.local/state/forgejo/runner/data/jig
     steps:
       - name: Checkout
+        # Run from $HOME, not the job-default working-directory: on the first
+        # ever run the repo dir does not exist yet, and the runner cd's into
+        # working-directory before the step — which would fail here. This step
+        # is what creates it.
+        working-directory: ${{ env.HOME }}
         run: |
           set -eu
 

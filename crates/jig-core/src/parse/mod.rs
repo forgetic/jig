@@ -15,11 +15,18 @@
 //! credential, and therefore runs under `cargo test` in CI (unlike the recorder,
 //! which is driven manually against a real backend).
 //!
-//! P3 (#15) ships the [`anthropic`] messages parser. The OpenAI and Codex
-//! parsers are follow-ups in their own phases.
+//! P3 (#15) ships the [`anthropic`] messages parser; P4 (#16) adds the [`codex`]
+//! responses parser. The OpenAI parser is a follow-up in its own phase.
+//!
+//! Each dialect parser owns its own error enum (the failure modes differ per
+//! wire shape), so they are re-exported under dialect-qualified names —
+//! [`AnthropicParseError`] and [`CodexParseError`] — rather than a single shared
+//! `ParseError` that would collide across modules.
 
 mod anthropic;
+mod codex;
 mod sse;
 
-pub use anthropic::{ParseError, parse_anthropic_sse};
+pub use anthropic::{ParseError as AnthropicParseError, parse_anthropic_sse};
+pub use codex::{ParseError as CodexParseError, parse_codex_sse};
 pub use sse::{SseEvent, parse_sse};

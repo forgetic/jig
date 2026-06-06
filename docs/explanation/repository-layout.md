@@ -14,5 +14,6 @@ jig/
     ├── jig-core/           # dialect-agnostic logic, no async
     ├── jig-server/         # the embeddable service API
     ├── jig-record/         # passthrough recorder: capture real interactions to redacted fixtures
+    ├── jig-oracle/         # offline pi-SDK ↔ jig oracle test (drives pi_agent_rust directly)
     └── xtask/              # developer task runner: `record` orchestrator + `staleness` check
 ```

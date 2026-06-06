@@ -9,6 +9,10 @@
 //! - [`matrix`] — the declarative scenario matrix and the planner that expands a
 //!   `--dialect`/`--scenario`/`--client` selection into concrete `jig record`
 //!   invocations. Pure.
+//! - [`derive`] — reduce committed authoritative recordings to the masked
+//!   `*.template.json` + `drive-shape.json` conformance artifacts (P2, #14). The
+//!   reduction is a pure function of the recording bytes (so re-deriving is
+//!   deterministic and unit-tested offline); only the file walk/write is impure.
 //! - [`staleness`] — capture-age computation over fixture `meta.json` dates. Pure.
 //!
 //! The actual recording is **manual and online** (it needs a live API key on the
@@ -17,6 +21,7 @@
 //! staleness logic is. See `docs/how-to/refresh-fixtures.md` for the operator
 //! procedure and `docs/explanation/record-and-conform.md` for the design.
 
+pub mod derive;
 pub mod matrix;
 pub mod staleness;
 

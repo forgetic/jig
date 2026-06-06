@@ -141,6 +141,50 @@ fixtures/<dialect>/<scenario>/
 tests compare against. Template derivation is the job of P2/P3/P4; P5 makes
 producing the underlying recordings a one-command operation.
 
+The OpenAI/DeepSeek `/chat/completions` slice of this has **landed** (P2, #14):
+`fixtures/openai/{single-text,tool-call,tool-result-final}/` carry real DeepSeek
+captures and their derived templates, and `cargo test` runs the T1/T2 checks over
+them offline. See [Deriving templates](#deriving-templates-the-masking-policy)
+below.
+
+## Deriving templates: the masking policy
+
+Derivation turns the verbatim recordings into the masked `*.template.json` +
+`drive-shape.json` skeletons. It is **offline and deterministic** — a pure
+function of the recording bytes — so re-deriving over the same recordings
+produces byte-identical artifacts (`cargo run -p xtask -- derive`).
+
+The reduction lives in `crates/jig-core/src/conform/` and is committed as
+**data + code**, not ad-hoc string-munging:
+
+- The **`parse_openai_sse`** parser (the inverse of `render_openai`) folds the
+  fragmented, id-tagged SSE chunks back into the canonical `Reply`, coalescing
+  arbitrary text-delta chunk boundaries — so the `Reply` *is* the
+  chunk-boundary-independent body skeleton.
+- The **masking policy** (`conform/mask.rs`) is the reviewable list of what is
+  volatile: body keys (`id`, `created`, the served `model`, `system_fingerprint`,
+  every `*_tokens` count) collapse to a stable `<MASKED>` sentinel; a **header
+  allowlist** keeps `content-type` (the framing-contract signal), masks the
+  volatile-but-present headers (`date`, `server`, `set-cookie`, request/trace
+  ids, the `cf-*` / `x-amz-cf-*` edge families), and drops the rest. The policy
+  is designed to extend to the version-volatile client-identity values P3/P6 need
+  for Anthropic and Codex (see #13).
+- The **templates** are then: `response.template.json` (masked canonical reply +
+  framing invariants + header view), `request.template.json` (masked request,
+  requested `model` kept), and `drive-shape.json` (the un-masked canonical reply
+  jig is driven with in T1).
+
+The two conformance properties, asserted offline over `fixtures/openai/*` by
+`crates/jig-core/tests/openai_conformance.rs`:
+
+- **T1** — drive jig with `drive-shape.json` → `render_openai` → strip (parse →
+  mask) → must equal `response.template.json`.
+- **T2** — the authoritative `request.json` → strip → must equal
+  `request.template.json`.
+
+A failure prints a readable structural diff (the JSON path that diverged), not a
+wall of two blobs.
+
 ## The scenario matrix
 
 Per dialect, the minimal matrix is: (a) single text turn, (b) single tool-call

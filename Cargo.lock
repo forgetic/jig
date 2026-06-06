@@ -5898,6 +5898,7 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "jig-core",
  "serde",
  "serde_json",
  "tempfile",

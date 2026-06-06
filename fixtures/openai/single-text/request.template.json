@@ -1,0 +1,23 @@
+{
+  "method": "POST",
+  "path": "/chat/completions",
+  "headers": [
+    {
+      "name": "content-type",
+      "value": "application/json"
+    }
+  ],
+  "body": {
+    "messages": [
+      {
+        "content": "Reply with exactly: hello",
+        "role": "user"
+      }
+    ],
+    "model": "deepseek-chat",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  }
+}

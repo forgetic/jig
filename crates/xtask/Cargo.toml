@@ -12,6 +12,7 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+jig-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 

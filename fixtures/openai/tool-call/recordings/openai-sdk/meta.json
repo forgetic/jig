@@ -1,0 +1,10 @@
+{
+  "client": "openai-sdk",
+  "role": "authoritative",
+  "dialect": "openai",
+  "scenario": "tool-call",
+  "client_version": "curl-deepseek",
+  "model": "deepseek-chat",
+  "captured": "2026-06-06",
+  "recorder_sha": "e24b690"
+}

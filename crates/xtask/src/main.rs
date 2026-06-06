@@ -1,12 +1,16 @@
 //! `xtask` binary: the operator entry point for fixture maintenance.
 //!
-//! Two subcommands, both thin wiring over the pure logic in the library:
+//! Three subcommands, all thin wiring over the pure logic in the library:
 //!
 //! - **record** — expand the scenario matrix for the given selection and drive
 //!   `jig record` once per (dialect, scenario, client). This leg is **manual and
 //!   online**: each invocation proxies a real client ↔ real backend exchange, so
 //!   it needs a live API key on the client side and network. `cargo test` never
 //!   runs it; the matrix expansion it relies on is unit-tested in the library.
+//! - **derive** — reduce committed authoritative recordings to the masked
+//!   `*.template.json` + `drive-shape.json` conformance artifacts (P2, #14). This
+//!   leg is **offline and deterministic**: re-deriving over the same recordings
+//!   produces byte-identical artifacts.
 //! - **staleness** — walk `fixtures/` offline and report each recording's capture
 //!   age, flagging any past the threshold. Non-fatal by default: a nudge to
 //!   re-record, not a build break (pass `--fail-on-stale` to gate a CI job on it).
@@ -16,13 +20,15 @@
 //! ```sh
 //! cargo run -p xtask -- record --all
 //! cargo run -p xtask -- record --dialect openai [--scenario single-text] [--client openai-sdk]
+//! cargo run -p xtask -- derive [--fixtures-root DIR]
 //! cargo run -p xtask -- staleness [--max-age-days 90] [--fail-on-stale]
 //! ```
 
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use xtask::derive::derive_tree;
 use xtask::matrix::{RecordInvocation, Selection, known_dialects, plan};
 use xtask::staleness::{DEFAULT_MAX_AGE_DAYS, FixtureAge, evaluate};
 use xtask::{Provenance, collect_fixture_metas, recorder_sha, resolve_today};
@@ -42,6 +48,7 @@ fn run(args: Vec<String>) -> io::Result<ExitCode> {
     let mut it = args.into_iter();
     match it.next().as_deref() {
         Some("record") => run_record(it.collect()),
+        Some("derive") => run_derive(it.collect()),
         Some("staleness") => run_staleness(it.collect()),
         Some("--help" | "-h") | None => {
             print_usage();
@@ -63,11 +70,12 @@ fn print_usage() {
          \x20 xtask record [--all] [--dialect D] [--scenario S] [--client C] \\\n\
          \x20              [--fixtures-root DIR] [--captured YYYY-MM-DD] \\\n\
          \x20              [--recorder-sha SHA] [--upstream-host HOST] [--dry-run]\n\
+         \x20 xtask derive [--fixtures-root DIR]\n\
          \x20 xtask staleness [--fixtures-root DIR] [--max-age-days N] \\\n\
          \x20                 [--today YYYY-MM-DD] [--fail-on-stale]\n\
          \n\
          `record` is manual and online (needs a live API key + network);\n\
-         `staleness` is offline. See docs/how-to/refresh-fixtures.md."
+         `derive` and `staleness` are offline. See docs/how-to/refresh-fixtures.md."
     );
 }
 
@@ -222,6 +230,59 @@ fn parse_record_args(args: Vec<String>) -> io::Result<RecordArgs> {
         all,
         dry_run,
     })
+}
+
+/// `derive` — reduce every committed authoritative recording under the fixtures
+/// root to its masked `*.template.json` + `drive-shape.json` artifacts. Offline
+/// and deterministic; the only flag is where the fixtures live.
+fn run_derive(args: Vec<String>) -> io::Result<ExitCode> {
+    let mut fixtures_root = PathBuf::from("fixtures");
+
+    let mut it = args.into_iter();
+    while let Some(flag) = it.next() {
+        let mut value = || next_value(&flag, &mut it);
+        match flag.as_str() {
+            "--fixtures-root" => fixtures_root = PathBuf::from(value()?),
+            other => return Err(unknown_flag(other)),
+        }
+    }
+
+    let stdout = io::stdout();
+    let mut out = stdout.lock();
+
+    match derive_tree(&fixtures_root) {
+        Ok(done) if done.is_empty() => {
+            writeln!(
+                out,
+                "xtask derive: no authoritative recordings under {} — nothing to derive.",
+                fixtures_root.display()
+            )?;
+            Ok(ExitCode::SUCCESS)
+        }
+        Ok(done) => {
+            writeln!(out, "xtask derive: {} scenario(s) derived", done.len())?;
+            for dir in &done {
+                writeln!(
+                    out,
+                    "  - {}/{} (from {})",
+                    dir.dialect,
+                    dir.scenario,
+                    relative(&dir.recording_dir, &fixtures_root).display()
+                )?;
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(err) => {
+            eprintln!("xtask derive: {err}");
+            Ok(ExitCode::FAILURE)
+        }
+    }
+}
+
+/// Render `path` relative to `base` for a tidy log line, falling back to the full
+/// path if it is not under `base`.
+fn relative<'a>(path: &'a Path, base: &Path) -> &'a Path {
+    path.strip_prefix(base).unwrap_or(path)
 }
 
 fn run_staleness(args: Vec<String>) -> io::Result<ExitCode> {

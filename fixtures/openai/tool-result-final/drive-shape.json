@@ -1,0 +1,14 @@
+{
+  "reply": {
+    "turns": [
+      {
+        "Text": "The weather in Paris is currently **clear** with a temperature of **21°C**. Enjoy the nice weather! ☀️"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 346,
+      "completion_tokens": 26
+    },
+    "stop": "Stop"
+  }
+}

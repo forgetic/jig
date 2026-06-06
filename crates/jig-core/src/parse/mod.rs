@@ -16,17 +16,20 @@
 //! which is driven manually against a real backend).
 //!
 //! P3 (#15) ships the [`anthropic`] messages parser; P4 (#16) adds the [`codex`]
-//! responses parser. The OpenAI parser is a follow-up in its own phase.
+//! responses parser; P2 (#14) adds the [`openai`] chat-completions parser
+//! alongside them, the keystone for the OpenAI structural-template machinery.
 //!
 //! Each dialect parser owns its own error enum (the failure modes differ per
 //! wire shape), so they are re-exported under dialect-qualified names —
-//! [`AnthropicParseError`] and [`CodexParseError`] — rather than a single shared
-//! `ParseError` that would collide across modules.
+//! [`AnthropicParseError`], [`CodexParseError`], and [`OpenAiParseError`] —
+//! rather than a single shared `ParseError` that would collide across modules.
 
 mod anthropic;
 mod codex;
+mod openai;
 mod sse;
 
 pub use anthropic::{ParseError as AnthropicParseError, parse_anthropic_sse};
 pub use codex::{ParseError as CodexParseError, parse_codex_sse};
+pub use openai::{ParseError as OpenAiParseError, parse_openai_sse};
 pub use sse::{SseEvent, parse_sse};

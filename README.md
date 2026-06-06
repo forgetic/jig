@@ -103,6 +103,19 @@ can be derived from ground truth. Recording is manual (it needs a live API key
 and network); the captured taxonomy and workflow live in
 [`crates/jig-record/README.md`](crates/jig-record/README.md).
 
+To refresh fixtures in one command, `xtask record` orchestrates the recorder
+across the scenario matrix, and `xtask staleness` reports how old the committed
+captures are:
+
+```sh
+cargo run -p xtask -- record --dialect openai   # one dialect (--all for everything)
+cargo run -p xtask -- staleness                 # offline: flag captures past N days
+```
+
+See [the refresh how-to](docs/how-to/refresh-fixtures.md) for the full procedure
+and [the record-and-conform explanation](docs/explanation/record-and-conform.md)
+for the design.
+
 ## Workspace layout
 
 - `crates/jig-core` — dialect-agnostic, async-free core: `Reply`/`Turn`/`Usage`/
@@ -112,5 +125,7 @@ and network); the captured taxonomy and workflow live in
 - `crates/jig-record` — the passthrough recorder: forwards a client request to
   the real upstream over HTTPS, streams the response back unbuffered, and writes
   a redacted fixture (redactor + fixture writer are unit-tested, network-free).
+- `crates/xtask` — the developer task runner: the `record` orchestrator (expands
+  the scenario matrix → drives `jig record`) and the offline `staleness` check.
 - `src/main.rs` — thin glue binary: serve a script (`FakeLlm::start`) or run one
   passthrough capture (`record`).

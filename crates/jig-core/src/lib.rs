@@ -11,9 +11,11 @@ use serde::{Deserialize, Serialize};
 
 pub mod render;
 pub mod request;
+pub mod script_file;
 
 pub use render::{render_anthropic, render_codex, render_openai};
 pub use request::{Dialect, RequestView, ViewMessage};
+pub use script_file::{ReplySpec, ScriptFile, ScriptFileError, StopSpec, ToolCallSpec, TurnSpec};
 
 /// One thing the fake model emits within a single assistant turn.
 ///

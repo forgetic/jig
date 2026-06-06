@@ -1,0 +1,62 @@
+{
+  "method": "POST",
+  "path": "/chat/completions",
+  "headers": [
+    {
+      "name": "content-type",
+      "value": "application/json"
+    }
+  ],
+  "body": {
+    "messages": [
+      {
+        "content": "What is the weather in Paris?",
+        "role": "user"
+      },
+      {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"city\":\"Paris\"}",
+              "name": "get_weather"
+            },
+            "id": "<MASKED>",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "{\"temp_c\":21,\"sky\":\"clear\"}",
+        "role": "tool",
+        "tool_call_id": "<MASKED>"
+      }
+    ],
+    "model": "deepseek-chat",
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "function": {
+          "description": "Get current weather for a city",
+          "name": "get_weather",
+          "parameters": {
+            "properties": {
+              "city": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "city"
+            ],
+            "type": "object"
+          }
+        },
+        "type": "function"
+      }
+    ]
+  }
+}

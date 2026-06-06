@@ -98,6 +98,27 @@ scenario's shape (e.g. "create file foo.txt with bar" for a tool-call). The
 recorder forwards one exchange to the real backend, captures it, and exits.
 A complete chat-completions capture ends in the `[DONE]` SSE terminator.
 
+## Deriving the templates
+
+After recording (or any time you change the masking policy), reduce the captured
+recordings to the committed conformance artifacts. This is **offline and
+deterministic**:
+
+```sh
+cargo run -p xtask -- derive
+```
+
+For every `<dialect>/<scenario>` with an `authoritative` recording it (re)writes
+`response.template.json`, `request.template.json`, and `drive-shape.json` at the
+scenario root, masking volatile values per the policy in
+`crates/jig-core/src/conform/`. Re-running it over unchanged recordings produces
+byte-identical files, so a clean `git diff` after `derive` means the captures and
+templates are in sync. The offline T1/T2 conformance tests
+(`cargo test -p jig-core --test openai_conformance`) assert jig reproduces these
+templates exactly. See the
+[record-and-conform design](../explanation/record-and-conform.md#deriving-templates-the-masking-policy)
+for what is masked and why.
+
 ## Checking staleness
 
 `xtask staleness` walks `fixtures/` **offline** and reports each recording's
@@ -137,5 +158,8 @@ the human review on each refresh is the backstop.
 ## After recording
 
 1. `git diff fixtures/` — confirm the captures look right and no secret leaked.
-2. `cargo test --workspace` — the offline conformance half must stay green.
-3. Commit the refreshed fixtures with the capture date in the message.
+2. `cargo run -p xtask -- derive` — re-derive the templates from the new captures.
+3. `cargo test --workspace` — the offline conformance half (incl. T1/T2) must
+   stay green.
+4. Commit the refreshed fixtures and templates with the capture date in the
+   message.

@@ -1,0 +1,14 @@
+{
+  "reply": {
+    "turns": [
+      {
+        "Text": "hello"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 9,
+      "completion_tokens": 1
+    },
+    "stop": "Stop"
+  }
+}

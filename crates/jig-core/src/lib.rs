@@ -9,10 +9,12 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+pub mod parse;
 pub mod render;
 pub mod request;
 pub mod script_file;
 
+pub use parse::{ParseError, SseEvent, parse_anthropic_sse, parse_sse};
 pub use render::{render_anthropic, render_codex, render_openai};
 pub use request::{Dialect, RequestView, ViewMessage};
 pub use script_file::{ReplySpec, ScriptFile, ScriptFileError, StopSpec, ToolCallSpec, TurnSpec};

@@ -7,8 +7,12 @@ jig/
 ├── bootstrap.md            # this file
 ├── src/
 │   └── main.rs             # thin glue: serve a script (FakeLlm::start) or run one `record` capture
+├── docs/
+│   ├── explanation/        # design rationale (this file; record-and-conform)
+│   └── how-to/             # operator procedures (refresh-fixtures)
 └── crates/
     ├── jig-core/           # dialect-agnostic logic, no async
     ├── jig-server/         # the embeddable service API
-    └── jig-record/         # passthrough recorder: capture real interactions to redacted fixtures
+    ├── jig-record/         # passthrough recorder: capture real interactions to redacted fixtures
+    └── xtask/              # developer task runner: `record` orchestrator + `staleness` check
 ```

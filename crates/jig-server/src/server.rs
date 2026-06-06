@@ -8,10 +8,10 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use jig_core::request::{parse_anthropic, parse_openai};
+use jig_core::request::{parse_anthropic, parse_codex, parse_openai};
 use jig_core::{
     Dialect, RecordedRequest, RequestView, Script, render::frames_to_body, render_anthropic,
-    render_openai,
+    render_codex, render_openai,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -71,9 +71,7 @@ async fn handle_connection(
     let view = dialect_for_path(&request.path).map(|dialect| match dialect {
         Dialect::OpenAi => parse_openai(&request.body),
         Dialect::Anthropic => parse_anthropic(&request.body),
-        // M4 adds the Codex projection; until then that route does not exist (it
-        // 404s), so this arm is unreachable in M3.
-        Dialect::Codex => parse_openai(&request.body),
+        Dialect::Codex => parse_codex(&request.body),
     });
 
     // Record before responding so a captured request reflects exactly what the
@@ -97,6 +95,14 @@ async fn handle_connection(
             let body = frames_to_body(&render_anthropic(&reply));
             write_sse_response(&mut stream, &body).await
         }
+        "/backend-api/codex/responses" => {
+            // OpenAI Codex responses dialect. Same script seam as the others —
+            // only the projection and renderer differ.
+            let view = view.unwrap_or_else(empty_codex_view);
+            let reply = script.next_reply(&view);
+            let body = frames_to_body(&render_codex(&reply));
+            write_sse_response(&mut stream, &body).await
+        }
         _ => write_not_found(&mut stream).await,
     }
 }
@@ -108,6 +114,7 @@ fn dialect_for_path(path: &str) -> Option<Dialect> {
     match path {
         "/chat/completions" => Some(Dialect::OpenAi),
         "/v1/messages" => Some(Dialect::Anthropic),
+        "/backend-api/codex/responses" => Some(Dialect::Codex),
         _ => None,
     }
 }
@@ -120,6 +127,11 @@ fn empty_openai_view() -> RequestView {
 /// An empty Anthropic view — the fallback when a request body fails to project.
 fn empty_anthropic_view() -> RequestView {
     RequestView::new(Dialect::Anthropic, None, Vec::new(), 0)
+}
+
+/// An empty Codex view — the fallback when a request body fails to project.
+fn empty_codex_view() -> RequestView {
+    RequestView::new(Dialect::Codex, None, Vec::new(), 0)
 }
 
 /// Append a [`RecordedRequest`] to the shared log.

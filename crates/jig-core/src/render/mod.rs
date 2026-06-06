@@ -2,13 +2,14 @@
 //!
 //! Each renderer turns a canonical [`crate::Reply`] into an ordered list of
 //! [`SseFrame`]s the server writes as chunked `text/event-stream` output. M1
-//! ships [`openai`]; M3 adds [`anthropic`]; `codex` (M4) slots in here alongside
-//! them without touching the server.
+//! ships [`openai`]; M3 adds [`anthropic`]; M4 adds [`codex`].
 
 mod anthropic;
+mod codex;
 mod openai;
 
 pub use anthropic::render_anthropic;
+pub use codex::render_codex;
 pub use openai::render_openai;
 
 /// One Server-Sent Events frame: an optional `event:` line plus the `data:`

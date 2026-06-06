@@ -94,6 +94,31 @@ never to the pi SDK. The `client` label and `role` are free-form data in
 `meta.json`; the recorder hardcodes no specific consumer, which is why the same
 recorder serves both roles with no code change.
 
+## The offline oracle (P6, #17)
+
+The `subject` driver doubles as an **offline oracle**: with jig proven faithful
+by the dialect work (P3/P4), driving the pi SDK against jig — with **no network
+and no credentials** — and asserting it parses jig and completes its agent loop
+turns jig into a fast, deterministic check that the SDK speaks each dialect.
+
+`crates/jig-oracle` is that check. Its integration test points a
+`pi_agent_rust` provider's `base_url` at an in-process `jig_server::FakeLlm`,
+streams a scripted reply, and asserts the SDK decodes jig's SSE into its
+canonical event model and reaches `Done` — for all three dialects, both for a
+single text reply and for a tool-call → tool-result → final loop. The pi SDK is
+consumed **directly** (no smith). Codex validates that its bearer is a JWT
+carrying a `chatgpt_account_id` claim before sending, so the test mints a
+synthetic unsigned JWT locally (the shape the SDK's own tests use); nothing
+leaves the machine. It runs in the default, network-free `cargo test`.
+
+This is the *oracle* half of P6. The pi-SDK **recording** track — capturing
+`subject` recordings and the T3 (request-validation) / T4 (cross-driver)
+conformance checks — is **not** here: recording needs live provider credentials,
+and T3/T4 compare against the structural `*.template.json` artifacts that P2
+(#14) derives, which are out of scope for an offline test. The recorder already
+supports the `subject` role with no code change (see "Two drivers, two roles"),
+so that track is additive on top of P2.
+
 ## The fixture taxonomy
 
 Each recording is written into the taxonomy from issue #13:

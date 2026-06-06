@@ -1,0 +1,36 @@
+[package]
+name = "jig-oracle"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Offline pi-SDK ↔ jig oracle: drive pi_agent_rust directly against jig (no network, no credentials) and assert it parses jig and completes the agent loop"
+
+# This crate carries no runtime code. Its whole job is the offline oracle
+# integration test under `tests/`, which exercises the real pi SDK against jig.
+# The heavy SDK dependency lives in `dev-dependencies` so nothing depends on it
+# transitively — only `cargo test` pulls it in.
+[dependencies]
+
+[dev-dependencies]
+jig-core.workspace = true
+jig-server.workspace = true
+serde_json.workspace = true
+# `pi_agent_rust` (the pi SDK) is consumed *directly* — no smith. Default
+# features (wasmtime / jemalloc / sqlite / clipboard) are dropped: the oracle
+# only needs the provider layer + its async runtime, and dropping them keeps the
+# workspace build tractable.
+pi = { package = "pi_agent_rust", version = "=0.1.13", default-features = false }
+# The SDK's async runtime. Used to drive `Provider::stream` to completion,
+# exactly as the SDK's own provider tests do. Pinned to the version the SDK
+# pins; `tls-native-roots` matches the SDK's own feature selection.
+asupersync = { version = "=0.3.1", default-features = false, features = ["tls-native-roots"] }
+futures = "0.3"
+# Builds the synthetic (unsigned) Codex OAuth bearer the offline test needs.
+base64 = "0.22"
+# Pin a transitive dep of `asupersync`. asupersync 0.3.1 requires
+# `franken-decision = "0.3.1"` (a caret range), but 0.3.2 broke a field on
+# `DecisionOutcome` that asupersync 0.3.1 reads directly, so the caret default
+# (0.3.2) fails to compile. Force the last compatible version here so the lock
+# is reproducible from a clean checkout. Remove if/when asupersync ships a fix.
+franken-decision = "=0.3.1"

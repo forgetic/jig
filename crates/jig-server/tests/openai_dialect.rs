@@ -6,7 +6,7 @@
 //! `[DONE]`, then lets `Drop` tear the runtime thread down. It demonstrates
 //! that the entire in-process lifecycle is start → blocking HTTP → drop.
 
-use jig_core::{Reply, Script};
+use jig_core::{Reply, Script, StopReason, Turn, Usage};
 use serde_json::Value;
 
 /// Split a `text/event-stream` body into the payloads of its `data:` lines.
@@ -58,6 +58,65 @@ fn openai_stream_parses_and_ends_in_done() {
             .iter()
             .any(|v| v["choices"][0]["finish_reason"] == "stop"),
         "expected a frame with finish_reason == stop"
+    );
+}
+
+#[test]
+fn openai_tool_call_carries_id_name_arguments_and_stop_reason() {
+    // M5 acceptance: a ToolCall turn renders into `delta.tool_calls[]` entries
+    // carrying the id, function name, and (chunked) arguments, with the terminal
+    // frame reporting `finish_reason: "tool_calls"`.
+    let reply = Reply {
+        turns: vec![Turn::ToolCall {
+            id: "call_1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({ "path": "out.txt", "contents": "hi" }),
+        }],
+        usage: Usage::default(),
+        stop: StopReason::ToolCalls,
+    };
+    let fake = jig_server::FakeLlm::start(Script::Fixed(reply)).expect("FakeLlm starts");
+    let body = FakeLlmFixture { fake }.post_chat_completions();
+
+    let json_frames: Vec<Value> = data_payloads(&body)
+        .iter()
+        .filter(|p| p.as_str() != "[DONE]")
+        .map(|p| serde_json::from_str(p).expect("frame is valid JSON"))
+        .collect();
+
+    // Gather the tool_calls[] deltas across all frames.
+    let tool_deltas: Vec<&Value> = json_frames
+        .iter()
+        .filter_map(|v| v["choices"][0]["delta"]["tool_calls"].as_array())
+        .flatten()
+        .collect();
+    assert!(!tool_deltas.is_empty(), "expected tool_calls deltas");
+
+    // The header delta carries the id and function name.
+    let header = tool_deltas
+        .iter()
+        .find(|d| d["id"].is_string())
+        .expect("a tool-call header delta with an id");
+    assert_eq!(header["id"], "call_1");
+    assert_eq!(header["function"]["name"], "write");
+
+    // The argument fragments reassemble into the original JSON object.
+    let args: String = tool_deltas
+        .iter()
+        .filter_map(|d| d["function"]["arguments"].as_str())
+        .collect();
+    let parsed: Value = serde_json::from_str(&args).expect("arguments are valid JSON");
+    assert_eq!(
+        parsed,
+        serde_json::json!({ "path": "out.txt", "contents": "hi" })
+    );
+
+    // The terminal frame reports the tool-call stop reason.
+    assert!(
+        json_frames
+            .iter()
+            .any(|v| v["choices"][0]["finish_reason"] == "tool_calls"),
+        "expected a frame with finish_reason == tool_calls; body was:\n{body}"
     );
 }
 

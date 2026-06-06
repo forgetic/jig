@@ -7,9 +7,9 @@
 //! one `response.output_text.delta` per text turn → `response.completed` (with
 //! `usage`).
 //!
-//! Tool-call output items (`response.output_item.added` with a `function_call`
-//! item, `response.function_call_arguments.delta`, `response.output_item.done`)
-//! are M5; non-text turns are skipped here.
+//! M5 adds tool-call output items: `response.output_item.added` (a
+//! `function_call` item carrying id/call_id/name) →
+//! `response.function_call_arguments.delta` → `response.output_item.done`.
 
 use serde_json::json;
 
@@ -26,17 +26,22 @@ fn event(name: &str, data: serde_json::Value) -> SseFrame {
 
 /// Render a [`Reply`] into OpenAI Codex responses SSE frames.
 ///
-/// Frame sequence (single output item `msg_1`, content index 0):
-/// 1. one `response.output_text.delta` per [`Turn::Text`].
-/// 2. `response.completed` — terminates the stream and carries `usage`.
+/// Frame sequence:
+/// 1. one `response.output_text.delta` per [`Turn::Text`] (output item `msg_1`,
+///    content index 0).
+/// 2. one tool-call output item per [`Turn::ToolCall`], each at its own
+///    `output_index`: `response.output_item.added` (a `function_call` item
+///    carrying id/call_id/name) → `response.function_call_arguments.delta`
+///    (the serialized arguments) → `response.output_item.done`.
+/// 3. `response.completed` — terminates the stream and carries `usage`.
 ///
-/// Non-text turns are skipped in M4 (tool-call rendering is M5). Unlike the
+/// [`Turn::Thinking`] turns carry no surface here and are skipped. Unlike the
 /// OpenAI chat-completions stream, Codex has no `[DONE]` sentinel: the
 /// `response.completed` event is the terminator.
 pub fn render_codex(reply: &Reply) -> Vec<SseFrame> {
     let mut frames = Vec::new();
 
-    // 1. One output_text delta per text turn. Non-text turns are skipped in M4.
+    // 1. One output_text delta per text turn.
     for turn in &reply.turns {
         if let Turn::Text(text) = turn {
             frames.push(event(
@@ -51,7 +56,59 @@ pub fn render_codex(reply: &Reply) -> Vec<SseFrame> {
         }
     }
 
-    // 2. Terminal completion frame: carries final token usage.
+    // 2. One function_call output item per tool call. The text output item
+    //    occupies output_index 0, so tool calls start at output_index 1. The
+    //    item id and call_id both derive from the call's id: the client echoes
+    //    `call_id` back on the matching `function_call_output`. Arguments stream
+    //    as a single serialized-JSON delta that the client concatenates.
+    let mut output_index = 1usize;
+    for turn in &reply.turns {
+        if let Turn::ToolCall { id, name, args } = turn {
+            let index = output_index;
+            output_index += 1;
+            let item_id = format!("fc_{id}");
+
+            frames.push(event(
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": index,
+                    "item": {
+                        "type": "function_call",
+                        "id": item_id,
+                        "call_id": id,
+                        "name": name,
+                        "arguments": "",
+                    },
+                }),
+            ));
+            frames.push(event(
+                "response.function_call_arguments.delta",
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": index,
+                    "item_id": item_id,
+                    "delta": args.to_string(),
+                }),
+            ));
+            frames.push(event(
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": index,
+                    "item": {
+                        "type": "function_call",
+                        "id": item_id,
+                        "call_id": id,
+                        "name": name,
+                        "arguments": args.to_string(),
+                    },
+                }),
+            ));
+        }
+    }
+
+    // 3. Terminal completion frame: carries final token usage.
     frames.push(event(
         "response.completed",
         json!({
@@ -143,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn non_text_turns_are_skipped_in_m4() {
+    fn thinking_turns_are_skipped() {
         let reply = Reply {
             turns: vec![
                 Turn::Thinking("hmm".to_string()),
@@ -158,5 +215,79 @@ mod tests {
             .filter_map(|v| v["delta"].as_str().map(String::from))
             .collect();
         assert_eq!(texts, vec!["visible".to_string()]);
+    }
+
+    #[test]
+    fn tool_call_emits_function_call_item_and_arguments() {
+        let reply = Reply {
+            turns: vec![Turn::ToolCall {
+                id: "call_1".to_string(),
+                name: "write".to_string(),
+                args: serde_json::json!({ "path": "out.txt" }),
+            }],
+            usage: Usage::default(),
+            stop: StopReason::ToolCalls,
+        };
+        let frames = render_codex(&reply);
+
+        // The output item is added as a function_call carrying name + call_id.
+        let added: Value =
+            serde_json::from_str(&events_named(&frames, "response.output_item.added")[0].data)
+                .unwrap();
+        assert_eq!(added["item"]["type"], "function_call");
+        assert_eq!(added["item"]["call_id"], "call_1");
+        assert_eq!(added["item"]["name"], "write");
+        assert_eq!(added["output_index"], 1);
+
+        // Arguments stream as function_call_arguments.delta fragments that
+        // reassemble into the original JSON.
+        let args: String = events_named(&frames, "response.function_call_arguments.delta")
+            .iter()
+            .filter_map(|f| serde_json::from_str::<Value>(&f.data).ok())
+            .filter_map(|v| v["delta"].as_str().map(String::from))
+            .collect();
+        let parsed: Value = serde_json::from_str(&args).expect("arguments are valid JSON");
+        assert_eq!(parsed, serde_json::json!({ "path": "out.txt" }));
+
+        // The item is finalized with output_item.done before completion.
+        let done = events_named(&frames, "response.output_item.done");
+        assert_eq!(done.len(), 1);
+        let done_value: Value = serde_json::from_str(&done[0].data).unwrap();
+        assert_eq!(done_value["item"]["call_id"], "call_1");
+
+        // response.completed is still the terminator.
+        assert_eq!(
+            frames.last().unwrap().event.as_deref(),
+            Some("response.completed")
+        );
+    }
+
+    #[test]
+    fn multiple_tool_calls_get_distinct_output_indices() {
+        let reply = Reply {
+            turns: vec![
+                Turn::ToolCall {
+                    id: "call_a".to_string(),
+                    name: "read".to_string(),
+                    args: serde_json::json!({ "path": "a" }),
+                },
+                Turn::ToolCall {
+                    id: "call_b".to_string(),
+                    name: "read".to_string(),
+                    args: serde_json::json!({ "path": "b" }),
+                },
+            ],
+            usage: Usage::default(),
+            stop: StopReason::ToolCalls,
+        };
+        let added: Vec<Value> = events_named(&render_codex(&reply), "response.output_item.added")
+            .iter()
+            .map(|f| serde_json::from_str::<Value>(&f.data).unwrap())
+            .collect();
+        assert_eq!(added.len(), 2);
+        assert_eq!(added[0]["output_index"], 1);
+        assert_eq!(added[0]["item"]["call_id"], "call_a");
+        assert_eq!(added[1]["output_index"], 2);
+        assert_eq!(added[1]["item"]["call_id"], "call_b");
     }
 }

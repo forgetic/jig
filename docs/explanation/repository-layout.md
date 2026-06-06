@@ -6,8 +6,9 @@ jig/
 ├── README.md               # what it is, how to run, the three routes
 ├── bootstrap.md            # this file
 ├── src/
-│   └── main.rs             # thin glue: load script, FakeLlm::start, print base_url, block
+│   └── main.rs             # thin glue: serve a script (FakeLlm::start) or run one `record` capture
 └── crates/
     ├── jig-core/           # dialect-agnostic logic, no async
-    └── jig-server/         # the embeddable service API
+    ├── jig-server/         # the embeddable service API
+    └── jig-record/         # passthrough recorder: capture real interactions to redacted fixtures
 ```

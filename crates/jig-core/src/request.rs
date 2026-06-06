@@ -4,8 +4,9 @@
 //! normalized, read-only [`RequestView`] so a [`crate::Script::Rule`] can branch
 //! on the request (turn count, last message, model) without each rule
 //! re-parsing three different wire schemas. M2 ships the OpenAI/DeepSeek
-//! chat-completions projection only; M3/M4 add Anthropic and Codex projections
-//! into the *same* view shape (see bootstrap.md "Scripting / driving model").
+//! chat-completions projection; M3 adds Anthropic and M4 adds Codex, all
+//! projecting into the *same* view shape (see bootstrap.md "Scripting / driving
+//! model").
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -253,6 +254,96 @@ pub fn parse_anthropic(body: &[u8]) -> RequestView {
     }
 }
 
+/// Flatten a Codex responses input item `content` field to a single string.
+///
+/// A Codex `input` message item carries a `content` array of typed parts
+/// (`{ "type": "input_text" | "output_text", "text": "…" }`). Both text part
+/// kinds contribute their text; anything else is ignored. A plain-string
+/// `content` is also accepted for permissiveness.
+fn flatten_codex_content(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(parts) => parts
+            .iter()
+            .filter_map(|part| part.get("text").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+/// Project an OpenAI Codex responses request body into a [`RequestView`].
+///
+/// `body` is the raw request bytes. Like [`parse_openai`], a body that is not
+/// valid JSON, or that lacks the expected fields, still yields a usable (if
+/// sparse) view rather than an error.
+///
+/// Normalization choices that keep the view dialect-agnostic:
+/// - The top-level `instructions` string is projected as a leading
+///   `ViewMessage { role: "system", .. }` so rules see it the same way as the
+///   OpenAI `system` message and the Anthropic `system` prompt.
+/// - The `input` array carries the conversation. `message` items project to a
+///   `ViewMessage` with their flattened text; their `role` is preserved.
+/// - Tool-result accounting: Codex feeds tool outputs back as `input` items with
+///   `type: "function_call_output"`, so the count of prior tool results is the
+///   number of those items.
+pub fn parse_codex(body: &[u8]) -> RequestView {
+    let json: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+
+    let model = json
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let mut messages = Vec::new();
+    let mut prior_tool_results = 0usize;
+
+    // Project the top-level instructions (if any) as a leading system message.
+    if let Some(instructions) = json.get("instructions").and_then(Value::as_str)
+        && !instructions.is_empty()
+    {
+        messages.push(ViewMessage {
+            role: "system".to_string(),
+            content: instructions.to_string(),
+        });
+    }
+
+    if let Some(arr) = json.get("input").and_then(Value::as_array) {
+        for item in arr {
+            let item_type = item
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("message");
+            if item_type == "function_call_output" {
+                prior_tool_results += 1;
+                continue;
+            }
+            // Non-message items (e.g. a bare `function_call`) carry no text for
+            // the view; skip them.
+            if item_type != "message" {
+                continue;
+            }
+            let role = item
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let content = item
+                .get("content")
+                .map(flatten_codex_content)
+                .unwrap_or_default();
+            messages.push(ViewMessage { role, content });
+        }
+    }
+
+    RequestView {
+        dialect: Dialect::Codex,
+        model,
+        messages,
+        prior_tool_results,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +507,91 @@ mod tests {
     fn anthropic_invalid_body_yields_an_empty_view_not_an_error() {
         let view = parse_anthropic(b"not json at all");
         assert_eq!(view.dialect, Dialect::Anthropic);
+        assert!(view.model.is_none());
+        assert!(view.messages.is_empty());
+        assert_eq!(view.prior_tool_results, 0);
+        assert!(view.last_message().is_none());
+    }
+
+    #[test]
+    fn codex_projects_instructions_as_a_leading_system_message() {
+        let body = json!({
+            "model": "gpt-fake",
+            "instructions": "be terse",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "hi" }],
+                },
+            ],
+        })
+        .to_string();
+
+        let view = parse_codex(body.as_bytes());
+        assert_eq!(view.dialect, Dialect::Codex);
+        assert_eq!(view.model.as_deref(), Some("gpt-fake"));
+        assert_eq!(view.messages.len(), 2);
+        assert_eq!(view.messages[0].role, "system");
+        assert_eq!(view.messages[0].content, "be terse");
+        assert_eq!(view.last_message().unwrap().role, "user");
+        assert_eq!(view.last_message().unwrap().content, "hi");
+    }
+
+    #[test]
+    fn codex_flattens_string_and_text_part_content() {
+        let body = json!({
+            "input": [
+                { "type": "message", "role": "user", "content": "plain" },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        { "type": "output_text", "text": "foo" },
+                        { "type": "output_text", "text": "bar" },
+                    ],
+                },
+            ],
+        })
+        .to_string();
+
+        let view = parse_codex(body.as_bytes());
+        assert_eq!(view.messages[0].content, "plain");
+        assert_eq!(view.messages[1].content, "foobar");
+    }
+
+    #[test]
+    fn codex_counts_function_call_outputs_as_prior_tool_results() {
+        // Codex feeds tool outputs back as input items of type
+        // function_call_output; each one is a completed tool-use turn.
+        let body = json!({
+            "model": "fake",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "do it" }],
+                },
+                { "type": "function_call", "call_id": "c1", "name": "write", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": "ok" },
+                { "type": "function_call", "call_id": "c2", "name": "write", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c2", "output": "ok" },
+            ],
+        })
+        .to_string();
+
+        let view = parse_codex(body.as_bytes());
+        assert_eq!(view.prior_tool_results, 2);
+        // function_call / function_call_output items carry no view message; only
+        // the single user message survives.
+        assert_eq!(view.messages.len(), 1);
+        assert_eq!(view.messages[0].role, "user");
+    }
+
+    #[test]
+    fn codex_invalid_body_yields_an_empty_view_not_an_error() {
+        let view = parse_codex(b"not json at all");
+        assert_eq!(view.dialect, Dialect::Codex);
         assert!(view.model.is_none());
         assert!(view.messages.is_empty());
         assert_eq!(view.prior_tool_results, 0);

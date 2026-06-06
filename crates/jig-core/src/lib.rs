@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub mod render;
 pub mod request;
 
-pub use render::render_openai;
+pub use render::{render_anthropic, render_openai};
 pub use request::{Dialect, RequestView, ViewMessage};
 
 /// One thing the fake model emits within a single assistant turn.
@@ -77,6 +77,19 @@ impl StopReason {
             StopReason::Stop => "stop",
             StopReason::ToolCalls => "tool_calls",
             StopReason::Error => "stop",
+        }
+    }
+
+    /// The Anthropic messages `stop_reason` string for this stop reason.
+    ///
+    /// Anthropic signals a normal end-of-turn with `end_turn` and a tool-use
+    /// hand-off with `tool_use`; there is no dedicated error value in the
+    /// streamed `message_delta`, so an errored reply also ends as `end_turn`.
+    pub fn anthropic_stop_reason(&self) -> &'static str {
+        match self {
+            StopReason::Stop => "end_turn",
+            StopReason::ToolCalls => "tool_use",
+            StopReason::Error => "end_turn",
         }
     }
 }
@@ -215,6 +228,14 @@ mod tests {
             completion_tokens: 4,
         };
         assert_eq!(usage.total_tokens(), 7);
+    }
+
+    #[test]
+    fn stop_reasons_map_to_each_dialect() {
+        assert_eq!(StopReason::Stop.openai_finish_reason(), "stop");
+        assert_eq!(StopReason::ToolCalls.openai_finish_reason(), "tool_calls");
+        assert_eq!(StopReason::Stop.anthropic_stop_reason(), "end_turn");
+        assert_eq!(StopReason::ToolCalls.anthropic_stop_reason(), "tool_use");
     }
 
     #[test]

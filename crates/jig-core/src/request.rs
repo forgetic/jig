@@ -143,6 +143,116 @@ pub fn parse_openai(body: &[u8]) -> RequestView {
     }
 }
 
+/// Flatten an Anthropic message `content` field to a single string.
+///
+/// The Anthropic dialect allows `content` to be either a plain string or an
+/// array of typed blocks. Only `text` blocks contribute to the flattened text;
+/// `tool_use` / `tool_result` / other block types are ignored here (their
+/// presence is accounted for separately). Anything unexpected flattens to the
+/// empty string.
+fn flatten_anthropic_content(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|block| {
+                block
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>()
+            .join(""),
+        _ => String::new(),
+    }
+}
+
+/// Count `tool_result` blocks in an Anthropic message `content` field.
+///
+/// Anthropic feeds tool outputs back as `user`-role messages whose `content`
+/// array contains `{ "type": "tool_result", ... }` blocks. A single user turn
+/// can carry several, so we count blocks, not messages.
+fn count_anthropic_tool_results(content: &Value) -> usize {
+    match content {
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+            .count(),
+        _ => 0,
+    }
+}
+
+/// Flatten an Anthropic top-level `system` field to a single string.
+///
+/// `system` is a top-level sibling of `messages` (not a message), and may be a
+/// plain string or an array of `text` blocks. Both collapse to their text.
+fn flatten_anthropic_system(system: &Value) -> String {
+    flatten_anthropic_content(system)
+}
+
+/// Project an Anthropic messages request body into a [`RequestView`].
+///
+/// `body` is the raw request bytes. Like [`parse_openai`], a body that is not
+/// valid JSON, or that lacks the expected fields, still yields a usable (if
+/// sparse) view rather than an error.
+///
+/// Normalization choices that keep the view dialect-agnostic:
+/// - The top-level `system` prompt is projected as a leading
+///   `ViewMessage { role: "system", .. }` so rules see it the same way as the
+///   OpenAI `system` message.
+/// - Tool-result accounting: Anthropic feeds tool outputs back as `user`-role
+///   messages carrying `tool_result` content blocks, so the count of prior tool
+///   results is the number of `tool_result` blocks across all messages (not the
+///   number of messages).
+pub fn parse_anthropic(body: &[u8]) -> RequestView {
+    let json: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+
+    let model = json
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let mut messages = Vec::new();
+    let mut prior_tool_results = 0usize;
+
+    // Project the top-level system prompt (if any) as a leading system message.
+    if let Some(system) = json.get("system") {
+        let content = flatten_anthropic_system(system);
+        if !content.is_empty() {
+            messages.push(ViewMessage {
+                role: "system".to_string(),
+                content,
+            });
+        }
+    }
+
+    if let Some(arr) = json.get("messages").and_then(Value::as_array) {
+        for msg in arr {
+            let role = msg
+                .get("role")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let content_value = msg.get("content");
+            if let Some(content) = content_value {
+                prior_tool_results += count_anthropic_tool_results(content);
+            }
+            let content = content_value
+                .map(flatten_anthropic_content)
+                .unwrap_or_default();
+            messages.push(ViewMessage { role, content });
+        }
+    }
+
+    RequestView {
+        dialect: Dialect::Anthropic,
+        model,
+        messages,
+        prior_tool_results,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,6 +319,103 @@ mod tests {
     fn invalid_body_yields_an_empty_view_not_an_error() {
         let view = parse_openai(b"not json at all");
         assert_eq!(view.dialect, Dialect::OpenAi);
+        assert!(view.model.is_none());
+        assert!(view.messages.is_empty());
+        assert_eq!(view.prior_tool_results, 0);
+        assert!(view.last_message().is_none());
+    }
+
+    #[test]
+    fn anthropic_projects_system_prompt_as_a_leading_system_message() {
+        let body = json!({
+            "model": "claude-fake",
+            "system": "be terse",
+            "messages": [
+                { "role": "user", "content": "hi" },
+            ],
+        })
+        .to_string();
+
+        let view = parse_anthropic(body.as_bytes());
+        assert_eq!(view.dialect, Dialect::Anthropic);
+        assert_eq!(view.model.as_deref(), Some("claude-fake"));
+        assert_eq!(view.messages.len(), 2);
+        assert_eq!(view.messages[0].role, "system");
+        assert_eq!(view.messages[0].content, "be terse");
+        assert_eq!(view.last_message().unwrap().role, "user");
+        assert_eq!(view.last_message().unwrap().content, "hi");
+    }
+
+    #[test]
+    fn anthropic_flattens_string_and_text_block_content() {
+        let body = json!({
+            "messages": [
+                { "role": "user", "content": "plain" },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "text", "text": "foo" },
+                        { "type": "text", "text": "bar" },
+                    ],
+                },
+            ],
+        })
+        .to_string();
+
+        let view = parse_anthropic(body.as_bytes());
+        assert_eq!(view.messages[0].content, "plain");
+        assert_eq!(view.messages[1].content, "foobar");
+    }
+
+    #[test]
+    fn anthropic_system_as_text_blocks_flattens() {
+        let body = json!({
+            "system": [
+                { "type": "text", "text": "a" },
+                { "type": "text", "text": "b" },
+            ],
+            "messages": [{ "role": "user", "content": "hi" }],
+        })
+        .to_string();
+
+        let view = parse_anthropic(body.as_bytes());
+        assert_eq!(view.messages[0].role, "system");
+        assert_eq!(view.messages[0].content, "ab");
+    }
+
+    #[test]
+    fn anthropic_counts_tool_result_blocks_as_prior_tool_results() {
+        // Tool outputs come back as user-role messages carrying tool_result
+        // blocks; a single user turn can carry several.
+        let body = json!({
+            "model": "fake",
+            "messages": [
+                { "role": "user", "content": "do it" },
+                {
+                    "role": "assistant",
+                    "content": [
+                        { "type": "tool_use", "id": "t1", "name": "write", "input": {} },
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        { "type": "tool_result", "tool_use_id": "t1", "content": "ok" },
+                        { "type": "tool_result", "tool_use_id": "t2", "content": "ok" },
+                    ],
+                },
+            ],
+        })
+        .to_string();
+
+        let view = parse_anthropic(body.as_bytes());
+        assert_eq!(view.prior_tool_results, 2);
+    }
+
+    #[test]
+    fn anthropic_invalid_body_yields_an_empty_view_not_an_error() {
+        let view = parse_anthropic(b"not json at all");
+        assert_eq!(view.dialect, Dialect::Anthropic);
         assert!(view.model.is_none());
         assert!(view.messages.is_empty());
         assert_eq!(view.prior_tool_results, 0);

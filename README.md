@@ -22,7 +22,8 @@ See [`bootstrap.md`](./bootstrap.md) for the full design.
 Every route streams Server-Sent Events with `Content-Type: text/event-stream`.
 Auth headers are accepted but ignored. Unknown paths return `404`.
 
-**M1 implements the OpenAI / DeepSeek route only.**
+**The OpenAI / DeepSeek and Anthropic routes are implemented; the Codex route
+lands in M4.**
 
 ## Using it in-process (the test API)
 

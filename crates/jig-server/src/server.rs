@@ -8,9 +8,10 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use jig_core::request::parse_openai;
+use jig_core::request::{parse_anthropic, parse_openai};
 use jig_core::{
-    Dialect, RecordedRequest, RequestView, Script, render::frames_to_body, render_openai,
+    Dialect, RecordedRequest, RequestView, Script, render::frames_to_body, render_anthropic,
+    render_openai,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -69,9 +70,10 @@ async fn handle_connection(
     // to the script and to the recorded request.
     let view = dialect_for_path(&request.path).map(|dialect| match dialect {
         Dialect::OpenAi => parse_openai(&request.body),
-        // M3/M4 add Anthropic and Codex projections; until then those routes do
-        // not exist (they 404), so this arm is unreachable in M2.
-        Dialect::Anthropic | Dialect::Codex => parse_openai(&request.body),
+        Dialect::Anthropic => parse_anthropic(&request.body),
+        // M4 adds the Codex projection; until then that route does not exist (it
+        // 404s), so this arm is unreachable in M3.
+        Dialect::Codex => parse_openai(&request.body),
     });
 
     // Record before responding so a captured request reflects exactly what the
@@ -87,6 +89,14 @@ async fn handle_connection(
             let body = frames_to_body(&render_openai(&reply));
             write_sse_response(&mut stream, &body).await
         }
+        "/v1/messages" => {
+            // Anthropic messages dialect. Same script seam as OpenAI — only the
+            // renderer differs.
+            let view = view.unwrap_or_else(empty_anthropic_view);
+            let reply = script.next_reply(&view);
+            let body = frames_to_body(&render_anthropic(&reply));
+            write_sse_response(&mut stream, &body).await
+        }
         _ => write_not_found(&mut stream).await,
     }
 }
@@ -97,6 +107,7 @@ async fn handle_connection(
 fn dialect_for_path(path: &str) -> Option<Dialect> {
     match path {
         "/chat/completions" => Some(Dialect::OpenAi),
+        "/v1/messages" => Some(Dialect::Anthropic),
         _ => None,
     }
 }
@@ -104,6 +115,11 @@ fn dialect_for_path(path: &str) -> Option<Dialect> {
 /// An empty OpenAI view — the fallback when a request body fails to project.
 fn empty_openai_view() -> RequestView {
     RequestView::new(Dialect::OpenAi, None, Vec::new(), 0)
+}
+
+/// An empty Anthropic view — the fallback when a request body fails to project.
+fn empty_anthropic_view() -> RequestView {
+    RequestView::new(Dialect::Anthropic, None, Vec::new(), 0)
 }
 
 /// Append a [`RecordedRequest`] to the shared log.

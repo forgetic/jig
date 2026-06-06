@@ -6,21 +6,32 @@
 //! SSE frames as an HTTP/1.1 chunked body.
 
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use jig_core::{Script, render::frames_to_body, render_openai};
+use jig_core::request::parse_openai;
+use jig_core::{
+    Dialect, RecordedRequest, RequestView, Script, render::frames_to_body, render_openai,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
+
+/// Shared, append-only log of every request the server handled, in arrival
+/// order. Held behind `Arc<Mutex<…>>` so it is reachable from both the runtime
+/// thread (which appends) and the caller's thread (which reads via
+/// `FakeLlm::requests()`).
+pub type RequestLog = Arc<Mutex<Vec<RecordedRequest>>>;
 
 /// Run the accept loop until `shutdown` fires, then return.
 ///
 /// `listener` is already bound (the caller binds before spawning so `base_url`
 /// is valid immediately). Each accepted connection is handled inline — the
-/// single-threaded runtime keeps ordering deterministic.
+/// single-threaded runtime keeps ordering deterministic, which is also what lets
+/// `Sequence` advance and the request log append in a stable order.
 pub async fn serve(
     listener: TcpListener,
     script: Arc<Script>,
+    log: RequestLog,
     mut shutdown: oneshot::Receiver<()>,
 ) {
     loop {
@@ -31,8 +42,9 @@ pub async fn serve(
                 match accepted {
                     Ok((stream, _peer)) => {
                         let script = Arc::clone(&script);
+                        let log = Arc::clone(&log);
                         // Handle inline; connections are short-lived SSE streams.
-                        if let Err(err) = handle_connection(stream, &script).await {
+                        if let Err(err) = handle_connection(stream, &script, &log).await {
                             // A client hang-up mid-stream is normal for a test
                             // double; never let it take the server down.
                             let _ = err;
@@ -45,13 +57,33 @@ pub async fn serve(
     }
 }
 
-/// Read one request, route it, and stream the response.
-async fn handle_connection(mut stream: TcpStream, script: &Script) -> io::Result<()> {
+/// Read one request, record it, route it, and stream the response.
+async fn handle_connection(
+    mut stream: TcpStream,
+    script: &Script,
+    log: &RequestLog,
+) -> io::Result<()> {
     let request = read_request(&mut stream).await?;
+
+    // Project the body for the matched dialect (if any) so it is available both
+    // to the script and to the recorded request.
+    let view = dialect_for_path(&request.path).map(|dialect| match dialect {
+        Dialect::OpenAi => parse_openai(&request.body),
+        // M3/M4 add Anthropic and Codex projections; until then those routes do
+        // not exist (they 404), so this arm is unreachable in M2.
+        Dialect::Anthropic | Dialect::Codex => parse_openai(&request.body),
+    });
+
+    // Record before responding so a captured request reflects exactly what the
+    // client sent, regardless of how the response goes.
+    record_request(log, &request, view.clone());
 
     match request.path.as_str() {
         "/chat/completions" => {
-            let reply = script.next_reply();
+            // Every dialect route has a projected view; default to an empty
+            // OpenAI view if projection somehow yielded nothing.
+            let view = view.unwrap_or_else(empty_openai_view);
+            let reply = script.next_reply(&view);
             let body = frames_to_body(&render_openai(&reply));
             write_sse_response(&mut stream, &body).await
         }
@@ -59,15 +91,45 @@ async fn handle_connection(mut stream: TcpStream, script: &Script) -> io::Result
     }
 }
 
-/// A parsed request — only what routing needs.
-struct Request {
-    path: String,
+/// Map a request path to the wire dialect it serves, or `None` for unknown
+/// paths (which `404`). The route table is the single source of dialect truth
+/// (see bootstrap.md "Why this shape").
+fn dialect_for_path(path: &str) -> Option<Dialect> {
+    match path {
+        "/chat/completions" => Some(Dialect::OpenAi),
+        _ => None,
+    }
 }
 
-/// Read the request line + headers, then drain any body declared by
-/// `Content-Length`. We do not inspect the body in M1, but we must consume it
-/// so the socket is in a clean state (and clients that wait for us to read
-/// don't stall).
+/// An empty OpenAI view — the fallback when a request body fails to project.
+fn empty_openai_view() -> RequestView {
+    RequestView::new(Dialect::OpenAi, None, Vec::new(), 0)
+}
+
+/// Append a [`RecordedRequest`] to the shared log.
+fn record_request(log: &RequestLog, request: &Request, view: Option<RequestView>) {
+    let recorded = RecordedRequest {
+        path: request.path.clone(),
+        method: request.method.clone(),
+        body: request.body.clone(),
+        view,
+    };
+    // A poisoned lock should not crash the runtime thread; recover the guard.
+    let mut guard = log.lock().unwrap_or_else(|p| p.into_inner());
+    guard.push(recorded);
+}
+
+/// A parsed request — path, method, and the (fully read) body.
+struct Request {
+    path: String,
+    method: String,
+    body: Vec<u8>,
+}
+
+/// Read the request line + headers, then read the full body declared by
+/// `Content-Length`. The body is captured (not just drained) so it can be parsed
+/// into a `RequestView` and recorded for assertions; reading it fully also keeps
+/// the socket clean so clients that wait for us to read don't stall.
 async fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
@@ -91,13 +153,11 @@ async fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
     let mut lines = header_text.split("\r\n");
 
     let request_line = lines.next().unwrap_or("");
-    let path = request_line
-        .split_whitespace()
-        .nth(1)
-        .unwrap_or("/")
-        .to_string();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or("").to_string();
+    let raw_target = parts.next().unwrap_or("/");
     // Strip any query string for routing purposes.
-    let path = path.split('?').next().unwrap_or("/").to_string();
+    let path = raw_target.split('?').next().unwrap_or("/").to_string();
 
     let mut content_length = 0usize;
     for line in lines {
@@ -108,19 +168,23 @@ async fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         }
     }
 
-    // Drain the body so the socket is clean (we ignore it in M1).
-    let body_already_read = buf.len() - (header_end + 4);
-    let mut remaining = content_length.saturating_sub(body_already_read);
+    // The body bytes already sitting in `buf` after the header terminator.
+    let body_start = header_end + 4;
+    let mut body = buf[body_start..].to_vec();
+
+    // Read the remainder of the declared body.
+    let mut remaining = content_length.saturating_sub(body.len());
     while remaining > 0 {
         let want = remaining.min(chunk.len());
         let n = stream.read(&mut chunk[..want]).await?;
         if n == 0 {
             break;
         }
+        body.extend_from_slice(&chunk[..n]);
         remaining -= n;
     }
 
-    Ok(Request { path })
+    Ok(Request { path, method, body })
 }
 
 /// Find the byte index of the end of the header block (the `\r\n\r\n` start).

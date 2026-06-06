@@ -5,11 +5,15 @@
 //! per-dialect SSE renderers (just OpenAI for M1). Everything here is pure and
 //! synchronous so it unit-tests without a runtime.
 
+use std::sync::Mutex;
+
 use serde::{Deserialize, Serialize};
 
 pub mod render;
+pub mod request;
 
 pub use render::render_openai;
+pub use request::{Dialect, RequestView, ViewMessage};
 
 /// One thing the fake model emits within a single assistant turn.
 ///
@@ -97,22 +101,94 @@ impl Reply {
     }
 }
 
+/// A request recorded for later assertion.
+///
+/// Captured per incoming request behind shared state and surfaced via
+/// `FakeLlm::requests()` (in `jig-server`) so a synchronous test can assert what
+/// the client actually sent — path, method, dialect, the raw body, and the
+/// normalized [`RequestView`] projection (see bootstrap.md "Public API").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordedRequest {
+    /// Request path, query string stripped (e.g. `/chat/completions`).
+    pub path: String,
+    /// HTTP method (e.g. `POST`).
+    pub method: String,
+    /// The raw request body bytes, verbatim.
+    pub body: Vec<u8>,
+    /// The normalized projection of the body, if the route mapped to a dialect.
+    /// `None` for routes without a dialect projection (e.g. a `404` path).
+    pub view: Option<RequestView>,
+}
+
+impl RecordedRequest {
+    /// The raw body as a UTF-8 string (lossy). Convenience for assertions.
+    pub fn body_str(&self) -> std::borrow::Cow<'_, str> {
+        String::from_utf8_lossy(&self.body)
+    }
+}
+
 /// Decides which [`Reply`] to serve for a given request.
 ///
-/// M1 only implements [`Script::Fixed`]; `Sequence`/`Rule` land in M2. The
-/// server holds a `Script` behind shared state and calls [`Script::next_reply`]
-/// per request, so adding variants later does not change the server seam.
+/// The server holds a `Script` behind shared state and calls
+/// [`Script::next_reply`] per request, passing the parsed [`RequestView`], so
+/// adding variants does not change the server seam.
 pub enum Script {
     /// Serve the same reply for every request.
     Fixed(Reply),
+    /// Serve replies in order; once exhausted, the last reply repeats for every
+    /// further request. An empty sequence is treated as a single default
+    /// [`Reply::text`] so a misconfigured script never panics the server.
+    ///
+    /// The cursor is interior-mutable so the server can keep the script behind a
+    /// shared `Arc` and advance it per request without `&mut` access.
+    Sequence {
+        replies: Vec<Reply>,
+        cursor: Mutex<usize>,
+    },
+    /// Decide the reply from the parsed request — turn count, last message,
+    /// model, etc. The closure must be `Send + Sync` because it runs on the
+    /// dedicated runtime thread while the handle lives on the caller's thread.
+    Rule(Box<dyn Fn(&RequestView) -> Reply + Send + Sync>),
 }
 
 impl Script {
-    /// Produce the reply for the next request. M2 will thread a parsed
-    /// `RequestView` through here for `Sequence`/`Rule`.
-    pub fn next_reply(&self) -> Reply {
+    /// Build a [`Script::Sequence`] from an ordered list of replies.
+    pub fn sequence(replies: Vec<Reply>) -> Self {
+        Script::Sequence {
+            replies,
+            cursor: Mutex::new(0),
+        }
+    }
+
+    /// Build a [`Script::Rule`] from a decision closure.
+    pub fn rule(f: impl Fn(&RequestView) -> Reply + Send + Sync + 'static) -> Self {
+        Script::Rule(Box::new(f))
+    }
+
+    /// Produce the reply for the next request.
+    ///
+    /// `view` is the normalized projection of the request body. `Fixed` ignores
+    /// it; `Sequence` advances its cursor; `Rule` decides from it.
+    pub fn next_reply(&self, view: &RequestView) -> Reply {
         match self {
             Script::Fixed(reply) => reply.clone(),
+            Script::Sequence { replies, cursor } => {
+                if replies.is_empty() {
+                    return Reply::text("");
+                }
+                // Lock to read+advance the cursor. The lock is uncontended on
+                // the single-threaded runtime; recover from poisoning rather
+                // than panicking so one bad request can't wedge the server.
+                let mut idx = cursor.lock().unwrap_or_else(|p| p.into_inner());
+                let chosen = replies[*idx].clone();
+                // Advance, clamping at the last index so it repeats once
+                // exhausted (issue #4: "the last one repeats once exhausted").
+                if *idx + 1 < replies.len() {
+                    *idx += 1;
+                }
+                chosen
+            }
+            Script::Rule(f) => f(view),
         }
     }
 }
@@ -120,6 +196,17 @@ impl Script {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A minimal OpenAI view with the given prior-tool-result count, for
+    /// exercising scripts without standing up a server.
+    fn view_with_turns(prior_tool_results: usize) -> RequestView {
+        RequestView::new(
+            Dialect::OpenAi,
+            Some("fake".to_string()),
+            vec![],
+            prior_tool_results,
+        )
+    }
 
     #[test]
     fn usage_total_is_the_sum() {
@@ -140,7 +227,69 @@ mod tests {
     #[test]
     fn fixed_script_repeats_the_same_reply() {
         let script = Script::Fixed(Reply::text("same"));
-        assert_eq!(script.next_reply(), script.next_reply());
-        assert_eq!(script.next_reply(), Reply::text("same"));
+        let view = view_with_turns(0);
+        assert_eq!(script.next_reply(&view), script.next_reply(&view));
+        assert_eq!(script.next_reply(&view), Reply::text("same"));
+    }
+
+    #[test]
+    fn sequence_serves_in_order_then_repeats_the_last() {
+        let script = Script::sequence(vec![
+            Reply::text("first"),
+            Reply::text("second"),
+            Reply::text("third"),
+        ]);
+        let view = view_with_turns(0);
+        assert_eq!(script.next_reply(&view), Reply::text("first"));
+        assert_eq!(script.next_reply(&view), Reply::text("second"));
+        assert_eq!(script.next_reply(&view), Reply::text("third"));
+        // Exhausted: the last reply repeats from here on.
+        assert_eq!(script.next_reply(&view), Reply::text("third"));
+        assert_eq!(script.next_reply(&view), Reply::text("third"));
+    }
+
+    #[test]
+    fn empty_sequence_yields_an_empty_text_reply() {
+        let script = Script::sequence(vec![]);
+        let view = view_with_turns(0);
+        assert_eq!(script.next_reply(&view), Reply::text(""));
+    }
+
+    #[test]
+    fn rule_script_branches_on_the_request_view() {
+        let script = Script::rule(|view| {
+            if view.prior_tool_results == 0 {
+                Reply {
+                    turns: vec![Turn::ToolCall {
+                        id: "call_1".to_string(),
+                        name: "write".to_string(),
+                        args: serde_json::json!({ "path": "x" }),
+                    }],
+                    usage: Usage::default(),
+                    stop: StopReason::ToolCalls,
+                }
+            } else {
+                Reply::text("done")
+            }
+        });
+
+        // Turn 1: no prior tool results → a tool call.
+        let first = script.next_reply(&view_with_turns(0));
+        assert_eq!(first.stop, StopReason::ToolCalls);
+
+        // Turn 2: one prior tool result → the final text.
+        let second = script.next_reply(&view_with_turns(1));
+        assert_eq!(second, Reply::text("done"));
+    }
+
+    #[test]
+    fn recorded_request_exposes_body_as_str() {
+        let recorded = RecordedRequest {
+            path: "/chat/completions".to_string(),
+            method: "POST".to_string(),
+            body: b"{\"model\":\"fake\"}".to_vec(),
+            view: None,
+        };
+        assert_eq!(recorded.body_str(), "{\"model\":\"fake\"}");
     }
 }

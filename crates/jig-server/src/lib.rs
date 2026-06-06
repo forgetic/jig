@@ -10,13 +10,15 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-use jig_core::Script;
+use jig_core::{RecordedRequest, Script};
 use tokio::sync::oneshot;
 
 mod server;
+
+use server::RequestLog;
 
 /// A running fake LLM provider.
 ///
@@ -27,6 +29,8 @@ pub struct FakeLlm {
     addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
+    /// Shared with the runtime thread, which appends one entry per request.
+    log: RequestLog,
 }
 
 impl FakeLlm {
@@ -40,6 +44,11 @@ impl FakeLlm {
         // The runtime thread sends back the bound address (or a bind error).
         let (addr_tx, addr_rx) = std::sync::mpsc::channel::<io::Result<SocketAddr>>();
         let script = Arc::new(script);
+
+        // The request log is shared with the runtime thread (which appends) and
+        // kept on the handle (read by `requests()`).
+        let log: RequestLog = Arc::new(Mutex::new(Vec::new()));
+        let server_log = Arc::clone(&log);
 
         let thread = std::thread::Builder::new()
             .name("jig-runtime".to_string())
@@ -77,7 +86,7 @@ impl FakeLlm {
                         }
                     }
 
-                    server::serve(listener, script, shutdown_rx).await;
+                    server::serve(listener, script, server_log, shutdown_rx).await;
                 });
             })?;
 
@@ -95,12 +104,22 @@ impl FakeLlm {
             addr,
             shutdown: Some(shutdown_tx),
             thread: Some(thread),
+            log,
         })
     }
 
     /// The base URL clients should target, e.g. `"http://127.0.0.1:54321"`.
     pub fn base_url(&self) -> String {
         format!("http://{}", self.addr)
+    }
+
+    /// A snapshot of every request the server has handled, in arrival order.
+    ///
+    /// Returns a clone so the caller can assert at leisure without holding the
+    /// lock. Safe to call from the caller's thread while the runtime thread
+    /// keeps serving — the log is shared behind a `Mutex`.
+    pub fn requests(&self) -> Vec<RecordedRequest> {
+        self.log.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
 }
 

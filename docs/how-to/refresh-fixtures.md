@@ -98,6 +98,60 @@ scenario's shape (e.g. "create file foo.txt with bar" for a tool-call). The
 recorder forwards one exchange to the real backend, captures it, and exits.
 A complete chat-completions capture ends in the `[DONE]` SSE terminator.
 
+### The `parallel-tool-calls` scenario (#30)
+
+`parallel-tool-calls` captures **two** tool calls emitted in a single assistant
+turn — the renderers and parsers already handle multiple indexed tool calls, and
+this scenario pins that behaviour against real provider traffic. The shape is
+elicited by the prompt; there is no `tool_choice` knob on the subject SDK, so the
+prompt must name two distinct inputs and ask for both calls in one turn.
+
+- **openai / DeepSeek** — drive the recorder with a two-city request under
+  `tool_choice: required`. DeepSeek reliably returns two `get_weather` calls
+  (`index: 0` Paris, `index: 1` London) ending in `finish_reason: tool_calls`:
+
+  ```sh
+  # Start the recorder (prints a loopback base_url), then curl it:
+  jig record --client openai-sdk --scenario parallel-tool-calls \
+    --upstream-host api.deepseek.com --client-version curl-deepseek \
+    --captured "$(date -u +%F)" --recorder-sha "$(git rev-parse --short HEAD)"
+  curl -s "$BASE/chat/completions" -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+    -H 'Content-Type: application/json' -d '{
+      "model":"deepseek-chat","stream":true,"stream_options":{"include_usage":true},
+      "tools":[{"type":"function","function":{"name":"get_weather",
+        "description":"Get current weather for a city",
+        "parameters":{"type":"object","properties":{"city":{"type":"string"}},
+        "required":["city"]}}}],
+      "tool_choice":"required",
+      "messages":[{"role":"user","content":"Get the current weather for both Paris and London. Call the get_weather tool once for each city, in the same turn."}]}'
+  ```
+
+- **anthropic / Claude Code** — ask for two independent shell commands in one
+  turn; Claude Code batches them into two `tool_use` blocks. Drive a tool whose
+  args are self-contained values (`Bash` `command`), not absolute paths, so the
+  committed template stays portable:
+
+  ```sh
+  cargo run -p jig-record --example capture -- \
+    --scenario parallel-tool-calls --capture-index 0 --match-body JIGPAR91 \
+    --model claude-sonnet-4-5 --captured "$(date -u +%F)" \
+    --recorder-sha "$(git rev-parse --short HEAD)" \
+    --claude-home /tmp/jig-claude-home --allowed-tools Bash \
+    -- "JIGPAR91 Run two shell commands in parallel using two tool calls in the same turn: first 'echo hello' and second 'echo world'. Issue both Bash tool calls together in one turn."
+  ```
+
+- **codex** — the authoritative cell is a **reviewed, documented skip**: the only
+  official driver is the Codex CLI, which is not available in every capture
+  environment. `CODEX_SCENARIOS` in `crates/xtask/src/matrix.rs` deliberately
+  omits `parallel-tool-calls`; once a Codex capture can be produced, add the slug
+  there and capture as for the other codex scenarios.
+
+The pi-SDK **subject** side records `parallel-tool-calls` with the same two-city
+prompt (`Scenario::ParallelToolCalls` in `subject.rs`) for `openai` and `codex`;
+the `anthropic` subject cell is reviewed-missing (subscription-OAuth blocker, same
+as the other anthropic subject cells). After capturing, run `xtask derive` and
+the offline T1–T4 conformance as usual.
+
 ### Anthropic via the `claude` CLI
 
 Claude Code is an *agentic* driver: a single `claude -p` run pre-opens a pool of

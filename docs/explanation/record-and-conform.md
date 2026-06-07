@@ -225,11 +225,22 @@ wall of two blobs.
 
 Per dialect, the minimal matrix is: (a) single text turn, (b) single tool-call
 turn, (c) tool-result → final turn, (d) thinking + text (Anthropic / Codex), and
-(e) parallel tool calls. `xtask record` holds this matrix declaratively (see
-`crates/xtask/src/matrix.rs`) so adding a dialect, scenario, or client is a
-one-line edit and needs no orchestrator change. Selection flags
-(`--dialect` / `--scenario` / `--client`) refresh a single cell without
-re-recording everything.
+(e) parallel tool calls — **two** tool calls emitted in one assistant turn.
+`xtask record` holds this matrix declaratively (see `crates/xtask/src/matrix.rs`)
+so adding a dialect, scenario, or client is a one-line edit and needs no
+orchestrator change. Selection flags (`--dialect` / `--scenario` / `--client`)
+refresh a single cell without re-recording everything.
+
+Scenario (e), `parallel-tool-calls` (issue #30), is captured authoritatively for
+the **openai** dialect (DeepSeek emits two `get_weather` calls for two cities
+under `tool_choice: required`) and the **anthropic** dialect (Claude Code batches
+two independent `Bash` calls into two `tool_use` blocks in one turn). The
+**codex** authoritative cell is a reviewed, documented skip: the only official
+driver is the Codex CLI, and it is not available in every capture environment, so
+`CODEX_SCENARIOS` deliberately omits `parallel-tool-calls` until a Codex capture
+can be produced. The pi-SDK **subject** side covers `openai` and `codex`
+(captured) and lists `anthropic` as reviewed-missing, the same subscription-OAuth
+blocker as the other anthropic subject cells.
 
 ## Staleness: a nudge, not a gate
 

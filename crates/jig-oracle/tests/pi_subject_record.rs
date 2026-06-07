@@ -249,8 +249,12 @@ fn record_one_subject_fixture() {
         Ok("single-text") => Scenario::SingleText,
         Ok("tool-call") => Scenario::ToolCall,
         Ok("tool-result-final") => Scenario::ToolResultFinal,
+        Ok("parallel-tool-calls") => Scenario::ParallelToolCalls,
         other => {
-            panic!("set JIG_SCENARIO to single-text|tool-call|tool-result-final (got {other:?})")
+            panic!(
+                "set JIG_SCENARIO to \
+                 single-text|tool-call|tool-result-final|parallel-tool-calls (got {other:?})"
+            )
         }
     };
     let status = record_cell(dialect, scenario).expect("record cell");

@@ -1,0 +1,43 @@
+{
+  "method": "POST",
+  "path": "/backend-api/codex/responses",
+  "headers": [
+    {
+      "name": "Host",
+      "value": "127.0.0.1:40209"
+    },
+    {
+      "name": "User-Agent",
+      "value": "pi_agent_rust"
+    },
+    {
+      "name": "Content-Length",
+      "value": "692"
+    },
+    {
+      "name": "Accept",
+      "value": "text/event-stream, application/x-ndjson, application/ndjson"
+    },
+    {
+      "name": "Authorization",
+      "value": "REDACTED"
+    },
+    {
+      "name": "chatgpt-account-id",
+      "value": "REDACTED"
+    },
+    {
+      "name": "OpenAI-Beta",
+      "value": "responses=experimental"
+    },
+    {
+      "name": "originator",
+      "value": "pi"
+    },
+    {
+      "name": "Content-Type",
+      "value": "application/json"
+    }
+  ],
+  "body": "{\"include\":[\"reasoning.encrypted_content\"],\"input\":[{\"content\":[{\"text\":\"Call the get_weather tool once for Paris and once for London, both in the same turn (two parallel tool calls). Do not reply with text.\",\"type\":\"input_text\"}],\"role\":\"user\"}],\"instructions\":\"You are a terse test assistant. Follow the instruction exactly.\",\"model\":\"gpt-5.5\",\"parallel_tool_calls\":true,\"reasoning\":{\"effort\":\"high\",\"summary\":\"auto\"},\"store\":false,\"stream\":true,\"text\":{\"verbosity\":\"medium\"},\"tool_choice\":\"auto\",\"tools\":[{\"description\":\"Get the current weather for a city\",\"name\":\"get_weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"type\":\"function\"}]}"
+}

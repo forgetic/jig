@@ -98,6 +98,34 @@ scenario's shape (e.g. "create file foo.txt with bar" for a tool-call). The
 recorder forwards one exchange to the real backend, captures it, and exits.
 A complete chat-completions capture ends in the `[DONE]` SSE terminator.
 
+### Anthropic via the `claude` CLI
+
+Claude Code is an *agentic* driver: a single `claude -p` run pre-opens a pool of
+connections and fires several `POST /v1/messages` (the tool-call turn, the
+tool-result→final turn, plus internal housekeeping like session-title
+generation). The `capture` example handles this — it accepts connections
+**concurrently**, records every routable exchange, and commits the one selected
+by `--match-body` (a unique marker in the prompt) and `--capture-index`:
+
+```sh
+cargo run -p jig-record --example capture -- \
+  --scenario tool-result-final --capture-index 1 --match-body JIGTOOL42 \
+  --model claude-sonnet-4-5 --captured "$(date -u +%F)" \
+  --recorder-sha "$(git rev-parse --short HEAD)" \
+  --claude-home /tmp/jig-claude-home --allowed-tools Write \
+  -- "JIGTOOL42 Create a file named greeting.txt containing exactly: bar"
+```
+
+`--claude-home` points at an **isolated** `HOME` holding only
+`~/.claude/.credentials.json` (the subscription OAuth), so the captured request
+is the faithful Claude Code wire shape — the mandatory "You are Claude Code …"
+system block and the `anthropic-*` / `X-Stainless-*` identity headers — without
+this machine's local skills, MCP servers, or project `CLAUDE.md` bloating the
+body. The example runs `claude` in an empty scratch dir, feeds the prompt on
+stdin, and redacts the bearer, the `X-Claude-Code-Session-Id`, and the
+`metadata.user_id` before anything is written. An Anthropic capture ends in the
+`message_stop` SSE event.
+
 ## Deriving the templates
 
 After recording (or any time you change the masking policy), reduce the captured
@@ -111,11 +139,16 @@ cargo run -p xtask -- derive
 For every `<dialect>/<scenario>` with an `authoritative` recording it (re)writes
 `response.template.json`, `request.template.json`, and `drive-shape.json` at the
 scenario root, masking volatile values per the policy in
-`crates/jig-core/src/conform/`. Re-running it over unchanged recordings produces
+`crates/jig-core/src/conform/`. The dialect is chosen from the recording's
+request path (`/chat/completions` → OpenAI, `/v1/messages` → Anthropic,
+`/backend-api/codex/responses` → Codex), so each capture is reduced with the
+right parser, renderer, and stream terminator (`[DONE]` for OpenAI,
+`message_stop` for Anthropic). Re-running it over unchanged recordings produces
 byte-identical files, so a clean `git diff` after `derive` means the captures and
-templates are in sync. The offline T1/T2 conformance tests
-(`cargo test -p jig-core --test openai_conformance`) assert jig reproduces these
-templates exactly. See the
+templates are in sync. The offline T1/T2 conformance tests — one per dialect,
+e.g. `cargo test -p jig-core --test openai_conformance` and
+`cargo test -p jig-core --test anthropic_conformance` — assert jig reproduces
+these templates exactly. See the
 [record-and-conform design](../explanation/record-and-conform.md#deriving-templates-the-masking-policy)
 for what is masked and why.
 
@@ -142,11 +175,16 @@ Nothing secret is ever written to `fixtures/`. The recorder redacts at capture
 time, *before* anything touches disk:
 
 - `authorization`, `proxy-authorization`, `x-api-key`, `api-key`, `cookie`,
-  `set-cookie`, and the OAuth account headers (`openai-organization`,
-  `chatgpt-account-id`, the `x-oauth-*` / `x-stainless-account*` families) have
-  their **values** replaced with the stable placeholder `REDACTED`.
-- Header **names** are preserved, so a fixture still records *which* headers the
-  client sent and what scheme was used — only the credential is gone.
+  `set-cookie`, the OAuth account headers (`openai-organization`,
+  `chatgpt-account-id`, the `x-oauth-*` / `x-stainless-account*` families), and
+  Claude Code's per-session `x-claude-code-session-id` have their **values**
+  replaced with the stable placeholder `REDACTED`.
+- Identity carried in the request **body** is redacted too: `metadata.user_id`
+  (and any nested `account_uuid` / `device_id` / `session_id`) collapse to
+  `REDACTED`, so a body-carried account id never reaches a fixture.
+- Header and JSON **names** are preserved, so a fixture still records *which*
+  headers and keys the client sent and what scheme was used — only the
+  credential/identity value is gone.
 - The credential is still forwarded **on the wire** to the real upstream;
   redaction applies only to the captured copy.
 

@@ -16,3 +16,7 @@ webpki-roots = "0.26"
 
 [dev-dependencies]
 tempfile = "3"
+# The manual `capture` example (online; not part of `cargo test`) accepts client
+# connections concurrently, so it needs the multi-threaded tokio runtime on top
+# of the library's lean feature set.
+tokio = { workspace = true, features = ["rt-multi-thread"] }

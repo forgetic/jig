@@ -36,11 +36,65 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::parse::{OpenAiParseError, parse_openai_sse};
-use crate::render::{frames_to_body, render_openai};
+use crate::parse::{parse_anthropic_sse, parse_codex_sse, parse_openai_sse};
+use crate::render::{frames_to_body, render_anthropic, render_codex, render_openai};
+use crate::request::Dialect;
 use crate::{Reply, Turn};
 
 use super::mask::{HeaderClass, MASK, classify_header, mask_body_value, mask_request_body};
+
+/// Why deriving or stripping an SSE response template failed: the captured (or
+/// rendered) stream did not parse under its dialect. Dialect-agnostic so the
+/// conformance harness and `xtask derive` handle every dialect uniformly; the
+/// inner message is the per-dialect parser's own error rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConformParseError(pub String);
+
+impl std::fmt::Display for ConformParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ConformParseError {}
+
+/// Parse an SSE byte stream into the canonical [`Reply`] using the parser for
+/// `dialect`. The single place dialect → parser is chosen for conformance.
+fn parse_for(dialect: Dialect, bytes: &[u8]) -> Result<Reply, ConformParseError> {
+    match dialect {
+        Dialect::OpenAi => parse_openai_sse(bytes).map_err(|e| ConformParseError(e.to_string())),
+        Dialect::Anthropic => {
+            parse_anthropic_sse(bytes).map_err(|e| ConformParseError(e.to_string()))
+        }
+        Dialect::Codex => parse_codex_sse(bytes).map_err(|e| ConformParseError(e.to_string())),
+    }
+}
+
+/// Render a canonical [`Reply`] to its dialect SSE body — the inverse of
+/// [`parse_for`], used by T1 to reduce jig's own output the same way the template
+/// was derived.
+fn render_for(dialect: Dialect, reply: &Reply) -> String {
+    match dialect {
+        Dialect::OpenAi => frames_to_body(&render_openai(reply)),
+        Dialect::Anthropic => frames_to_body(&render_anthropic(reply)),
+        Dialect::Codex => frames_to_body(&render_codex(reply)),
+    }
+}
+
+/// The SSE stream-terminator sentinel each dialect ends on, recorded in the
+/// template so it asserts the framing contract, not just the body shape.
+///
+/// OpenAI/DeepSeek chat-completions ends on the `data: [DONE]` sentinel; the
+/// Anthropic messages stream ends on the `message_stop` event; the Codex
+/// responses stream has no distinct terminator sentinel (it ends on
+/// `response.completed`), so its terminator is that event name.
+pub fn terminator_for(dialect: Dialect) -> &'static str {
+    match dialect {
+        Dialect::OpenAi => "[DONE]",
+        Dialect::Anthropic => "message_stop",
+        Dialect::Codex => "response.completed",
+    }
+}
 
 /// A `{ name, value }` header in a template, after the masking policy is applied.
 /// Only invariant and masked headers reach a template (ignored ones are dropped);
@@ -157,25 +211,30 @@ fn stop_slug(reply: &Reply) -> &'static str {
 }
 
 /// Derive the [`DriveShape`] from an authoritative `response.sse` capture: parse
-/// the real stream into the canonical [`Reply`]. This is what jig is driven with
-/// in T1; masking is applied to jig's *output*, never to the drive shape.
-pub fn derive_drive_shape(response_sse: &[u8]) -> Result<DriveShape, OpenAiParseError> {
+/// the real stream into the canonical [`Reply`] under `dialect`. This is what jig
+/// is driven with in T1; masking is applied to jig's *output*, never to the drive
+/// shape.
+pub fn derive_drive_shape(
+    dialect: Dialect,
+    response_sse: &[u8],
+) -> Result<DriveShape, ConformParseError> {
     Ok(DriveShape {
-        reply: parse_openai_sse(response_sse)?,
+        reply: parse_for(dialect, response_sse)?,
     })
 }
 
 /// Derive the [`ResponseTemplate`] from an authoritative capture: parse the real
-/// `response.sse` into the canonical [`Reply`], mask it, assert the `[DONE]`
-/// terminator, and run the header policy over `response.headers`.
+/// `response.sse` into the canonical [`Reply`] under `dialect`, mask it, record
+/// the dialect's terminator, and run the header policy over `response.headers`.
 pub fn derive_response_template(
+    dialect: Dialect,
     response_sse: &[u8],
     response_headers: &[(String, String)],
-) -> Result<ResponseTemplate, OpenAiParseError> {
-    let reply = parse_openai_sse(response_sse)?;
+) -> Result<ResponseTemplate, ConformParseError> {
+    let reply = parse_for(dialect, response_sse)?;
     Ok(ResponseTemplate {
         headers: template_headers(response_headers),
-        terminator: "[DONE]".to_string(),
+        terminator: terminator_for(dialect).to_string(),
         reply: mask_reply(&reply),
     })
 }
@@ -192,14 +251,15 @@ pub fn derive_response_template(
 /// the body/framing skeleton, and the header contract is asserted separately by
 /// derivation being deterministic (re-derivation equals the committed template).
 pub fn strip_rendered_response(
+    dialect: Dialect,
     drive: &DriveShape,
     expected_headers: &[TemplateHeader],
-) -> Result<ResponseTemplate, OpenAiParseError> {
-    let body = frames_to_body(&render_openai(&drive.reply));
-    let reply = parse_openai_sse(body.as_bytes())?;
+) -> Result<ResponseTemplate, ConformParseError> {
+    let body = render_for(dialect, &drive.reply);
+    let reply = parse_for(dialect, body.as_bytes())?;
     Ok(ResponseTemplate {
         headers: expected_headers.to_vec(),
-        terminator: "[DONE]".to_string(),
+        terminator: terminator_for(dialect).to_string(),
         reply: mask_reply(&reply),
     })
 }
@@ -316,9 +376,45 @@ mod tests {
         let rendered = frames_to_body(&render_openai(&reply));
         let resp_headers = headers(&[("Content-Type", "text/event-stream")]);
 
-        let template = derive_response_template(rendered.as_bytes(), &resp_headers).unwrap();
-        let drive = derive_drive_shape(rendered.as_bytes()).unwrap();
-        let stripped = strip_rendered_response(&drive, &template.headers).unwrap();
+        let template =
+            derive_response_template(Dialect::OpenAi, rendered.as_bytes(), &resp_headers).unwrap();
+        let drive = derive_drive_shape(Dialect::OpenAi, rendered.as_bytes()).unwrap();
+        let stripped = strip_rendered_response(Dialect::OpenAi, &drive, &template.headers).unwrap();
+
+        assert_eq!(stripped, template);
+    }
+
+    #[test]
+    fn t1_property_holds_for_the_anthropic_dialect() {
+        // The same T1 invariant, driven through the Anthropic parser/renderer and
+        // its `message_stop` terminator: a thinking turn carries no canonical
+        // surface, so it round-trips to the same masked skeleton.
+        let reply = Reply {
+            turns: vec![
+                Turn::Thinking("scratch".to_string()),
+                Turn::Text("the answer".to_string()),
+                Turn::ToolCall {
+                    id: "toolu_1".to_string(),
+                    name: "write".to_string(),
+                    args: serde_json::json!({ "path": "out.txt" }),
+                },
+            ],
+            usage: Usage {
+                prompt_tokens: 11,
+                completion_tokens: 3,
+            },
+            stop: StopReason::ToolCalls,
+        };
+        let rendered = render_for(Dialect::Anthropic, &reply);
+        let resp_headers = headers(&[("Content-Type", "text/event-stream")]);
+
+        let template =
+            derive_response_template(Dialect::Anthropic, rendered.as_bytes(), &resp_headers)
+                .unwrap();
+        assert_eq!(template.terminator, "message_stop");
+        let drive = derive_drive_shape(Dialect::Anthropic, rendered.as_bytes()).unwrap();
+        let stripped =
+            strip_rendered_response(Dialect::Anthropic, &drive, &template.headers).unwrap();
 
         assert_eq!(stripped, template);
     }
@@ -351,8 +447,8 @@ mod tests {
         };
         let rendered = frames_to_body(&render_openai(&reply));
         let h = headers(&[("Content-Type", "text/event-stream")]);
-        let a = derive_response_template(rendered.as_bytes(), &h).unwrap();
-        let b = derive_response_template(rendered.as_bytes(), &h).unwrap();
+        let a = derive_response_template(Dialect::OpenAi, rendered.as_bytes(), &h).unwrap();
+        let b = derive_response_template(Dialect::OpenAi, rendered.as_bytes(), &h).unwrap();
         assert_eq!(a, b);
     }
 }

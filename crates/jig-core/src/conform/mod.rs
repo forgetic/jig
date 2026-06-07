@@ -34,7 +34,7 @@ pub mod template;
 pub use diff::structural_diff;
 pub use mask::{HeaderClass, MASK, classify_header, mask_body_value, mask_request_body};
 pub use template::{
-    DriveShape, RequestTemplate, ResponseTemplate, TemplateHeader, derive_drive_shape,
-    derive_request_template, derive_response_template, mask_reply, strip_rendered_response,
-    strip_request, template_headers,
+    ConformParseError, DriveShape, RequestTemplate, ResponseTemplate, TemplateHeader,
+    derive_drive_shape, derive_request_template, derive_response_template, mask_reply,
+    strip_rendered_response, strip_request, template_headers, terminator_for,
 };

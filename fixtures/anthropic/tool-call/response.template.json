@@ -1,0 +1,51 @@
+{
+  "headers": [
+    {
+      "name": "date",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "content-type",
+      "value": "text/event-stream; charset=utf-8"
+    },
+    {
+      "name": "server",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "set-cookie",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "cf-cache-status",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "cf-ray",
+      "value": "<MASKED>"
+    }
+  ],
+  "terminator": "message_stop",
+  "reply": {
+    "stop": "ToolCalls",
+    "turns": [
+      {
+        "Text": "<MASKED>"
+      },
+      {
+        "ToolCall": {
+          "args": {
+            "content": "bar",
+            "file_path": "/tmp/claude-1000/jig-capture-tool-call/greeting.txt"
+          },
+          "id": "<MASKED>",
+          "name": "Write"
+        }
+      }
+    ],
+    "usage": {
+      "completion_tokens": "<MASKED>",
+      "prompt_tokens": "<MASKED>"
+    }
+  }
+}

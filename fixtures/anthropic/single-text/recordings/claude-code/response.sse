@@ -1,0 +1,61 @@
+1f7
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01XNScoiC8JCmsMUssD8B8iW","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":35922,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":3,"service_tier":"standard","inference_geo":"not_available"}}         }
+
+
+97
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}           }
+
+
+24
+event: ping
+data: {"type": "ping"}
+
+
+a3
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user is","estimated_tokens":null}     }
+
+
+124
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" asking me to reply with exactly the word \"hello\" and nothing else. They've also explicitly instructed me not to use any tools.\n\nThis is","estimated_tokens":null}     }
+
+
+eb
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" a straightforward request - I should just output the word \"hello\" by itself.","estimated_tokens":null}         }
+
+
+320
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"ErEDCm4IDhgCKkDUzfo3+5UiVMtfvN8bUnoZiKX09WnJcSQrh+CkV2aENwYXTX5kLUkMOALrJcIzcMZE2NDa47DxlNqpe8Lpx2Z5MhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMYCVsCleR3A8nBJCQGgwmDnKE2jJ5spVmqjMiMJcPSYsA/gEDRVrJw6TVjKqxpTTVN5YXR4moSa1lo52TpTdX2tNn+/MOxx8xsG/0QCrwATu3xREKjHNnQ8p7twGLeeY+zF58O6Vq6dHGQS9U2q7SgMEu+X06SDjyyUV03zucLbJSXs5ECOh+77StZ/CzPlOgTRfWbNQ9k2n7XHmdi0HcHuVXXt2hrS5kKey/g6VemdJWTrs/q8USusW7Gri5nfj/7GI0NolVRoicMXxy+KLMt4jcvB+/CbKmzmoayu+JOIXg2WaUqGRDpFCmnB+GAVisM3XTOpstWeOYf1AOyXFx7aagZ0wWAAFixlRMupYUrGaRJrVulBeyPTpx5OS/ooqQI97wXONeGsf7DQWUUEwwZer1pXQ4mP41Z0ADFSRNdhgB"}         }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0         }
+
+
+100
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}         }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"hello"}          }
+
+
+58
+event: content_block_stop
+data: {"type":"content_block_stop","index":1               }
+
+
+268
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":35922,"output_tokens":63,"output_tokens_details":{"thinking_tokens":56},"iterations":[{"input_tokens":10,"output_tokens":63,"cache_read_input_tokens":35922,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message"}]},"context_management":{"applied_edits":[]}               }
+
+event: message_stop
+data: {"type":"message_stop"       }
+
+
+0
+

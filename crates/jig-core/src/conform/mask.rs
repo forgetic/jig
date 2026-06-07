@@ -96,8 +96,11 @@ pub fn mask_request_body(value: &Value) -> Value {
 }
 
 /// Request-side keys that are volatile in addition to [`VOLATILE_BODY_KEYS`]:
-/// the tool-call correlation ids a multi-turn request carries.
-const VOLATILE_REQUEST_KEYS: &[&str] = &["tool_call_id"];
+/// the tool-call correlation ids a multi-turn request carries. Both wire spellings
+/// appear — OpenAI echoes a tool result with `tool_call_id`, Anthropic with
+/// `tool_use_id` — and the model-assigned call `id` on a prior tool call is
+/// already covered by [`VOLATILE_BODY_KEYS`] (`id`).
+const VOLATILE_REQUEST_KEYS: &[&str] = &["tool_call_id", "tool_use_id"];
 
 fn mask_request_inner(value: &Value) -> Value {
     match value {
@@ -249,6 +252,34 @@ mod tests {
             "get_weather"
         );
         assert_eq!(masked["messages"][1]["role"], "tool");
+    }
+
+    #[test]
+    fn request_masking_masks_anthropic_tool_correlation_ids() {
+        // Anthropic carries the call id as `id` on a `tool_use` block and echoes
+        // it back as `tool_use_id` on the follow-up `tool_result` — both volatile.
+        let req = json!({
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "toolu_abc", "name": "Write",
+                      "input": { "path": "out.txt" } }
+                ]},
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "toolu_abc", "content": "ok" }
+                ]}
+            ]
+        });
+        let masked = mask_request_body(&req);
+        assert_eq!(masked["model"], "claude-sonnet-4-5");
+        assert_eq!(masked["messages"][0]["content"][0]["id"], MASK);
+        assert_eq!(masked["messages"][1]["content"][0]["tool_use_id"], MASK);
+        // Tool name and the input *structure* are invariant — kept.
+        assert_eq!(masked["messages"][0]["content"][0]["name"], "Write");
+        assert_eq!(
+            masked["messages"][0]["content"][0]["input"]["path"],
+            "out.txt"
+        );
     }
 
     #[test]

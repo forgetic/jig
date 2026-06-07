@@ -51,6 +51,13 @@ const SECRET_HEADERS: &[&str] = &[
     "openai-project",
     "chatgpt-account-id",
     "x-account-id",
+    // Claude Code stamps every `/v1/messages` request with a per-session UUID.
+    // It is account/session *identity*, not a credential, but issue #15's
+    // acceptance is explicit — "no secrets under `fixtures/`, only `REDACTED`
+    // for auth/identity" and calls out session UUIDs as volatile identity — so
+    // the captured value is redacted at the recording layer too (the header
+    // *name* survives, so the fixture still records that the client sends it).
+    "x-claude-code-session-id",
 ];
 
 /// Header-name prefixes that mark a family of account/session headers, any of
@@ -89,6 +96,56 @@ pub fn redact_headers(headers: &[Header]) -> Vec<Header> {
         .iter()
         .map(|h| Header::new(h.name.clone(), redact_value(&h.name, &h.value)))
         .collect()
+}
+
+/// JSON **body** keys whose value carries account/session identity and must be
+/// redacted before a request is written to a fixture, wherever they appear.
+///
+/// Header redaction is not enough: some clients carry identity in the request
+/// *body* too. Claude Code, for example, sends a `metadata.user_id` whose value
+/// is a JSON blob of `device_id` / `account_uuid` / `session_id` — real account
+/// identifiers, not a credential, but identity the committed fixture must not
+/// leak (issue #15 acceptance: "no secrets under `fixtures/` — only `REDACTED`
+/// for auth/identity"). Matched exactly (case-sensitive); wire JSON keys are
+/// stable. The value is replaced wholesale with [`REDACTED`] regardless of type,
+/// so the *shape* (the key is present) is still recorded without the identity.
+const SECRET_BODY_KEYS: &[&str] = &["user_id", "account_uuid", "device_id", "session_id"];
+
+/// Recursively redact every [`SECRET_BODY_KEYS`] value in a JSON request body to
+/// [`REDACTED`], preserving all other structure (keys, nesting, array order).
+///
+/// Pure transform over `serde_json::Value`; the proxy applies it to the parsed
+/// request body before the fixture is written. A non-identity body is returned
+/// structurally unchanged.
+pub fn redact_body_value(value: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| {
+                    if SECRET_BODY_KEYS.contains(&k.as_str()) {
+                        (k.clone(), Value::String(REDACTED.to_string()))
+                    } else {
+                        (k.clone(), redact_body_value(v))
+                    }
+                })
+                .collect(),
+        ),
+        Value::Array(items) => Value::Array(items.iter().map(redact_body_value).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Redact identity from a request body **string**. If the body parses as JSON,
+/// [`redact_body_value`] is applied and the result re-serialized compactly;
+/// otherwise the body is returned unchanged (a non-JSON body carries no JSON
+/// identity keys to redact). Re-serialization is compact to match how clients
+/// send request bodies (no incidental whitespace churn in the fixture).
+pub fn redact_body_str(body: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(value) => redact_body_value(&value).to_string(),
+        Err(_) => body.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -176,5 +233,40 @@ mod tests {
                 h.value
             );
         }
+    }
+
+    #[test]
+    fn claude_code_session_id_header_is_redacted() {
+        // Claude Code's per-session UUID is account/session identity (issue #15).
+        assert!(is_secret_header("X-Claude-Code-Session-Id"));
+        assert!(is_secret_header("x-claude-code-session-id"));
+        assert_eq!(
+            redact_value(
+                "X-Claude-Code-Session-Id",
+                "82970728-3980-46ae-8017-cd44af0058cb"
+            ),
+            REDACTED
+        );
+    }
+
+    #[test]
+    fn body_identity_keys_are_redacted_in_place() {
+        // Claude Code carries `metadata.user_id` (and, on other paths, nested
+        // account/session ids) in the request *body*; the value is redacted while
+        // the key — the shape — survives.
+        let body = r#"{"model":"claude-sonnet-4-5","metadata":{"user_id":"acct-uuid-1234"},"messages":[]}"#;
+        let redacted = redact_body_str(body);
+        let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+        assert_eq!(v["metadata"]["user_id"], REDACTED);
+        // Non-identity structure is preserved.
+        assert_eq!(v["model"], "claude-sonnet-4-5");
+        assert!(v["messages"].is_array());
+        // The raw id is gone.
+        assert!(!redacted.contains("acct-uuid-1234"));
+    }
+
+    #[test]
+    fn non_json_body_passes_through_unchanged() {
+        assert_eq!(redact_body_str("not json at all"), "not json at all");
     }
 }

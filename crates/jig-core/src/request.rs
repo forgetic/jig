@@ -24,6 +24,24 @@ pub enum Dialect {
     Codex,
 }
 
+impl Dialect {
+    /// The wire dialect a request path routes to, mirroring the recorder's route
+    /// table. `None` for a path that is not a known dialect endpoint. Query
+    /// strings must be stripped by the caller (routing keys on the path only).
+    ///
+    /// This is the canonical path → dialect mapping in the core, so offline
+    /// consumers (template derivation in `xtask`) pick the right parser/renderer
+    /// without depending on the recorder crate.
+    pub fn for_path(path: &str) -> Option<Dialect> {
+        match path {
+            "/chat/completions" => Some(Dialect::OpenAi),
+            "/v1/messages" => Some(Dialect::Anthropic),
+            "/backend-api/codex/responses" => Some(Dialect::Codex),
+            _ => None,
+        }
+    }
+}
+
 /// One message in the normalized view: a role and its flattened text content.
 ///
 /// Content is reduced to a single string regardless of whether the dialect sent
@@ -596,5 +614,21 @@ mod tests {
         assert!(view.messages.is_empty());
         assert_eq!(view.prior_tool_results, 0);
         assert!(view.last_message().is_none());
+    }
+
+    #[test]
+    fn dialect_for_path_maps_each_endpoint() {
+        assert_eq!(
+            Dialect::for_path("/chat/completions"),
+            Some(Dialect::OpenAi)
+        );
+        assert_eq!(Dialect::for_path("/v1/messages"), Some(Dialect::Anthropic));
+        assert_eq!(
+            Dialect::for_path("/backend-api/codex/responses"),
+            Some(Dialect::Codex)
+        );
+        // An unknown path does not route.
+        assert_eq!(Dialect::for_path("/"), None);
+        assert_eq!(Dialect::for_path("/v1/messages/count_tokens"), None);
     }
 }

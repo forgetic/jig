@@ -1,0 +1,14 @@
+{
+  "reply": {
+    "turns": [
+      {
+        "Text": "Created greeting.txt with the text \"bar\"."
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 5,
+      "completion_tokens": 13
+    },
+    "stop": "Stop"
+  }
+}

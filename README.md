@@ -6,8 +6,6 @@ token spend. Behaviour is **scripted**, not generated — it only needs to be
 faithful at the *transport and framing* level so a client SDK parses its replies
 and drives its agent loop.
 
-See [`bootstrap.md`](./bootstrap.md) for the full design.
-
 ## Routes
 
 `jig` serves one route per wire dialect; the only integration seam is the

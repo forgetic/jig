@@ -2,11 +2,16 @@
 //!
 //! Three subcommands, all thin wiring over the pure logic in the library:
 //!
-//! - **record** — expand the scenario matrix for the given selection and drive
-//!   `jig record` once per (dialect, scenario, client). This leg is **manual and
-//!   online**: each invocation proxies a real client ↔ real backend exchange, so
-//!   it needs a live API key on the client side and network. `cargo test` never
-//!   runs it; the matrix expansion it relies on is unit-tested in the library.
+//! - **record** — expand the scenario matrix for the given selection and, for
+//!   each (dialect, scenario, client) cell, **dispatch to the right driver**: the
+//!   official-client capture harness (OpenAI/DeepSeek, Claude Code, Codex) or the
+//!   pi-SDK subject harness, instead of only spawning a bare `jig record` the
+//!   operator must drive by hand (#19). After successful authoritative captures
+//!   it re-derives the templates automatically (unless `--no-derive`), so a
+//!   refresh is genuinely one command. This leg is **manual and online**: each
+//!   invocation proxies a real client ↔ real backend exchange, so it needs a live
+//!   credential and network. `cargo test` never runs it; the matrix expansion and
+//!   the driver dispatch it relies on are unit-tested in the library.
 //! - **derive** — reduce committed authoritative recordings to the masked
 //!   `*.template.json` + `drive-shape.json` conformance artifacts (P2, #14). This
 //!   leg is **offline and deterministic**: re-deriving over the same recordings
@@ -29,7 +34,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use xtask::derive::derive_tree;
-use xtask::matrix::{RecordInvocation, Selection, known_dialects, plan};
+use xtask::driver::{DriverCommand, driver_for};
+use xtask::matrix::{Role, Selection, known_dialects, plan};
 use xtask::staleness::{DEFAULT_MAX_AGE_DAYS, FixtureAge, evaluate};
 use xtask::{Provenance, collect_fixture_metas, recorder_sha, resolve_today};
 
@@ -69,13 +75,16 @@ fn print_usage() {
          Usage:\n\
          \x20 xtask record [--all] [--dialect D] [--scenario S] [--client C] \\\n\
          \x20              [--fixtures-root DIR] [--captured YYYY-MM-DD] \\\n\
-         \x20              [--recorder-sha SHA] [--upstream-host HOST] [--dry-run]\n\
+         \x20              [--recorder-sha SHA] [--upstream-host HOST] \\\n\
+         \x20              [--no-derive] [--dry-run]\n\
          \x20 xtask derive [--fixtures-root DIR]\n\
          \x20 xtask staleness [--fixtures-root DIR] [--max-age-days N] \\\n\
          \x20                 [--today YYYY-MM-DD] [--fail-on-stale]\n\
          \n\
-         `record` is manual and online (needs a live API key + network);\n\
-         `derive` and `staleness` are offline. See docs/how-to/refresh-fixtures.md."
+         `record` is the one-shot refresh: it drives each cell's client/harness\n\
+         end to end and re-derives templates (unless --no-derive). It is manual\n\
+         and online (needs a live credential + network); `derive` and `staleness`\n\
+         are offline. See docs/how-to/refresh-fixtures.md."
     );
 }
 
@@ -90,6 +99,11 @@ struct RecordArgs {
     upstream_host: Option<String>,
     all: bool,
     dry_run: bool,
+    /// Skip the automatic `derive` pass after successful authoritative captures.
+    /// The default is to derive, so a refresh leaves the templates in sync in one
+    /// command; `--no-derive` is the escape hatch for capturing without touching
+    /// the committed `*.template.json` artifacts.
+    no_derive: bool,
 }
 
 fn run_record(args: Vec<String>) -> io::Result<ExitCode> {
@@ -130,69 +144,139 @@ fn run_record(args: Vec<String>) -> io::Result<ExitCode> {
         provenance.captured,
         provenance.recorder_sha
     )?;
-    for inv in &invocations {
+    // Resolve each cell to its concrete driver up front, so the plan we print is
+    // exactly the plan we (would) run — `--dry-run` shows the real command per
+    // cell, not just the matrix coordinates.
+    let commands: Vec<(bool, DriverCommand)> = invocations
+        .iter()
+        .map(|inv| {
+            let is_authoritative = inv.role == Role::Authoritative;
+            (
+                is_authoritative,
+                driver_for(inv, &parsed.fixtures_root, &provenance),
+            )
+        })
+        .collect();
+    for (inv, (_, cmd)) in invocations.iter().zip(&commands) {
         writeln!(
             out,
-            "  - {}/{} via {} [{}]",
+            "  - {}/{} via {} [{}] — {}",
             inv.dialect,
             inv.scenario,
             inv.client,
-            inv.role.slug()
+            inv.role.slug(),
+            cmd.describe
         )?;
     }
 
     if parsed.dry_run {
-        writeln!(out, "xtask record: --dry-run, not spawning.")?;
+        writeln!(out, "\nxtask record: --dry-run, not spawning. Commands:")?;
+        for (inv, (_, cmd)) in invocations.iter().zip(&commands) {
+            writeln!(
+                out,
+                "  {}/{} via {}: {} {}",
+                inv.dialect,
+                inv.scenario,
+                inv.client,
+                cmd.program,
+                cmd.args.join(" ")
+            )?;
+        }
+        if !parsed.no_derive {
+            writeln!(
+                out,
+                "  then: derive templates from new authoritative captures \
+                 (suppress with --no-derive)"
+            )?;
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
     let mut failures = 0usize;
-    for inv in &invocations {
+    let mut authoritative_ok = 0usize;
+    for (inv, (is_authoritative, cmd)) in invocations.iter().zip(&commands) {
         writeln!(
             out,
             "\n=== recording {}/{} via {} ===",
             inv.dialect, inv.scenario, inv.client
         )?;
         out.flush()?;
-        match spawn_record(inv, &parsed.fixtures_root, &provenance) {
-            Ok(true) => {}
+        match spawn_driver(cmd) {
+            Ok(true) => {
+                if *is_authoritative {
+                    authoritative_ok += 1;
+                }
+            }
             Ok(false) => {
                 failures += 1;
                 writeln!(out, "xtask record: {} exited non-zero", inv.client)?;
             }
             Err(err) => {
                 failures += 1;
-                writeln!(out, "xtask record: failed to spawn jig record: {err}")?;
+                writeln!(out, "xtask record: failed to spawn driver: {err}")?;
             }
         }
     }
 
+    // One-shot refresh: after successful authoritative captures, re-derive the
+    // templates so the committed `*.template.json`/`drive-shape.json` are in sync
+    // with the new recordings. Subject (pi-sdk) recordings never anchor a
+    // template, so this is gated on an authoritative capture having succeeded.
+    // `--no-derive` is the escape hatch for capturing without touching templates.
+    if !parsed.no_derive && authoritative_ok > 0 {
+        writeln!(out, "\n=== deriving templates from new captures ===")?;
+        out.flush()?;
+        match run_derive_pass(&parsed.fixtures_root, &mut out) {
+            Ok(()) => {}
+            Err(err) => {
+                failures += 1;
+                writeln!(out, "xtask record: derive failed: {err}")?;
+            }
+        }
+    } else if !parsed.no_derive {
+        writeln!(
+            out,
+            "\nxtask record: no authoritative capture succeeded — skipping derive."
+        )?;
+    }
+
     if failures > 0 {
-        eprintln!("xtask record: {failures} invocation(s) failed");
+        eprintln!("xtask record: {failures} step(s) failed");
         return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)
 }
 
-/// Spawn one `jig record` via `cargo run --bin jig`, returning whether it
-/// succeeded. This is the only online, process-spawning step; isolated here so
-/// the rest of the crate stays pure and testable.
-fn spawn_record(
-    inv: &RecordInvocation,
-    fixtures_root: &str,
-    provenance: &Provenance,
-) -> io::Result<bool> {
-    let status = Command::new(cargo())
-        .args(["run", "--quiet", "--bin", "jig", "--"])
-        .args(inv.argv(fixtures_root, provenance))
-        .status()?;
+/// Spawn one driver command (the per-cell capture harness), returning whether it
+/// succeeded. This is the only online, process-spawning step; the command itself
+/// is built purely by [`driver_for`], so the rest of the crate stays testable.
+fn spawn_driver(cmd: &DriverCommand) -> io::Result<bool> {
+    let status = Command::new(&cmd.program).args(&cmd.args).status()?;
     Ok(status.success())
 }
 
-/// The cargo executable to re-invoke, honoring `$CARGO` when xtask is itself run
-/// under cargo (the usual case), falling back to `cargo` on `PATH`.
-fn cargo() -> String {
-    std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
+/// Re-derive every authoritative scenario's templates under `fixtures_root`,
+/// reporting what was derived. Shared with the standalone `derive` subcommand's
+/// reduction; runs in-process (it is pure + offline) rather than re-spawning.
+fn run_derive_pass(fixtures_root: &str, out: &mut impl Write) -> io::Result<()> {
+    let root = PathBuf::from(fixtures_root);
+    match derive_tree(&root) {
+        Ok(done) if done.is_empty() => {
+            writeln!(
+                out,
+                "xtask record: derive found no authoritative recordings."
+            )?;
+            Ok(())
+        }
+        Ok(done) => {
+            writeln!(out, "xtask record: {} scenario(s) derived", done.len())?;
+            for dir in &done {
+                writeln!(out, "  - {}/{}", dir.dialect, dir.scenario)?;
+            }
+            Ok(())
+        }
+        Err(err) => Err(io::Error::other(err.to_string())),
+    }
 }
 
 fn parse_record_args(args: Vec<String>) -> io::Result<RecordArgs> {
@@ -203,6 +287,7 @@ fn parse_record_args(args: Vec<String>) -> io::Result<RecordArgs> {
     let mut upstream_host = None;
     let mut all = false;
     let mut dry_run = false;
+    let mut no_derive = false;
 
     let mut it = args.into_iter();
     while let Some(flag) = it.next() {
@@ -210,6 +295,7 @@ fn parse_record_args(args: Vec<String>) -> io::Result<RecordArgs> {
         match flag.as_str() {
             "--all" => all = true,
             "--dry-run" => dry_run = true,
+            "--no-derive" => no_derive = true,
             "--dialect" => selection.dialect = Some(value()?),
             "--scenario" => selection.scenario = Some(value()?),
             "--client" => selection.client = Some(value()?),
@@ -229,6 +315,7 @@ fn parse_record_args(args: Vec<String>) -> io::Result<RecordArgs> {
         upstream_host,
         all,
         dry_run,
+        no_derive,
     })
 }
 
@@ -417,6 +504,20 @@ mod tests {
         assert_eq!(parsed.upstream_host.as_deref(), Some("api.deepseek.com"));
         assert!(parsed.dry_run);
         assert!(!parsed.all);
+        // Derivation is on by default; the escape hatch flag was not passed.
+        assert!(!parsed.no_derive);
+    }
+
+    #[test]
+    fn parse_record_args_accepts_all_and_no_derive() {
+        let args = vec!["--all", "--no-derive"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let parsed = parse_record_args(args).unwrap();
+        assert!(parsed.all);
+        assert!(parsed.no_derive);
+        assert!(parsed.selection.is_all());
     }
 
     #[test]

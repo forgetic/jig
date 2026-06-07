@@ -16,22 +16,35 @@
 //!   compare against.
 //! - [`diff`] — a readable structural diff so a T1/T2 failure shows *where* the
 //!   shapes diverged, not just that they did.
+//! - [`grammar`] — request **grammar** reduction + cross-driver conformance, the
+//!   basis of the pi-SDK request-validation check (T3, P6 #17). Unlike T2 (a
+//!   recording against its *own* template), T3 compares a pi-SDK `subject` request
+//!   against the official client's `authoritative` template — two *different*
+//!   requests whose **wire grammar** (not content/size) must agree.
 //!
-//! The conformance properties the harness (in `crates/jig-server/tests`) asserts
-//! over the committed `fixtures/openai/*`:
+//! The conformance properties asserted over the committed `fixtures/`:
 //!
 //! - **T1**: drive jig with `drive-shape.json` → [`render_openai`] → strip →
 //!   must equal `response.template.json`.
 //! - **T2**: the authoritative `request.json` → strip → must equal
 //!   `request.template.json`.
+//! - **T3**: the pi-SDK `subject` `request.json`, reduced to its request grammar,
+//!   must be **conformant** with the authoritative request grammar (every key /
+//!   shape the subject sends appears in the official client's request); a
+//!   divergence is a reviewed SDK finding.
+//! - **T4**: the pi-SDK `subject` response, reduced like a template, must carry
+//!   the same canonical reply/framing grammar as the authoritative response —
+//!   cross-driver response consistency.
 //!
 //! [`render_openai`]: crate::render::render_openai
 
 pub mod diff;
+pub mod grammar;
 pub mod mask;
 pub mod template;
 
 pub use diff::structural_diff;
+pub use grammar::{GrammarFinding, grammar_findings, request_grammar};
 pub use mask::{HeaderClass, MASK, classify_header, mask_body_value, mask_request_body};
 pub use template::{
     ConformParseError, DriveShape, RequestTemplate, ResponseTemplate, TemplateHeader,

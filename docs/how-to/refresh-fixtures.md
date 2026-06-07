@@ -168,6 +168,61 @@ canonical tool call. Before anything is written the recorder redacts the bearer,
 and the body's `client_metadata.x-codex-installation-id`. A Codex capture ends in
 the `response.completed` event (there is **no** `[DONE]` sentinel).
 
+### The pi-SDK `subject` recordings (P6, #17)
+
+The second driver is `pi_agent_rust` used **directly** (no smith) as the
+`subject` measured against the authoritative contract. Unlike the official CLIs
+above, this driver is a Rust library, so its recording harness is an
+`#[ignore]`d integration test rather than a `jig-record` example. It captures one
+`subject` recording per `(dialect, scenario)` against the **real** backends using
+the credentials in `~/.pi/agent/auth.json` (which you may use):
+
+```sh
+# Record every (dialect, scenario) subject cell:
+cargo test -p jig-oracle --test pi_subject_record \
+  record_all_subject_fixtures -- --ignored --nocapture
+
+# Refresh one cell (e.g. after a finding):
+JIG_DIALECT=anthropic JIG_SCENARIO=tool-call \
+  cargo test -p jig-oracle --test pi_subject_record \
+  record_one_subject_fixture -- --ignored --nocapture --exact
+```
+
+For each cell the harness binds the recorder, resolves the dialect bearer, builds
+a pi-SDK provider with `base_url` at the recorder, and drives one completion to
+the real backend. Bearer resolution per dialect:
+
+- **OpenAI/DeepSeek** — the `deepseek` API key, a standard bearer; recorded
+  against `api.deepseek.com`.
+- **Codex** — the `openai-codex` OAuth access **JWT** (which carries the
+  `chatgpt_account_id` claim the SDK's codex provider extracts itself). Bearer
+  resolution only — no special headers.
+- **Anthropic** — the **subscription OAuth** workaround duplicated (with
+  attribution) from smith in `crates/jig-oracle/tests/support/anthropic_oauth.rs`:
+  it reads/refreshes the `anthropic` OAuth token (dual schema), sends the Claude
+  Code identity headers, and sets the mandatory first `system` block
+  (`You are Claude Code, …`) — without it the request is rejected with a `429`.
+  The token endpoint is itself rate-limited, so if a refresh returns `429` wait a
+  few minutes and retry.
+
+The recorder redacts every bearer/identity value at capture time, so the
+committed `recordings/pi-sdk/` are safe. A **non-2xx** subject capture is a
+*finding*, not a fixture: it is still written (with its real status) and surfaced,
+but never derived from. `xtask derive` is **not** run for `subject` recordings —
+templates are anchored to the *authoritative* client only. The offline
+**T3/T4** checks then validate the committed subject recordings:
+
+```sh
+cargo test -p jig-core --test pi_sdk_conformance
+```
+
+T3 reduces the subject `request.json` to its request grammar and asserts it is
+conformant with the authoritative `request.template.json` grammar; a reviewed,
+benign divergence (a spec-valid optional field the official sample omitted) is
+recorded in that test's `REVIEWED_T3_FINDINGS` allowlist, so an *unreviewed*
+divergence still fails. T4 checks the subject reply grammar against the
+authoritative response template (best-effort).
+
 ## Deriving the templates
 
 After recording (or any time you change the masking policy), reduce the captured

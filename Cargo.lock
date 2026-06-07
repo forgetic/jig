@@ -2736,9 +2736,13 @@ dependencies = [
  "franken-decision",
  "futures",
  "jig-core",
+ "jig-record",
  "jig-server",
  "pi_agent_rust",
+ "serde",
  "serde_json",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

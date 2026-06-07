@@ -122,7 +122,10 @@ pub fn evaluate(metas: &[FixtureMeta], today: Date, max_age_days: i64) -> Vec<Fi
         .map(|m| {
             let age_days = Date::parse(&m.captured).map(|d| d.days_until(today));
             let stale = match age_days {
-                Some(age) => age > max_age_days,
+                // Future-dated captures are not genuinely fresh; they usually mean
+                // the operator passed the wrong --captured/--today value, so surface
+                // them in the same non-fatal report as old fixtures.
+                Some(age) => age < 0 || age > max_age_days,
                 None => true,
             };
             FixtureAge {
@@ -200,6 +203,14 @@ mod tests {
         // 100 days before today, threshold 90.
         let ages = evaluate(&[meta("2026-02-26")], today, 90);
         assert_eq!(ages[0].age_days, Some(100));
+        assert!(ages[0].stale);
+    }
+
+    #[test]
+    fn future_dated_fixture_is_reported_stale() {
+        let today = Date::parse("2026-06-06").unwrap();
+        let ages = evaluate(&[meta("2026-06-07")], today, 90);
+        assert_eq!(ages[0].age_days, Some(-1));
         assert!(ages[0].stale);
     }
 

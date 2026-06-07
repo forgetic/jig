@@ -1,0 +1,9 @@
+{
+  "client": "codex",
+  "role": "authoritative",
+  "dialect": "codex",
+  "scenario": "single-text",
+  "model": "gpt-5.5",
+  "captured": "2026-06-07",
+  "recorder_sha": "785bceb"
+}

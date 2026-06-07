@@ -126,6 +126,48 @@ stdin, and redacts the bearer, the `X-Claude-Code-Session-Id`, and the
 `metadata.user_id` before anything is written. An Anthropic capture ends in the
 `message_stop` SSE event.
 
+### Codex via the `codex exec` CLI
+
+Codex is `responses`-only and, like Claude Code, *agentic* — a single
+`codex exec` run issues several `POST /backend-api/codex/responses` (the
+tool-call turn, then the tool-result→final turn). The `codex_capture` example is
+its counterpart of `capture`: it accepts connections **concurrently**, records
+every routable exchange, and commits the one selected by `--match-body` and
+`--capture-index`. Codex uses its own auth (`~/.codex/auth.json`, ChatGPT
+OAuth) — there is no API key to thread through — so the example points it at the
+recorder with a custom `jig` model provider whose `base_url` is the loopback
+recorder and whose `wire_api` is `responses`:
+
+```sh
+# tool-result-final (the second responses POST in the run):
+cargo run -p jig-record --example codex_capture -- \
+  --scenario tool-result-final --capture-index 1 --match-body JIGEXEC55 \
+  --captured "$(date -u +%F)" --recorder-sha "$(git rev-parse --short HEAD)" \
+  -- "JIGEXEC55 Run the shell command: echo hello-from-codex using the \
+      exec_command tool, then tell me what it printed."
+
+# thinking-text needs reasoning enabled (off by default in exec):
+cargo run -p jig-record --example codex_capture -- \
+  --scenario thinking-text --match-body JIGTHINK77 \
+  --captured "$(date -u +%F)" --recorder-sha "$(git rev-parse --short HEAD)" \
+  --config model_reasoning_effort=high --config model_reasoning_summary=detailed \
+  -- "JIGTHINK77 Think step by step about what 17 times 23 is, then reply \
+      with just the number. Do not use any tools."
+```
+
+The example runs `codex exec --dangerously-bypass-approvals-and-sandbox
+--skip-git-repo-check` in a scratch dir (so the agent never touches the repo)
+and confirms empirically that Codex appends `/responses` to the provider
+`base_url` — the routable path is `/backend-api/codex/responses`. Drive a
+**function** tool (e.g. `exec_command`) for the `tool-call` / `tool-result-final`
+scenarios: Codex's `apply_patch` is a *custom* tool (`custom_tool_call` items
+with a freeform `input`), which the responses parser does not fold into a
+canonical tool call. Before anything is written the recorder redacts the bearer,
+`chatgpt-account-id`, the Codex session/identity headers (`session-id`,
+`thread-id`, `x-client-request-id`, `x-codex-window-id`, `x-codex-turn-metadata`),
+and the body's `client_metadata.x-codex-installation-id`. A Codex capture ends in
+the `response.completed` event (there is **no** `[DONE]` sentinel).
+
 ## Deriving the templates
 
 After recording (or any time you change the masking policy), reduce the captured
@@ -143,12 +185,14 @@ scenario root, masking volatile values per the policy in
 request path (`/chat/completions` → OpenAI, `/v1/messages` → Anthropic,
 `/backend-api/codex/responses` → Codex), so each capture is reduced with the
 right parser, renderer, and stream terminator (`[DONE]` for OpenAI,
-`message_stop` for Anthropic). Re-running it over unchanged recordings produces
-byte-identical files, so a clean `git diff` after `derive` means the captures and
-templates are in sync. The offline T1/T2 conformance tests — one per dialect,
-e.g. `cargo test -p jig-core --test openai_conformance` and
-`cargo test -p jig-core --test anthropic_conformance` — assert jig reproduces
-these templates exactly. See the
+`message_stop` for Anthropic, `response.completed` for Codex). Re-running it over
+unchanged recordings produces byte-identical files, so a clean `git diff` after
+`derive` means the captures and templates are in sync. The offline T1/T2
+conformance tests — one per dialect, e.g.
+`cargo test -p jig-core --test openai_conformance`,
+`cargo test -p jig-core --test anthropic_conformance`, and
+`cargo test -p jig-core --test codex_conformance` — assert jig reproduces these
+templates exactly. See the
 [record-and-conform design](../explanation/record-and-conform.md#deriving-templates-the-masking-policy)
 for what is masked and why.
 
@@ -176,12 +220,18 @@ time, *before* anything touches disk:
 
 - `authorization`, `proxy-authorization`, `x-api-key`, `api-key`, `cookie`,
   `set-cookie`, the OAuth account headers (`openai-organization`,
-  `chatgpt-account-id`, the `x-oauth-*` / `x-stainless-account*` families), and
-  Claude Code's per-session `x-claude-code-session-id` have their **values**
-  replaced with the stable placeholder `REDACTED`.
-- Identity carried in the request **body** is redacted too: `metadata.user_id`
-  (and any nested `account_uuid` / `device_id` / `session_id`) collapse to
-  `REDACTED`, so a body-carried account id never reaches a fixture.
+  `chatgpt-account-id`, the `x-oauth-*` / `x-stainless-account*` families),
+  Claude Code's per-session `x-claude-code-session-id`, and Codex's session /
+  window identity headers (`session-id`, `thread-id`, `x-client-request-id`,
+  `x-codex-window-id`, `x-codex-turn-metadata`) have their **values** replaced
+  with the stable placeholder `REDACTED`.
+- Identity carried in the request **body** is redacted too: Claude Code's
+  `metadata.user_id` (and any nested `account_uuid` / `device_id` / `session_id`)
+  and Codex's `client_metadata.x-codex-installation-id` collapse to `REDACTED`,
+  so a body-carried account/installation id never reaches a fixture. A
+  same-named *schema* property (Codex ships a tool whose argument schema has a
+  `session_id` property — an object, not an identity value) is left intact, so
+  the captured wire shape stays faithful.
 - Header and JSON **names** are preserved, so a fixture still records *which*
   headers and keys the client sent and what scheme was used — only the
   credential/identity value is gone.

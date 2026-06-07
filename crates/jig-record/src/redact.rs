@@ -58,6 +58,17 @@ const SECRET_HEADERS: &[&str] = &[
     // the captured value is redacted at the recording layer too (the header
     // *name* survives, so the fixture still records that the client sends it).
     "x-claude-code-session-id",
+    // Codex (`codex exec`) stamps every `/backend-api/codex/responses` request
+    // with a family of per-session / per-window identity headers carrying its
+    // session UUID (some, like `x-codex-turn-metadata`, embed it inside a JSON
+    // value). Same rationale as the Claude Code session id (issue #16's
+    // acceptance: "no secrets under `fixtures/` — only `REDACTED` for the bearer
+    // / account id"): redact the value, keep the name so the shape is recorded.
+    "session-id",
+    "thread-id",
+    "x-client-request-id",
+    "x-codex-window-id",
+    "x-codex-turn-metadata",
 ];
 
 /// Header-name prefixes that mark a family of account/session headers, any of
@@ -107,12 +118,35 @@ pub fn redact_headers(headers: &[Header]) -> Vec<Header> {
 /// identifiers, not a credential, but identity the committed fixture must not
 /// leak (issue #15 acceptance: "no secrets under `fixtures/` — only `REDACTED`
 /// for auth/identity"). Matched exactly (case-sensitive); wire JSON keys are
-/// stable. The value is replaced wholesale with [`REDACTED`] regardless of type,
-/// so the *shape* (the key is present) is still recorded without the identity.
-const SECRET_BODY_KEYS: &[&str] = &["user_id", "account_uuid", "device_id", "session_id"];
+/// stable.
+///
+/// Only a **string** (or numeric/boolean leaf) value under one of these keys is
+/// redacted — see [`redact_body_value`]. A real identity value is always a
+/// scalar; an object or array under the same name is structure, not identity
+/// (Codex, for instance, exposes a tool whose argument schema has a `session_id`
+/// *property* — a JSON object describing the parameter — which must survive
+/// verbatim so the captured fixture stays a faithful wire shape).
+///
+/// `x-codex-installation-id` is Codex's persistent per-installation UUID carried
+/// in `client_metadata` (issue #16: redact the bearer / account id and the
+/// equivalent device identity), redacted here so the body never leaks it.
+const SECRET_BODY_KEYS: &[&str] = &[
+    "user_id",
+    "account_uuid",
+    "device_id",
+    "session_id",
+    "x-codex-installation-id",
+];
 
 /// Recursively redact every [`SECRET_BODY_KEYS`] value in a JSON request body to
 /// [`REDACTED`], preserving all other structure (keys, nesting, array order).
+///
+/// A secret key's value is redacted only when it is a **scalar** (string,
+/// number, or bool) — the shape a real identity value takes. An object or array
+/// under a secret-named key is recursed into rather than collapsed, so a tool
+/// *parameter schema* whose property happens to be named `session_id` (Codex
+/// ships one) keeps its structure: the false positive would otherwise rewrite a
+/// schema object to the `"REDACTED"` string and corrupt the captured wire shape.
 ///
 /// Pure transform over `serde_json::Value`; the proxy applies it to the parsed
 /// request body before the fixture is written. A non-identity body is returned
@@ -123,7 +157,10 @@ pub fn redact_body_value(value: &serde_json::Value) -> serde_json::Value {
         Value::Object(map) => Value::Object(
             map.iter()
                 .map(|(k, v)| {
-                    if SECRET_BODY_KEYS.contains(&k.as_str()) {
+                    // Redact a secret-named key only when its value is a scalar
+                    // (an identity value); recurse into objects/arrays so a
+                    // same-named schema property survives.
+                    if SECRET_BODY_KEYS.contains(&k.as_str()) && !v.is_object() && !v.is_array() {
                         (k.clone(), Value::String(REDACTED.to_string()))
                     } else {
                         (k.clone(), redact_body_value(v))
@@ -268,5 +305,71 @@ mod tests {
     #[test]
     fn non_json_body_passes_through_unchanged() {
         assert_eq!(redact_body_str("not json at all"), "not json at all");
+    }
+
+    #[test]
+    fn codex_session_identity_headers_are_redacted() {
+        // `codex exec` stamps a family of per-session / per-window identity
+        // headers on every responses request (issue #16). Each carries the
+        // session UUID — `x-codex-turn-metadata` embeds it in a JSON value — and
+        // must be redacted, the name preserved.
+        for name in [
+            "session-id",
+            "thread-id",
+            "x-client-request-id",
+            "x-codex-window-id",
+            "x-codex-turn-metadata",
+        ] {
+            assert!(is_secret_header(name), "{name} should be secret");
+            assert_eq!(redact_value(name, "019e9f87-5cb2-7853"), REDACTED, "{name}");
+        }
+        // The turn-metadata header value is a JSON blob with the session id; the
+        // whole value collapses to the placeholder, leaking nothing.
+        assert_eq!(
+            redact_value(
+                "x-codex-turn-metadata",
+                r#"{"session_id":"019e9f87-5cb2-7853","thread_id":"t"}"#
+            ),
+            REDACTED
+        );
+    }
+
+    #[test]
+    fn codex_installation_id_in_body_is_redacted() {
+        // Codex carries a persistent per-installation UUID in `client_metadata`.
+        let body = r#"{"model":"gpt-5.5","client_metadata":{"x-codex-installation-id":"0d073279-3b08-4d31-86ed-533563e80a7f"},"input":[]}"#;
+        let redacted = redact_body_str(body);
+        let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+        assert_eq!(v["client_metadata"]["x-codex-installation-id"], REDACTED);
+        assert_eq!(v["model"], "gpt-5.5");
+        assert!(!redacted.contains("0d073279-3b08-4d31-86ed-533563e80a7f"));
+    }
+
+    #[test]
+    fn secret_named_schema_property_survives_redaction() {
+        // Codex ships a tool whose argument schema has a property *named*
+        // `session_id` — a JSON object describing the parameter, not an identity
+        // value. Redacting it wholesale to "REDACTED" would corrupt the captured
+        // wire shape, so an object/array under a secret-named key is preserved.
+        let body = r#"{"tools":[{"name":"write_stdin","parameters":{"properties":{"session_id":{"description":"target session","type":"number"}},"required":["session_id"]}}]}"#;
+        let redacted = redact_body_str(body);
+        let v: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+        let prop = &v["tools"][0]["parameters"]["properties"]["session_id"];
+        // The schema object survives verbatim — not collapsed to the placeholder.
+        assert!(prop.is_object(), "schema property must stay an object");
+        assert_eq!(prop["type"], "number");
+        // The `required` list entry (a bare string, not under a secret key) is
+        // untouched too.
+        assert_eq!(v["tools"][0]["parameters"]["required"][0], "session_id");
+    }
+
+    #[test]
+    fn scalar_identity_under_secret_key_is_still_redacted() {
+        // The scalar-scoping must not weaken real identity redaction: a string
+        // (or number) identity value under a secret key is still collapsed.
+        let body = r#"{"metadata":{"user_id":"acct-uuid-1234","session_id":"sess-abc"}}"#;
+        let v: serde_json::Value = serde_json::from_str(&redact_body_str(body)).unwrap();
+        assert_eq!(v["metadata"]["user_id"], REDACTED);
+        assert_eq!(v["metadata"]["session_id"], REDACTED);
     }
 }

@@ -1,0 +1,14 @@
+{
+  "reply": {
+    "turns": [
+      {
+        "Text": "It printed:\n\n```text\nhello-from-codex\n```"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 0,
+      "completion_tokens": 0
+    },
+    "stop": "Stop"
+  }
+}

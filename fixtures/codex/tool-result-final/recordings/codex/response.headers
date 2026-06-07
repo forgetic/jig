@@ -1,0 +1,169 @@
+{
+  "status": 200,
+  "headers": [
+    {
+      "name": "Date",
+      "value": "Sun, 07 Jun 2026 00:50:59 GMT"
+    },
+    {
+      "name": "Transfer-Encoding",
+      "value": "chunked"
+    },
+    {
+      "name": "Connection",
+      "value": "close"
+    },
+    {
+      "name": "Server",
+      "value": "cloudflare"
+    },
+    {
+      "name": "x-codex-active-limit",
+      "value": "premium"
+    },
+    {
+      "name": "x-codex-plan-type",
+      "value": "pro"
+    },
+    {
+      "name": "x-codex-primary-used-percent",
+      "value": "0"
+    },
+    {
+      "name": "x-codex-secondary-used-percent",
+      "value": "16"
+    },
+    {
+      "name": "x-codex-primary-window-minutes",
+      "value": "300"
+    },
+    {
+      "name": "x-codex-primary-over-secondary-limit-percent",
+      "value": "0"
+    },
+    {
+      "name": "x-codex-secondary-window-minutes",
+      "value": "10080"
+    },
+    {
+      "name": "x-codex-primary-reset-after-seconds",
+      "value": "7108"
+    },
+    {
+      "name": "x-codex-secondary-reset-after-seconds",
+      "value": "345069"
+    },
+    {
+      "name": "x-codex-primary-reset-at",
+      "value": "1780800567"
+    },
+    {
+      "name": "x-codex-secondary-reset-at",
+      "value": "1781138527"
+    },
+    {
+      "name": "x-codex-credits-has-credits",
+      "value": "False"
+    },
+    {
+      "name": "x-codex-credits-balance",
+      "value": ""
+    },
+    {
+      "name": "x-codex-credits-unlimited",
+      "value": "False"
+    },
+    {
+      "name": "x-codex-bengalfox-primary-used-percent",
+      "value": "0"
+    },
+    {
+      "name": "x-codex-bengalfox-secondary-used-percent",
+      "value": "0"
+    },
+    {
+      "name": "x-codex-bengalfox-primary-window-minutes",
+      "value": "300"
+    },
+    {
+      "name": "x-codex-bengalfox-primary-over-secondary-limit-percent",
+      "value": "0"
+    },
+    {
+      "name": "x-codex-bengalfox-secondary-window-minutes",
+      "value": "10080"
+    },
+    {
+      "name": "x-codex-bengalfox-primary-reset-after-seconds",
+      "value": "18000"
+    },
+    {
+      "name": "x-codex-bengalfox-secondary-reset-after-seconds",
+      "value": "604800"
+    },
+    {
+      "name": "x-codex-bengalfox-primary-reset-at",
+      "value": "1780811459"
+    },
+    {
+      "name": "x-codex-bengalfox-secondary-reset-at",
+      "value": "1781398259"
+    },
+    {
+      "name": "x-codex-bengalfox-limit-name",
+      "value": "GPT-5.3-Codex-Spark"
+    },
+    {
+      "name": "x-models-etag",
+      "value": "W/\"5d91fb8b0c2e79510ef87f292f5b8de8\""
+    },
+    {
+      "name": "x-oai-request-id",
+      "value": "114a0f8b-001c-49a5-afa5-007bf3db4389"
+    },
+    {
+      "name": "x-openai-proxy-wasm",
+      "value": "v0.1"
+    },
+    {
+      "name": "cf-cache-status",
+      "value": "DYNAMIC"
+    },
+    {
+      "name": "Cross-Origin-Opener-Policy",
+      "value": "same-origin-allow-popups"
+    },
+    {
+      "name": "Strict-Transport-Security",
+      "value": "max-age=31536000; includeSubDomains; preload"
+    },
+    {
+      "name": "X-Content-Type-Options",
+      "value": "nosniff"
+    },
+    {
+      "name": "set-cookie",
+      "value": "REDACTED"
+    },
+    {
+      "name": "Report-To",
+      "value": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=Uu2lz5MFckDnLSQ5SCcnOp7WiT%2BVkn5FMhPdbzxEKdzyGown3AOeLi3H0FS5c9y00eXF43d%2Ba16CVUEh8jv9WkfvFDekrXawAhGw2YJ3hppfEoxJFORUe9foSBdR\"}]}"
+    },
+    {
+      "name": "Nel",
+      "value": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.01,\"max_age\":604800}"
+    },
+    {
+      "name": "Referrer-Policy",
+      "value": "strict-origin-when-cross-origin"
+    },
+    {
+      "name": "CF-RAY",
+      "value": "a07baa69fc6b4ec5-MAD"
+    },
+    {
+      "name": "alt-svc",
+      "value": "h3=\":443\"; ma=86400"
+    }
+  ]
+}

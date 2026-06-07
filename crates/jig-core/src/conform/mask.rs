@@ -96,11 +96,14 @@ pub fn mask_request_body(value: &Value) -> Value {
 }
 
 /// Request-side keys that are volatile in addition to [`VOLATILE_BODY_KEYS`]:
-/// the tool-call correlation ids a multi-turn request carries. Both wire spellings
-/// appear — OpenAI echoes a tool result with `tool_call_id`, Anthropic with
-/// `tool_use_id` — and the model-assigned call `id` on a prior tool call is
-/// already covered by [`VOLATILE_BODY_KEYS`] (`id`).
-const VOLATILE_REQUEST_KEYS: &[&str] = &["tool_call_id", "tool_use_id"];
+/// the tool-call correlation ids a multi-turn request carries. All three wire
+/// spellings appear — OpenAI echoes a tool result with `tool_call_id`, Anthropic
+/// with `tool_use_id`, and Codex carries `call_id` on both the prior
+/// `function_call` and the `function_call_output` that feeds its result back —
+/// and the model-assigned call `id` on a prior tool call is already covered by
+/// [`VOLATILE_BODY_KEYS`] (`id`). These are the `call_…` ids issue #16 calls out
+/// as volatile.
+const VOLATILE_REQUEST_KEYS: &[&str] = &["tool_call_id", "tool_use_id", "call_id"];
 
 fn mask_request_inner(value: &Value) -> Value {
     match value {
@@ -280,6 +283,33 @@ mod tests {
             masked["messages"][0]["content"][0]["input"]["path"],
             "out.txt"
         );
+    }
+
+    #[test]
+    fn request_masking_masks_codex_call_ids() {
+        // Codex carries the tool-call correlation id as `call_id` on both the
+        // prior `function_call` and the `function_call_output` echoing its result
+        // — both volatile (issue #16's `call_…` ids). The model-assigned item `id`
+        // is also volatile (covered by VOLATILE_BODY_KEYS).
+        let req = json!({
+            "model": "gpt-5.5",
+            "input": [
+                { "type": "function_call", "id": "fc_abc", "call_id": "call_xyz",
+                  "name": "exec_command", "arguments": "{\"cmd\":\"ls\"}" },
+                { "type": "function_call_output", "call_id": "call_xyz", "output": "ok" }
+            ]
+        });
+        let masked = mask_request_body(&req);
+        // Requested model is invariant — kept.
+        assert_eq!(masked["model"], "gpt-5.5");
+        // Both call_id correlation ids and the item id are masked.
+        assert_eq!(masked["input"][0]["call_id"], MASK);
+        assert_eq!(masked["input"][0]["id"], MASK);
+        assert_eq!(masked["input"][1]["call_id"], MASK);
+        // Tool name and item type are structural — kept.
+        assert_eq!(masked["input"][0]["name"], "exec_command");
+        assert_eq!(masked["input"][0]["type"], "function_call");
+        assert_eq!(masked["input"][1]["type"], "function_call_output");
     }
 
     #[test]

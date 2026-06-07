@@ -86,15 +86,32 @@ const PI_SDK: Client = Client {
 };
 
 /// Scenarios that exist for the OpenAI/DeepSeek chat-completions dialect.
-const OPENAI_SCENARIOS: &[&str] = &["single-text", "tool-call", "tool-result-final"];
-/// Anthropic adds a thinking+text scenario on top of the shared three.
+///
+/// `parallel-tool-calls` (issue #30) captures **two** tool calls emitted in one
+/// assistant turn — DeepSeek produces this reliably with `tool_choice: required`
+/// and a prompt naming two cities.
+const OPENAI_SCENARIOS: &[&str] = &[
+    "single-text",
+    "tool-call",
+    "tool-result-final",
+    "parallel-tool-calls",
+];
+/// Anthropic adds a thinking+text scenario on top of the shared three, plus the
+/// `parallel-tool-calls` scenario (#30): Claude Code batches two independent
+/// `Bash` calls into two `tool_use` blocks in one turn.
 const ANTHROPIC_SCENARIOS: &[&str] = &[
     "single-text",
     "tool-call",
     "tool-result-final",
     "thinking-text",
+    "parallel-tool-calls",
 ];
-/// Codex mirrors Anthropic's thinking-capable set.
+/// Codex mirrors Anthropic's thinking-capable set. `parallel-tool-calls` (#30)
+/// is **not** listed: the only official driver is the Codex CLI, which is not
+/// available in this environment to capture an authoritative parallel-call shape,
+/// so the cell is a reviewed, documented skip (see
+/// `docs/how-to/refresh-fixtures.md` and the issue #30 acceptance notes). Adding
+/// it here later is a one-line edit once a Codex capture can be produced.
 const CODEX_SCENARIOS: &[&str] = &[
     "single-text",
     "tool-call",
@@ -260,8 +277,8 @@ mod tests {
         let plan = plan(&sel);
         assert!(!plan.is_empty());
         assert!(plan.iter().all(|i| i.dialect == "openai"));
-        // openai has 3 scenarios × 2 clients.
-        assert_eq!(plan.len(), 6);
+        // openai has 4 scenarios (incl. parallel-tool-calls) × 2 clients.
+        assert_eq!(plan.len(), 8);
     }
 
     #[test]

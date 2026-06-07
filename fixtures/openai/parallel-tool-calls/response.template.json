@@ -1,0 +1,64 @@
+{
+  "headers": [
+    {
+      "name": "content-type",
+      "value": "text/event-stream; charset=utf-8"
+    },
+    {
+      "name": "date",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "server",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "x-ds-trace-id",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "x-cache",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "via",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "x-amz-cf-pop",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "x-amz-cf-id",
+      "value": "<MASKED>"
+    }
+  ],
+  "terminator": "[DONE]",
+  "reply": {
+    "stop": "ToolCalls",
+    "turns": [
+      {
+        "ToolCall": {
+          "args": {
+            "city": "Paris"
+          },
+          "id": "<MASKED>",
+          "name": "get_weather"
+        }
+      },
+      {
+        "ToolCall": {
+          "args": {
+            "city": "London"
+          },
+          "id": "<MASKED>",
+          "name": "get_weather"
+        }
+      }
+    ],
+    "usage": {
+      "completion_tokens": "<MASKED>",
+      "prompt_tokens": "<MASKED>"
+    }
+  }
+}

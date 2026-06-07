@@ -1,0 +1,171 @@
+29e
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_019H4tDSckWSAwvVCZAUf6Uw","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":1801,"cache_read_input_tokens":34147,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":1801},"output_tokens":8,"service_tier":"standard","inference_geo":"not_available"}}               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}               }
+
+
+24
+event: ping
+data: {"type": "ping"}
+
+
+c1
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The user wants me to run two shell","estimated_tokens":null}            }
+
+
+f9
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" commands in parallel by issuing both Bash tool calls in the same turn. They want:\n1. `echo hello`","estimated_tokens":null}   }
+
+
+e7
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n2. `echo world`\n\nI should call both Bash tools in the same message,","estimated_tokens":null}             }
+
+
+f8
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" not sequentially. This is a straightforward request to demonstrate parallel tool execution.","estimated_tokens":null}         }
+
+
+32e
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EvUDCm4IDhgCKkDLUqIyA3kgAsXWf1iSpQc+j9qV8qmU++9HuF1mRXHw+2hKR9bkJekmeX6mqu7AkEr8bWn9kI5qzT4+0qCVjLAzMhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMV2z+0G9V7oE2CcVKGgxfS5/6MxuGWLf2aEYiMD4oNeLRx2Hq6y9lUhzOpm4mcyOZpM/c4Tu6ZITpo3/mG2WDsgO/Zo30Yl174gbtkiq0Ak8kPb+W2xkdTyiLKCACglrTuPP/Y8nMrHEMn35rJ85EDF+CKAmnxW2dDsP5S3KwiZfQGGQ7Svv31xcn6WKNm9vVxyhDr6Hvgp8Ym3LjcOzgfDRl0gbeHY9ewanMuQ40hCNo1oRppFm6NxQsj+o6g/uEXS0FRRdTNJX4Xk4udu5ZzO+xdMjRgwsbfwjHEWThqIa9tGDC6LOJ+6RAIR44NqaUKqTBCCDtG2a6dWL8XoBpfF4M2qP6fYIuKkeZusQa69DqLa1/qwh08VgFI2oWiy+anFGTZBn4qCU3dry2isvPUA+ZzjFlr4IKPlxiDaPxAfKQ7pAt6YiDJ2LM7X9vf2SLfHP9b4dzaGz1mWKqAvR8m9kZUUbuI9vdZFYJtr94Qb5ZPFwaUqS7HvP4fOP3W75iRiESGAE="}             }
+
+
+56
+event: content_block_stop
+data: {"type":"content_block_stop","index":0             }
+
+
+7a
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}     }
+
+
+8b
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I'll run both"}           }
+
+
+c7
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" echo commands in parallel by making two Bash tool calls simultaneously."}            }
+
+
+12f
+event: content_block_stop
+data: {"type":"content_block_stop","index":1               }
+
+event: content_block_start
+data: {"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01N73Njccts1V6MHwQSEVuGb","name":"Bash","input":{},"caller":{"type":"direct"}}              }
+
+
+83
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}  }
+
+
+1b0
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"co"}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"mmand\": \""}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"echo hel"}           }
+
+
+94
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"lo\""}               }
+
+
+11d
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":", \""}        }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"descrip"}        }
+
+
+92
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"tion\": \"P"}      }
+
+
+8c
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"rint h"}     }
+
+
+90
+event: content_block_delta
+data: {"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ello\"}"}        }
+
+
+4f
+event: content_block_stop
+data: {"type":"content_block_stop","index":2      }
+
+
+159
+event: content_block_start
+data: {"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"toolu_01UdGTXMX7jsAzSidYt5FnME","name":"Bash","input":{},"caller":{"type":"direct"}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":""}               }
+
+
+123
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\"command\":"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" \"echo"}             }
+
+
+95
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":" world\""}            }
+
+
+8e
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":", \"d"}        }
+
+
+91
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"escr"}            }
+
+
+9d
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"iption\": \"P"}               }
+
+
+9a
+event: content_block_delta
+data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"rint world\"}"}            }
+
+
+58
+event: content_block_stop
+data: {"type":"content_block_stop","index":3               }
+
+
+272
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":10,"cache_creation_input_tokens":1801,"cache_read_input_tokens":34147,"output_tokens":221,"output_tokens_details":{"thinking_tokens":75},"iterations":[{"input_tokens":10,"output_tokens":221,"cache_read_input_tokens":34147,"cache_creation_input_tokens":1801,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":1801},"type":"message"}]},"context_management":{"applied_edits":[]}               }
+
+event: message_stop
+data: {"type":"message_stop"      }
+
+
+0
+

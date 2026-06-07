@@ -1,0 +1,10 @@
+{
+  "client": "pi-sdk",
+  "role": "subject",
+  "dialect": "openai",
+  "scenario": "parallel-tool-calls",
+  "client_version": "pi_agent_rust 0.1.13",
+  "model": "deepseek-v4-flash",
+  "captured": "2026-06-07",
+  "recorder_sha": "b2c8cb9"
+}

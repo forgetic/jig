@@ -1,0 +1,34 @@
+{
+  "reply": {
+    "turns": [
+      {
+        "Text": "I'll run both echo commands in parallel by making two Bash tool calls simultaneously."
+      },
+      {
+        "ToolCall": {
+          "id": "toolu_01N73Njccts1V6MHwQSEVuGb",
+          "name": "Bash",
+          "args": {
+            "command": "echo hello",
+            "description": "Print hello"
+          }
+        }
+      },
+      {
+        "ToolCall": {
+          "id": "toolu_01UdGTXMX7jsAzSidYt5FnME",
+          "name": "Bash",
+          "args": {
+            "command": "echo world",
+            "description": "Print world"
+          }
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 221
+    },
+    "stop": "ToolCalls"
+  }
+}

@@ -155,6 +155,11 @@ pub enum Scenario {
     /// user + assistant(tool_call) + tool_result → final text (the multi-turn
     /// request grammar: how the SDK echoes a prior tool call and feeds a result).
     ToolResultFinal,
+    /// A single user turn → **two** tool calls in one assistant turn (issue #30).
+    /// Best-effort: the SDK has no `tool_choice`, so the parallel shape is elicited
+    /// by the prompt naming two cities; a dialect that does not produce it is a
+    /// reviewed gap, not a hard failure (see the subject matrix guard).
+    ParallelToolCalls,
 }
 
 impl Scenario {
@@ -164,15 +169,17 @@ impl Scenario {
             Scenario::SingleText => "single-text",
             Scenario::ToolCall => "tool-call",
             Scenario::ToolResultFinal => "tool-result-final",
+            Scenario::ParallelToolCalls => "parallel-tool-calls",
         }
     }
 
-    /// All three subject scenarios, in fixture-tree order.
-    pub fn all() -> [Scenario; 3] {
+    /// All subject scenarios, in fixture-tree order.
+    pub fn all() -> [Scenario; 4] {
         [
             Scenario::SingleText,
             Scenario::ToolCall,
             Scenario::ToolResultFinal,
+            Scenario::ParallelToolCalls,
         ]
     }
 }
@@ -220,13 +227,19 @@ pub fn context_for(dialect: Dialect, scenario: Scenario) -> Context<'static> {
 
     let tools = match scenario {
         Scenario::SingleText => vec![],
-        Scenario::ToolCall | Scenario::ToolResultFinal => vec![weather_tool()],
+        Scenario::ToolCall | Scenario::ToolResultFinal | Scenario::ParallelToolCalls => {
+            vec![weather_tool()]
+        }
     };
 
     let messages = match scenario {
         Scenario::SingleText => vec![user(&format!("{prefix}Reply with exactly: hello"))],
         Scenario::ToolCall => vec![user(&format!(
             "{prefix}Call the get_weather tool for the city Paris. Do not reply with text."
+        ))],
+        Scenario::ParallelToolCalls => vec![user(&format!(
+            "{prefix}Call the get_weather tool once for Paris and once for London, \
+             both in the same turn (two parallel tool calls). Do not reply with text."
         ))],
         Scenario::ToolResultFinal => {
             // The prior assistant tool call + its result, fed back so the SDK
@@ -343,7 +356,11 @@ mod tests {
     fn tool_scenarios_expose_the_weather_tool() {
         let single = context_for(Dialect::OpenAi, Scenario::SingleText);
         assert!(single.tools.is_empty());
-        for scenario in [Scenario::ToolCall, Scenario::ToolResultFinal] {
+        for scenario in [
+            Scenario::ToolCall,
+            Scenario::ToolResultFinal,
+            Scenario::ParallelToolCalls,
+        ] {
             let ctx = context_for(Dialect::OpenAi, scenario);
             assert_eq!(ctx.tools.len(), 1);
             assert_eq!(ctx.tools[0].name, "get_weather");

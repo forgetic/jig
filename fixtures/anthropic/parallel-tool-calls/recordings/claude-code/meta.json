@@ -1,0 +1,9 @@
+{
+  "client": "claude-code",
+  "role": "authoritative",
+  "dialect": "anthropic",
+  "scenario": "parallel-tool-calls",
+  "model": "claude-sonnet-4-5",
+  "captured": "2026-06-07",
+  "recorder_sha": "b2c8cb9"
+}

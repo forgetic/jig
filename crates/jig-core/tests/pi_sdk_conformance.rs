@@ -135,16 +135,24 @@ fn subject_cases() -> Vec<SubjectCase> {
 /// reasoning turn out of the SDK is not reliable (see the `Scenario` doc comment
 /// in `subject.rs`). Adding a subject `thinking-text` capture later is a one-line
 /// addition here.
+///
+/// `parallel-tool-calls` (issue #30) is the fourth subject scenario: two tool
+/// calls in one assistant turn, elicited by a prompt naming two cities. It is
+/// required for `openai` and `codex` (both captured) and reviewed-missing for
+/// `anthropic` (same subscription-OAuth blocker as the other anthropic cells).
 const EXPECTED_SUBJECT_MATRIX: &[(&str, &str)] = &[
     ("openai", "single-text"),
     ("openai", "tool-call"),
     ("openai", "tool-result-final"),
+    ("openai", "parallel-tool-calls"),
     ("anthropic", "single-text"),
     ("anthropic", "tool-call"),
     ("anthropic", "tool-result-final"),
+    ("anthropic", "parallel-tool-calls"),
     ("codex", "single-text"),
     ("codex", "tool-call"),
     ("codex", "tool-result-final"),
+    ("codex", "parallel-tool-calls"),
 ];
 
 /// **Reviewed missing subject cells**: required cells from
@@ -185,6 +193,10 @@ const REVIEWED_MISSING_SUBJECTS: &[((&str, &str), &str)] = &[
     (
         ("anthropic", "tool-result-final"),
         "Anthropic subscription OAuth refresh rate-limited (HTTP 429) and stored token expired; cannot reach the real backend to capture",
+    ),
+    (
+        ("anthropic", "parallel-tool-calls"),
+        "Anthropic subscription OAuth refresh failed (HTTP 400/429) and stored token expired; cannot reach the real backend to capture (issue #30; same blocker as the other anthropic subject cells)",
     ),
 ];
 

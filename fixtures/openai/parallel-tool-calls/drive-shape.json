@@ -1,0 +1,29 @@
+{
+  "reply": {
+    "turns": [
+      {
+        "ToolCall": {
+          "id": "call_00_ucFnTw2BcU6Ip8liPPV34217",
+          "name": "get_weather",
+          "args": {
+            "city": "Paris"
+          }
+        }
+      },
+      {
+        "ToolCall": {
+          "id": "call_01_FINqUUCeNKtS8WVPZVOi1751",
+          "name": "get_weather",
+          "args": {
+            "city": "London"
+          }
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 306,
+      "completion_tokens": 68
+    },
+    "stop": "ToolCalls"
+  }
+}

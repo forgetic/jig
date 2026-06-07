@@ -1,0 +1,31 @@
+{
+  "method": "POST",
+  "path": "/chat/completions",
+  "headers": [
+    {
+      "name": "Host",
+      "value": "127.0.0.1:42879"
+    },
+    {
+      "name": "User-Agent",
+      "value": "curl/8.19.0"
+    },
+    {
+      "name": "Accept",
+      "value": "*/*"
+    },
+    {
+      "name": "Authorization",
+      "value": "REDACTED"
+    },
+    {
+      "name": "Content-Type",
+      "value": "application/json"
+    },
+    {
+      "name": "Content-Length",
+      "value": "462"
+    }
+  ],
+  "body": "{\"messages\":[{\"content\":\"Get the current weather for both Paris and London. Call the get_weather tool once for each city, in the same turn.\",\"role\":\"user\"}],\"model\":\"deepseek-chat\",\"stream\":true,\"stream_options\":{\"include_usage\":true},\"tool_choice\":\"required\",\"tools\":[{\"function\":{\"description\":\"Get current weather for a city\",\"name\":\"get_weather\",\"parameters\":{\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"}},\"type\":\"function\"}]}"
+}

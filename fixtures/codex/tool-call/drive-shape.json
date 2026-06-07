@@ -1,0 +1,22 @@
+{
+  "reply": {
+    "turns": [
+      {
+        "ToolCall": {
+          "id": "call_yDfv5jz4m74FJfGw8BPOPrBT",
+          "name": "exec_command",
+          "args": {
+            "cmd": "echo hello-from-codex",
+            "max_output_tokens": 2000,
+            "yield_time_ms": 1000
+          }
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 10870,
+      "completion_tokens": 37
+    },
+    "stop": "ToolCalls"
+  }
+}

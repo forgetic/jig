@@ -1,0 +1,45 @@
+{
+  "headers": [
+    {
+      "name": "date",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "server",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "cf-cache-status",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "set-cookie",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "cf-ray",
+      "value": "<MASKED>"
+    }
+  ],
+  "terminator": "response.completed",
+  "reply": {
+    "stop": "ToolCalls",
+    "turns": [
+      {
+        "ToolCall": {
+          "args": {
+            "cmd": "echo hello-from-codex",
+            "max_output_tokens": 2000,
+            "yield_time_ms": 1000
+          },
+          "id": "<MASKED>",
+          "name": "exec_command"
+        }
+      }
+    ],
+    "usage": {
+      "completion_tokens": "<MASKED>",
+      "prompt_tokens": "<MASKED>"
+    }
+  }
+}

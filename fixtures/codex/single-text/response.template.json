@@ -1,0 +1,37 @@
+{
+  "headers": [
+    {
+      "name": "date",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "server",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "cf-cache-status",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "set-cookie",
+      "value": "<MASKED>"
+    },
+    {
+      "name": "cf-ray",
+      "value": "<MASKED>"
+    }
+  ],
+  "terminator": "response.completed",
+  "reply": {
+    "stop": "Stop",
+    "turns": [
+      {
+        "Text": "<MASKED>"
+      }
+    ],
+    "usage": {
+      "completion_tokens": "<MASKED>",
+      "prompt_tokens": "<MASKED>"
+    }
+  }
+}

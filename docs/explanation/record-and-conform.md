@@ -111,13 +111,49 @@ carrying a `chatgpt_account_id` claim before sending, so the test mints a
 synthetic unsigned JWT locally (the shape the SDK's own tests use); nothing
 leaves the machine. It runs in the default, network-free `cargo test`.
 
-This is the *oracle* half of P6. The pi-SDK **recording** track — capturing
-`subject` recordings and the T3 (request-validation) / T4 (cross-driver)
-conformance checks — is **not** here: recording needs live provider credentials,
-and T3/T4 compare against the structural `*.template.json` artifacts that P2
-(#14) derives, which are out of scope for an offline test. The recorder already
-supports the `subject` role with no code change (see "Two drivers, two roles"),
-so that track is additive on top of P2.
+This is the *oracle* half of P6.
+
+## The pi-SDK recording track: subject recordings + T3/T4 (P6, #17)
+
+On top of the oracle, P6 also drives `pi_agent_rust` through the **recorder**
+against the **real** backends to capture `role: subject` recordings, and adds two
+cross-driver conformance checks. This is the second half of the two-driver design
+from "Two drivers, two roles": the pi SDK as the measured *subject*.
+
+- **The recording harness** is `crates/jig-oracle/tests/pi_subject_record.rs`
+  (`#[ignore]`d — online, real credentials, never in `cargo test`). For each
+  `(dialect, scenario)` it binds the recorder, resolves the real bearer from
+  `~/.pi/agent/auth.json` (DeepSeek key / Codex access JWT / Anthropic OAuth), and
+  drives one completion through the recorder to the real backend. The shared
+  driving core (`tests/support/subject.rs`) builds the pi-SDK `ModelEntry` with
+  `base_url` at the recorder and forces the exact shapes (single text, single tool
+  call, tool-result→final). **No smith dependency.**
+- **The Anthropic subscription workaround** (`tests/support/anthropic_oauth.rs`)
+  is duplicated — *with attribution* — from
+  `smith/.../provider/anthropic_oauth.rs`, because the pinned SDK has no native
+  Claude subscription OAuth: it supplies the Claude Code identity headers, the
+  dual-schema bearer resolve/refresh, and the mandatory first-`system`-block
+  identity (`CLAUDE_CODE_SYSTEM_IDENTITY`, else a `429`). It is unit-tested
+  offline (headers / schema / no-token-leak).
+- **T3 — request validation** (`crates/jig-core/tests/pi_sdk_conformance.rs`):
+  the pi-SDK `subject` `request.json`, reduced to its **request grammar**, must be
+  *conformant* with the **authoritative** `request.template.json` grammar — every
+  JSON key, value-type, and array-element shape the SDK sends must appear in the
+  official client's request. The two requests are *not* equal (the official client
+  sends its whole prompt and tool catalogue), so T3 compares the **wire grammar**,
+  not content or size (`jig_core::conform::grammar`). A divergence is a reviewed
+  SDK finding; benign, spec-valid extras a human has vetted live in a small
+  commented allowlist (`REVIEWED_T3_FINDINGS`) so T3 stays a real gate.
+- **T4 — cross-driver response consistency (best-effort):** the subject
+  `response.sse`, parsed and masked like a template, must carry the same canonical
+  reply grammar as the authoritative `response.template.json` for the same
+  scenario.
+
+T3/T4 are **offline** — they read the committed `subject` recordings and the
+authoritative templates and run in the default `cargo test`. The recorder redacts
+every bearer/identity value at capture time, so the committed `subject`
+recordings are safe; a **failed** pi-SDK recording (e.g. a `4xx`) is surfaced as a
+finding and never derived into a jig fixture.
 
 ## The fixture taxonomy
 

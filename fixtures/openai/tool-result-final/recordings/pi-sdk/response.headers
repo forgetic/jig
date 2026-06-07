@@ -1,0 +1,65 @@
+{
+  "status": 200,
+  "headers": [
+    {
+      "name": "Content-Type",
+      "value": "text/event-stream; charset=utf-8"
+    },
+    {
+      "name": "Transfer-Encoding",
+      "value": "chunked"
+    },
+    {
+      "name": "Connection",
+      "value": "close"
+    },
+    {
+      "name": "Date",
+      "value": "Sun, 07 Jun 2026 01:16:48 GMT"
+    },
+    {
+      "name": "X-Content-Type-Options",
+      "value": "nosniff"
+    },
+    {
+      "name": "Server",
+      "value": "elb"
+    },
+    {
+      "name": "cache-control",
+      "value": "no-cache"
+    },
+    {
+      "name": "vary",
+      "value": "origin, access-control-request-method, access-control-request-headers"
+    },
+    {
+      "name": "access-control-allow-credentials",
+      "value": "true"
+    },
+    {
+      "name": "x-ds-trace-id",
+      "value": "05dc97632609a5fb4fb823db31595cab"
+    },
+    {
+      "name": "Strict-Transport-Security",
+      "value": "max-age=31536000; includeSubDomains; preload"
+    },
+    {
+      "name": "X-Cache",
+      "value": "Miss from cloudfront"
+    },
+    {
+      "name": "Via",
+      "value": "1.1 697662d3d4662f066744797cb74f6bbe.cloudfront.net (CloudFront)"
+    },
+    {
+      "name": "X-Amz-Cf-Pop",
+      "value": "MAD53-P6"
+    },
+    {
+      "name": "X-Amz-Cf-Id",
+      "value": "Kwog_dgM5-lWpFsRKztVZ1yrUtKqpnL9AzPXD_g8WRdmUEfQ1OdMaA=="
+    }
+  ]
+}

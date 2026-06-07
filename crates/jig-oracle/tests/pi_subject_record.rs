@@ -7,16 +7,13 @@
 //! cargo test -p jig-oracle --test pi_subject_record -- --ignored --nocapture
 //! ```
 //!
-//! For each `(dialect, scenario)` it:
-//!   1. binds the passthrough recorder on loopback;
-//!   2. resolves the real bearer for the dialect (DeepSeek key / Codex JWT /
-//!      refreshed Anthropic OAuth) and builds a pi-SDK provider pointed at the
-//!      recorder's `base_url`;
-//!   3. drives one completion through the recorder to the real backend on the
-//!      SDK's own `asupersync` runtime, while the recorder (on a background tokio
-//!      runtime) captures the one routable exchange; and
-//!   4. redacts and writes it as a `role: subject` recording under
-//!      `fixtures/<dialect>/<scenario>/recordings/pi-sdk/`.
+//! The actual capture logic lives in [`support::subject::record_subject_cell`]
+//! so the one-shot `xtask record` path (via the
+//! `examples/pi_subject_record.rs` example, issue #19) and this `--ignored` test
+//! run **identical** code: for each `(dialect, scenario)` it binds the
+//! passthrough recorder, resolves the real dialect bearer, drives one pi-SDK
+//! completion through the recorder to the real backend, and writes the redacted
+//! `role: subject` recording under `fixtures/<dialect>/<scenario>/recordings/pi-sdk/`.
 //!
 //! The recorder redacts every bearer / identity value at capture time, so the
 //! committed `subject` recordings are safe. After recording, `xtask derive` is
@@ -32,16 +29,9 @@
 mod support;
 
 use std::path::PathBuf;
-use std::sync::mpsc;
 
-use futures::StreamExt;
-use jig_record::proxy::{bind, proxy_once};
-use jig_record::{Provenance, Role, build_recording};
-use pi::provider::Context;
-use pi::providers::create_provider;
-
-use support::auth::{default_auth_path, resolve_bearer};
-use support::subject::{Dialect, Scenario, context_for, model_entry, stream_options};
+use support::auth::default_auth_path;
+use support::subject::{Dialect, Scenario, record_subject_cell};
 
 /// Today's date in `YYYY-MM-DD`, for `meta.captured`. Computed from the system
 /// clock — fine here because this harness is manual and online, never in the
@@ -89,118 +79,18 @@ fn fixtures_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
 }
 
-/// Record one `(dialect, scenario)` cell: bind the recorder, drive the SDK
-/// through it, and write the redacted `subject` recording. Returns the captured
+/// Record one `(dialect, scenario)` cell with provenance stamped from the local
+/// clock + git, delegating the capture to the shared core. Returns the captured
 /// HTTP status so the caller can flag a non-200 (a finding, not a fixture).
 fn record_cell(dialect: Dialect, scenario: Scenario) -> std::io::Result<u16> {
-    let auth_file = default_auth_path();
-
-    // Resolve the real bearer FIRST, before standing up the recorder. The
-    // anthropic path may refresh a near/expired OAuth token over the network; if
-    // that failed *after* the recorder was waiting on a connection, `proxy_once`
-    // (which blocks until a routable request arrives) would deadlock and never be
-    // joined. Resolving up front turns a credential failure into an immediate,
-    // clean error. Each resolution gets its own short-lived asupersync runtime.
-    let api_key = {
-        let rt = asupersync::runtime::RuntimeBuilder::current_thread()
-            .build()
-            .expect("build bearer-resolution runtime");
-        rt.block_on(async { resolve_bearer(dialect, &auth_file).await })
-            .map_err(|e| std::io::Error::other(format!("resolve bearer: {e}")))?
-    };
-
-    // The recorder is tokio-based; the SDK is asupersync-based. Run the recorder
-    // on its own current-thread tokio runtime in a background OS thread, hand the
-    // bound base_url back over a channel, drive the SDK on the asupersync runtime
-    // in this thread, then join the recorder thread for the captured exchange.
-    let (url_tx, url_rx) = mpsc::channel::<String>();
-    let dialect_for_thread = dialect;
-    let recorder = std::thread::spawn(move || -> std::io::Result<_> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        rt.block_on(async move {
-            let listener = bind().await?;
-            let addr = listener.local_addr()?;
-            url_tx
-                .send(format!("http://{addr}"))
-                .expect("send base_url");
-            // OpenAI dialect is recorded against DeepSeek (an OpenAI-compatible
-            // backend); the others use the dialect default upstream.
-            let upstream = match dialect_for_thread {
-                Dialect::OpenAi => Some("api.deepseek.com"),
-                _ => None,
-            };
-            proxy_once(&listener, upstream).await
-        })
-    });
-
-    let base_url = url_rx.recv().expect("recorder bound");
-
-    // Drive the SDK on its own runtime, pointed at the recorder.
-    let sdk_rt = asupersync::runtime::RuntimeBuilder::current_thread()
-        .build()
-        .expect("build pi-SDK runtime");
-    let drive_result = sdk_rt.block_on(async {
-        let entry = model_entry(
-            dialect,
-            &base_url,
-            Some(api_key.clone()),
-            std::collections::HashMap::new(),
-        );
-        let provider =
-            create_provider(&entry, None).map_err(|e| std::io::Error::other(format!("{e:?}")))?;
-
-        let ctx = context_for(dialect, scenario);
-        let options = stream_options(dialect, &api_key);
-        let ctx_ref: &Context<'_> = &ctx;
-
-        // Drain the stream so the full request/response round-trips through the
-        // recorder. Stream errors (e.g. a 4xx from the backend) are tolerated:
-        // the recorder still captured the exchange, which is the finding.
-        match provider.stream(ctx_ref, &options).await {
-            Ok(mut stream) => {
-                while let Some(event) = stream.next().await {
-                    if let Err(e) = event {
-                        eprintln!("  [stream event error, capture still written] {e}");
-                        break;
-                    }
-                }
-            }
-            Err(e) => eprintln!("  [stream start error, capture still written] {e:?}"),
-        }
-        Ok::<(), std::io::Error>(())
-    });
-    if let Err(e) = drive_result {
-        eprintln!("  [drive error] {e}");
-    }
-
-    // Collect the captured exchange and write it.
-    let (request, response, route) = recorder
-        .join()
-        .expect("recorder thread panicked")
-        .map_err(|e| std::io::Error::other(format!("recorder: {e}")))?;
-
-    let status = response.status;
-    let provenance = Provenance {
-        client: "pi-sdk".to_string(),
-        role: Role::Subject,
-        scenario: scenario.slug().to_string(),
-        // The SDK version under test (the `pi` dep is pinned to =0.1.13 in
-        // Cargo.toml); stamped so a refresh records which SDK produced the shape.
-        client_version: Some("pi_agent_rust 0.1.13".to_string()),
-        captured: today_utc(),
-        recorder_sha: recorder_sha(),
-    };
-    let recording = build_recording(&request, &response, &route, &provenance);
-    let dir = recording.write(&fixtures_root())?;
-    eprintln!(
-        "  wrote {}/{} subject recording -> {} (HTTP {status})",
-        dialect.slug(),
-        scenario.slug(),
-        dir.display()
-    );
-    Ok(status)
+    record_subject_cell(
+        dialect,
+        scenario,
+        &fixtures_root(),
+        &today_utc(),
+        &recorder_sha(),
+        &default_auth_path(),
+    )
 }
 
 /// Record every `(dialect, scenario)` cell. `#[ignore]`d: online, real creds.
@@ -239,23 +129,21 @@ fn record_all_subject_fixtures() {
 #[test]
 #[ignore = "online: set JIG_DIALECT and JIG_SCENARIO, drives a real backend"]
 fn record_one_subject_fixture() {
-    let dialect = match std::env::var("JIG_DIALECT").as_deref() {
-        Ok("openai") => Dialect::OpenAi,
-        Ok("anthropic") => Dialect::Anthropic,
-        Ok("codex") => Dialect::Codex,
-        other => panic!("set JIG_DIALECT to openai|anthropic|codex (got {other:?})"),
+    let dialect = match std::env::var("JIG_DIALECT").ok().as_deref() {
+        Some(slug) => Dialect::parse(slug)
+            .unwrap_or_else(|| panic!("set JIG_DIALECT to openai|anthropic|codex (got {slug:?})")),
+        None => panic!("set JIG_DIALECT to openai|anthropic|codex"),
     };
-    let scenario = match std::env::var("JIG_SCENARIO").as_deref() {
-        Ok("single-text") => Scenario::SingleText,
-        Ok("tool-call") => Scenario::ToolCall,
-        Ok("tool-result-final") => Scenario::ToolResultFinal,
-        Ok("parallel-tool-calls") => Scenario::ParallelToolCalls,
-        other => {
+    let scenario = match std::env::var("JIG_SCENARIO").ok().as_deref() {
+        Some(slug) => Scenario::parse(slug).unwrap_or_else(|| {
             panic!(
                 "set JIG_SCENARIO to \
-                 single-text|tool-call|tool-result-final|parallel-tool-calls (got {other:?})"
+                 single-text|tool-call|tool-result-final|parallel-tool-calls (got {slug:?})"
             )
-        }
+        }),
+        None => panic!(
+            "set JIG_SCENARIO to single-text|tool-call|tool-result-final|parallel-tool-calls"
+        ),
     };
     let status = record_cell(dialect, scenario).expect("record cell");
     assert!(

@@ -36,9 +36,16 @@ stays offline and green.
 
 ## The one-shot refresh
 
-`xtask record` expands the scenario matrix and drives `jig record` once per
-(dialect, scenario, client). Start with a dry run to see exactly what it will do
-without spawning anything:
+`xtask record` is the **primary** entry point. It expands the scenario matrix
+and, for each (dialect, scenario, client) cell, **drives the right capture
+harness end to end** — the official client for authoritative cells (a
+deterministic OpenAI/DeepSeek request, the Claude Code CLI, or `codex exec`) and
+the pi-SDK driver for subject cells — then re-derives the templates from the new
+authoritative captures. One command refreshes the selected fixtures and leaves
+the tree in sync; you do not start a recorder and drive a client by hand.
+
+Start with a dry run to see exactly which driver runs for each cell, and the
+concrete command it will spawn, without spawning anything:
 
 ```sh
 cargo run -p xtask -- record --dialect openai --dry-run
@@ -48,11 +55,30 @@ Then record one dialect, or everything:
 
 ```sh
 # One dialect (all its scenarios and clients):
-cargo run -p xtask -- record --dialect openai
+cargo run -p xtask -- record --dialect openai --upstream-host api.deepseek.com
 
 # The whole matrix (explicit opt-in; a bare `record` is refused):
-cargo run -p xtask -- record --all
+cargo run -p xtask -- record --all --upstream-host api.deepseek.com
 ```
+
+`record` dispatches per `(dialect, client)`:
+
+- **openai-sdk** (authoritative) — a self-contained `openai_capture` harness
+  issues the scenario's chat-completions request straight at the recorder, so no
+  external client is needed. Export the bearer it forwards (`DEEPSEEK_API_KEY`
+  when `--upstream-host api.deepseek.com` is set, else `OPENAI_API_KEY`).
+- **claude-code** (authoritative) — drives the `claude` CLI via the `capture`
+  harness with the per-scenario prompt/marker/tools baked into the matrix.
+- **codex** (authoritative) — drives `codex exec` via the `codex_capture`
+  harness, enabling reasoning for `thinking-text` automatically.
+- **pi-sdk** (subject) — drives `pi_agent_rust` directly via the
+  `pi_subject_record` harness, using the real credentials in
+  `~/.pi/agent/auth.json`.
+
+After the authoritative captures succeed, `record` runs the equivalent of
+`xtask derive` automatically, so the committed `*.template.json` /
+`drive-shape.json` stay in sync. Pass `--no-derive` to capture without touching
+the templates (e.g. when iterating on a single recording).
 
 Re-runs are **idempotent**: a recording overwrites the four files in its
 `recordings/<client>/` directory in place, so refreshing a scenario replaces it
@@ -89,14 +115,21 @@ cargo run -p xtask -- record --dialect openai \
   --captured 2026-06-06 --recorder-sha "$(git rev-parse --short HEAD)"
 ```
 
-### Driving the client
+### How the client is driven
 
-For each invocation the orchestrator prints which client to drive and starts
-`jig record`, which prints a loopback `base_url` (`http://127.0.0.1:PORT`). Point
-the official client at that base URL and run a trivial task that produces the
-scenario's shape (e.g. "create file foo.txt with bar" for a tool-call). The
-recorder forwards one exchange to the real backend, captures it, and exits.
-A complete chat-completions capture ends in the `[DONE]` SSE terminator.
+You no longer drive the client by hand: `xtask record` runs the right harness
+for each cell automatically (see the dispatch list above). Under the hood each
+harness stands up the passthrough recorder on a loopback `base_url`
+(`http://127.0.0.1:PORT`), drives its client through it against the real backend,
+forwards one exchange, captures it, and exits. A complete chat-completions
+capture ends in the `[DONE]` SSE terminator; an Anthropic capture in
+`message_stop`; a Codex capture in `response.completed`.
+
+The individual harnesses are still runnable on their own — as **debugging
+tools** when a single cell misbehaves and you want to iterate on a prompt or
+inspect the raw exchange. Those lower-level commands are documented in
+[Lower-level harnesses (debugging)](#lower-level-harnesses-debugging) below; the
+one-shot `xtask record` path above is the supported way to refresh fixtures.
 
 ### The `parallel-tool-calls` scenario (#30)
 
@@ -151,6 +184,27 @@ prompt (`Scenario::ParallelToolCalls` in `subject.rs`) for `openai` and `codex`;
 the `anthropic` subject cell is reviewed-missing (subscription-OAuth blocker, same
 as the other anthropic subject cells). After capturing, run `xtask derive` and
 the offline T1–T4 conformance as usual.
+
+## Lower-level harnesses (debugging)
+
+`xtask record` drives each of these harnesses for you. Run them directly only
+when you need to **debug a single cell** — iterate on a prompt, pick a different
+`--capture-index`, or inspect a raw exchange — outside the orchestrator. They
+write the same four-file recording in place, so a manual capture followed by
+`xtask derive` is equivalent to the one-shot path for that cell.
+
+### OpenAI/DeepSeek via the self-contained `openai_capture`
+
+The chat-completions request is a single deterministic exchange with no external
+CLI to drive, so its harness issues the request itself. It reads the bearer from
+the environment (`DEEPSEEK_API_KEY` with `--upstream-host api.deepseek.com`, else
+`OPENAI_API_KEY`) and never writes it to a fixture:
+
+```sh
+DEEPSEEK_API_KEY=sk-... cargo run -p jig-record --example openai_capture -- \
+  --scenario tool-call --upstream-host api.deepseek.com \
+  --captured "$(date -u +%F)" --recorder-sha "$(git rev-parse --short HEAD)"
+```
 
 ### Anthropic via the `claude` CLI
 
@@ -225,11 +279,23 @@ the `response.completed` event (there is **no** `[DONE]` sentinel).
 ### The pi-SDK `subject` recordings (P6, #17)
 
 The second driver is `pi_agent_rust` used **directly** (no smith) as the
-`subject` measured against the authoritative contract. Unlike the official CLIs
-above, this driver is a Rust library, so its recording harness is an
-`#[ignore]`d integration test rather than a `jig-record` example. It captures one
-`subject` recording per `(dialect, scenario)` against the **real** backends using
-the credentials in `~/.pi/agent/auth.json` (which you may use):
+`subject` measured against the authoritative contract. `xtask record --client
+pi-sdk` (or any selection that includes the subject cells) drives it for you
+through the `pi_subject_record` example, capturing one `subject` recording per
+`(dialect, scenario)` against the **real** backends using the credentials in
+`~/.pi/agent/auth.json` (which you may use). To debug a single cell outside the
+orchestrator, run the example directly:
+
+```sh
+# One subject cell, the same code xtask record drives:
+cargo run -p jig-oracle --example pi_subject_record -- \
+  --dialect anthropic --scenario tool-call \
+  --captured "$(date -u +%F)" --recorder-sha "$(git rev-parse --short HEAD)"
+```
+
+The same capture logic is also still reachable as an `#[ignore]`d integration
+test — handy when you want the whole-matrix loop or to run it under the test
+harness:
 
 ```sh
 # Record every (dialect, scenario) subject cell:
@@ -279,9 +345,11 @@ authoritative response template (best-effort).
 
 ## Deriving the templates
 
-After recording (or any time you change the masking policy), reduce the captured
-recordings to the committed conformance artifacts. This is **offline and
-deterministic**:
+`xtask record` runs this step **automatically** after a successful refresh, so
+you normally do not invoke it by hand. Run `derive` on its own only when you
+recorded with `--no-derive`, drove a lower-level harness directly, or changed the
+masking policy. It reduces the captured authoritative recordings to the committed
+conformance artifacts and is **offline and deterministic**:
 
 ```sh
 cargo run -p xtask -- derive
@@ -355,7 +423,10 @@ the human review on each refresh is the backstop.
 ## After recording
 
 1. `git diff fixtures/` — confirm the captures look right and no secret leaked.
-2. `cargo run -p xtask -- derive` — re-derive the templates from the new captures.
+2. `cargo run -p xtask -- derive` — `xtask record` already re-derives after a
+   successful refresh, so this is only needed if you recorded with `--no-derive`,
+   drove a lower-level harness by hand, or changed the masking policy. Re-running
+   it over unchanged recordings is a no-op (byte-identical output).
 3. `cargo test --workspace` — the offline conformance half (incl. T1/T2) must
    stay green.
 4. Commit the refreshed fixtures and templates with the capture date in the

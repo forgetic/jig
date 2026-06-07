@@ -13,6 +13,15 @@
 //! - [`subject`] — the dialect/scenario driving core: build a pi-SDK `ModelEntry`
 //!   pointed at a base URL and produce the per-scenario `Context`/`StreamOptions`.
 
+// These support modules are shared verbatim across multiple test/example targets
+// (the `#[ignore]`d recording test and the xtask-callable `pi_subject_record`
+// example, issue #19), and each target exercises a *different* subset of the
+// helpers — e.g. the example records one cell and never calls `Dialect::all`,
+// which the whole-matrix test does. A helper unused in one target is not dead
+// code, so silence the per-target `dead_code` lint here rather than scatter
+// `#[allow]`s across the shared API.
+#![allow(dead_code)]
+
 pub mod anthropic_oauth;
 pub mod auth;
 pub mod subject;

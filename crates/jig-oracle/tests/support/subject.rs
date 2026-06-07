@@ -16,15 +16,22 @@
 //! here for the anthropic dialect.
 
 use std::collections::HashMap;
+use std::path::Path;
+use std::sync::mpsc;
 
+use futures::StreamExt;
+use jig_record::proxy::{bind, proxy_once};
+use jig_record::{Provenance, Role, build_recording};
 use pi::model::{
     AssistantMessage, ContentBlock, Message, StopReason, TextContent, ToolCall, ToolResultMessage,
     Usage, UserContent, UserMessage,
 };
 use pi::models::ModelEntry;
 use pi::provider::{Context, InputType, Model, ModelCost, StreamOptions, ToolDef};
+use pi::providers::create_provider;
 
 use super::anthropic_oauth::{CLAUDE_CODE_SYSTEM_IDENTITY, request_headers};
+use super::auth::resolve_bearer;
 
 /// One wire dialect the SDK can be pointed at. The `provider` ids are
 /// deliberately *non-canonical* for openai/anthropic so the SDK takes its
@@ -82,6 +89,16 @@ impl Dialect {
     /// All three dialects, in fixture-tree order.
     pub fn all() -> [Dialect; 3] {
         [Dialect::OpenAi, Dialect::Anthropic, Dialect::Codex]
+    }
+
+    /// Parse a fixture-tree slug (`openai`/`anthropic`/`codex`) into a dialect.
+    pub fn parse(slug: &str) -> Option<Dialect> {
+        match slug {
+            "openai" => Some(Dialect::OpenAi),
+            "anthropic" => Some(Dialect::Anthropic),
+            "codex" => Some(Dialect::Codex),
+            _ => None,
+        }
     }
 
     /// A **currently-valid** model id for the real backend this dialect records
@@ -181,6 +198,17 @@ impl Scenario {
             Scenario::ToolResultFinal,
             Scenario::ParallelToolCalls,
         ]
+    }
+
+    /// Parse a fixture-tree scenario slug into a [`Scenario`].
+    pub fn parse(slug: &str) -> Option<Scenario> {
+        match slug {
+            "single-text" => Some(Scenario::SingleText),
+            "tool-call" => Some(Scenario::ToolCall),
+            "tool-result-final" => Some(Scenario::ToolResultFinal),
+            "parallel-tool-calls" => Some(Scenario::ParallelToolCalls),
+            _ => None,
+        }
     }
 }
 
@@ -299,6 +327,128 @@ fn user(text: &str) -> Message {
         content: UserContent::Text(text.to_string()),
         timestamp: 0,
     })
+}
+
+/// Record one `(dialect, scenario)` **subject** cell against the real backend:
+/// resolve the dialect bearer, bind the passthrough recorder, drive one pi-SDK
+/// completion through it, and write the redacted `subject` recording under
+/// `fixtures_root`. Returns the captured HTTP status so the caller can flag a
+/// non-2xx (a finding, not a fixture).
+///
+/// This is the shared driving core for both the manual recording harness
+/// (`tests/pi_subject_record.rs`) and the xtask-callable example
+/// (`examples/pi_subject_record.rs`), so the one-shot `xtask record` path and the
+/// `cargo test -- --ignored` path run identical capture logic. It is online and
+/// credential-driven — never part of the offline `cargo test` suite.
+pub fn record_subject_cell(
+    dialect: Dialect,
+    scenario: Scenario,
+    fixtures_root: &Path,
+    captured: &str,
+    recorder_sha: &str,
+    auth_file: &Path,
+) -> std::io::Result<u16> {
+    // Resolve the real bearer FIRST, before standing up the recorder. The
+    // anthropic path may refresh a near/expired OAuth token over the network; if
+    // that failed *after* the recorder was waiting on a connection, `proxy_once`
+    // (which blocks until a routable request arrives) would deadlock and never be
+    // joined. Resolving up front turns a credential failure into an immediate,
+    // clean error. Each resolution gets its own short-lived asupersync runtime.
+    let api_key = {
+        let rt = asupersync::runtime::RuntimeBuilder::current_thread()
+            .build()
+            .expect("build bearer-resolution runtime");
+        rt.block_on(async { resolve_bearer(dialect, auth_file).await })
+            .map_err(|e| std::io::Error::other(format!("resolve bearer: {e}")))?
+    };
+
+    // The recorder is tokio-based; the SDK is asupersync-based. Run the recorder
+    // on its own current-thread tokio runtime in a background OS thread, hand the
+    // bound base_url back over a channel, drive the SDK on the asupersync runtime
+    // in this thread, then join the recorder thread for the captured exchange.
+    let (url_tx, url_rx) = mpsc::channel::<String>();
+    let dialect_for_thread = dialect;
+    let recorder = std::thread::spawn(move || -> std::io::Result<_> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        rt.block_on(async move {
+            let listener = bind().await?;
+            let addr = listener.local_addr()?;
+            url_tx
+                .send(format!("http://{addr}"))
+                .expect("send base_url");
+            // OpenAI dialect is recorded against DeepSeek (an OpenAI-compatible
+            // backend); the others use the dialect default upstream.
+            let upstream = match dialect_for_thread {
+                Dialect::OpenAi => Some("api.deepseek.com"),
+                _ => None,
+            };
+            proxy_once(&listener, upstream).await
+        })
+    });
+
+    let base_url = url_rx.recv().expect("recorder bound");
+
+    // Drive the SDK on its own runtime, pointed at the recorder.
+    let sdk_rt = asupersync::runtime::RuntimeBuilder::current_thread()
+        .build()
+        .expect("build pi-SDK runtime");
+    let drive_result = sdk_rt.block_on(async {
+        let entry = model_entry(dialect, &base_url, Some(api_key.clone()), HashMap::new());
+        let provider =
+            create_provider(&entry, None).map_err(|e| std::io::Error::other(format!("{e:?}")))?;
+
+        let ctx = context_for(dialect, scenario);
+        let options = stream_options(dialect, &api_key);
+        let ctx_ref: &Context<'_> = &ctx;
+
+        // Drain the stream so the full request/response round-trips through the
+        // recorder. Stream errors (e.g. a 4xx from the backend) are tolerated:
+        // the recorder still captured the exchange, which is the finding.
+        match provider.stream(ctx_ref, &options).await {
+            Ok(mut stream) => {
+                while let Some(event) = stream.next().await {
+                    if let Err(e) = event {
+                        eprintln!("  [stream event error, capture still written] {e}");
+                        break;
+                    }
+                }
+            }
+            Err(e) => eprintln!("  [stream start error, capture still written] {e:?}"),
+        }
+        Ok::<(), std::io::Error>(())
+    });
+    if let Err(e) = drive_result {
+        eprintln!("  [drive error] {e}");
+    }
+
+    // Collect the captured exchange and write it.
+    let (request, response, route) = recorder
+        .join()
+        .expect("recorder thread panicked")
+        .map_err(|e| std::io::Error::other(format!("recorder: {e}")))?;
+
+    let status = response.status;
+    let provenance = Provenance {
+        client: "pi-sdk".to_string(),
+        role: Role::Subject,
+        scenario: scenario.slug().to_string(),
+        // The SDK version under test (the `pi` dep is pinned to =0.1.13 in
+        // Cargo.toml); stamped so a refresh records which SDK produced the shape.
+        client_version: Some("pi_agent_rust 0.1.13".to_string()),
+        captured: captured.to_string(),
+        recorder_sha: recorder_sha.to_string(),
+    };
+    let recording = build_recording(&request, &response, &route, &provenance);
+    let dir = recording.write(fixtures_root)?;
+    eprintln!(
+        "  wrote {}/{} subject recording -> {} (HTTP {status})",
+        dialect.slug(),
+        scenario.slug(),
+        dir.display()
+    );
+    Ok(status)
 }
 
 #[cfg(test)]

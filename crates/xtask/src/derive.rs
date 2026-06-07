@@ -19,6 +19,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use jig_core::Dialect;
 use jig_core::conform::{
     DriveShape, RequestTemplate, ResponseTemplate, derive_drive_shape, derive_request_template,
     derive_response_template,
@@ -44,7 +45,7 @@ pub enum DeriveError {
     /// A recording's `request.json` / `response.headers` was not the expected
     /// JSON shape. The string explains what was wrong.
     Shape(PathBuf, String),
-    /// The captured `response.sse` did not parse as an OpenAI stream.
+    /// The captured `response.sse` did not parse under its dialect's SSE parser.
     Parse(PathBuf, String),
 }
 
@@ -96,9 +97,19 @@ pub fn derive_artifacts(
     })?;
     let response_headers = header_pairs(&response, response_headers_path)?;
 
-    let response_template = derive_response_template(response_sse, &response_headers)
+    // The dialect is decided by the request path (the same mapping the recorder
+    // routes on), so the response SSE is reduced with the right parser. A path
+    // that does not route is an operator error worth surfacing.
+    let dialect = Dialect::for_path(&path).ok_or_else(|| {
+        DeriveError::Shape(
+            request_path.to_owned(),
+            format!("path {path:?} does not map to a known dialect"),
+        )
+    })?;
+
+    let response_template = derive_response_template(dialect, response_sse, &response_headers)
         .map_err(|e| DeriveError::Parse(response_sse_path.to_owned(), e.to_string()))?;
-    let drive_shape = derive_drive_shape(response_sse)
+    let drive_shape = derive_drive_shape(dialect, response_sse)
         .map_err(|e| DeriveError::Parse(response_sse_path.to_owned(), e.to_string()))?;
     let request_template = derive_request_template(&method, &path, &request_headers, &body);
 

@@ -61,9 +61,18 @@ pub async fn bind() -> io::Result<TcpListener> {
     TcpListener::bind(("127.0.0.1", 0)).await
 }
 
-/// Accept one client connection, forward it to its upstream over HTTPS, stream
-/// the response back unbuffered, and return the captured request/response for
-/// the fixture writer.
+/// Accept client connections until one carries a routable request, forward that
+/// one to its upstream over HTTPS, stream the response back unbuffered, and
+/// return the captured request/response for the fixture writer.
+///
+/// Real official clients open a **connectivity preflight** before the request
+/// that matters: Claude Code, for instance, sends a `HEAD /` probe on its own
+/// connection before the first `POST /v1/messages`. Those probes do not resolve
+/// to a dialect route, so capturing the *first* connection blindly would grab the
+/// probe (and reject it as "no route for path /") instead of the real exchange.
+/// We therefore loop: a connection whose request does not resolve to a route is
+/// answered with a minimal `204` so the client proceeds, and we move on to the
+/// next connection until a routable request arrives — that one is the capture.
 ///
 /// `upstream_host_override` lets the caller point OpenAI-dialect traffic at an
 /// OpenAI-compatible backend (DeepSeek, a gateway). `None` uses the dialect
@@ -72,25 +81,55 @@ pub async fn proxy_once(
     listener: &TcpListener,
     upstream_host_override: Option<&str>,
 ) -> io::Result<(ClientRequest, UpstreamResponse, Route)> {
-    let (mut client, _peer) = listener.accept().await?;
+    loop {
+        let (client, _peer) = listener.accept().await?;
+        if let Some(triple) = handle_connection(client, upstream_host_override).await? {
+            return Ok(triple);
+        }
+        // A non-routable preflight was answered; wait for the next connection.
+    }
+}
 
+/// Handle one already-accepted client connection: read its request, and either
+/// forward+capture a routable request (returning the captured triple) or answer
+/// a non-routable connectivity preflight with `204` and return `None`.
+///
+/// Split out from [`proxy_once`] so a caller can accept connections
+/// **concurrently** and run one of these per connection. Real official clients
+/// pre-open a pool of connections and pick one for the request that matters; a
+/// strictly serial accept loop can block on an idle pooled socket and never
+/// reach the one carrying the `POST`. Driving this per-connection on its own
+/// task sidesteps that — each idle socket simply parks its own task.
+pub async fn handle_connection(
+    mut client: TcpStream,
+    upstream_host_override: Option<&str>,
+) -> io::Result<Option<(ClientRequest, UpstreamResponse, Route)>> {
     let request = read_client_request(&mut client).await?;
 
-    let route = Route::resolve(request.path())
-        .map(|r| match upstream_host_override {
-            Some(host) => r.with_upstream_host(host),
-            None => r,
-        })
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("no route for path {}", request.path()),
-            )
-        })?;
+    let route = Route::resolve(request.path()).map(|r| match upstream_host_override {
+        Some(host) => r.with_upstream_host(host),
+        None => r,
+    });
+
+    let Some(route) = route else {
+        // A non-routable connectivity preflight (e.g. Claude Code's `HEAD /`
+        // probe). Acknowledge it so the client proceeds to its real request.
+        let _ = answer_preflight(&mut client).await;
+        return Ok(None);
+    };
 
     let response = forward(&mut client, &request, &route).await?;
+    Ok(Some((request, response, route)))
+}
 
-    Ok((request, response, route))
+/// Send a minimal, bodyless `204 No Content` to a preflight connection so the
+/// client treats the base URL as reachable and goes on to its real request.
+/// Best-effort: a failure here just means we drop the probe connection.
+async fn answer_preflight(client: &mut TcpStream) -> io::Result<()> {
+    client
+        .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+        .await?;
+    client.flush().await
 }
 
 /// Read the request line, headers, and full (Content-Length) body from the

@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::redact::{Header, redact_headers};
+use crate::redact::{Header, redact_body_str, redact_headers};
 
 /// The role a recording plays in the fixture set.
 ///
@@ -157,9 +157,10 @@ impl Recording {
     }
 }
 
-/// Build a [`CapturedRequest`] from raw captured pieces, redacting headers in
-/// the process. This is the only constructor used by the proxy, so a request can
-/// never reach a [`Recording`] with un-redacted headers.
+/// Build a [`CapturedRequest`] from raw captured pieces, redacting both headers
+/// **and** identity in the JSON body. This is the only constructor used by the
+/// proxy, so a request can never reach a [`Recording`] with un-redacted headers
+/// or a body-carried account/session id (see [`redact_body_str`]).
 pub fn redacted_request(
     method: impl Into<String>,
     path: impl Into<String>,
@@ -173,7 +174,7 @@ pub fn redacted_request(
             .iter()
             .map(HeaderEntry::from)
             .collect(),
-        body: body.into(),
+        body: redact_body_str(&body.into()),
     }
 }
 

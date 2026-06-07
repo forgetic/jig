@@ -1,0 +1,115 @@
+1ee
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-sonnet-4-5-20250929","id":"msg_01C2EiNMPmsCBxM5NsVtQ7Sq","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":35940,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"not_available"}}}
+
+
+8e
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}  }
+
+
+24
+event: ping
+data: {"type": "ping"}
+
+
+9e
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The","estimated_tokens":null}        }
+
+
+117
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" user is asking me to calculate 17 multiplied by 23, and they want me to think step by step and show my reasoning. They explicitly","estimated_tokens":null}  }
+
+
+11c
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" said \"Do not use any tools\", so I should not use the Bash tool or any other tool to calculate this.\n\nLet me calculate","estimated_tokens":null}               }
+
+
+ef
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" 17 × 23 step by step:\n\nI can break this down using the distributive property:\n17 × ","estimated_tokens":null}   }
+
+
+e7
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"23 = 17 × (20 + 3)\n= (17 × 20) + (17 × 3)\n\nFirst, let me calculate 17 × 20","estimated_tokens":null}   }
+
+
+fd
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":":\n17 × 20 = 17 × 2 × 10 = 34 × 10 = 340\n\nNext, let me calculate 17 × 3:\n17 × 3 = (","estimated_tokens":null}              }
+
+
+e3
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"10 + 7) × 3 = 30 + 21 = 51\n\nNow I add them together:\n340 + 51 = 391","estimated_tokens":null}         }
+
+
+121
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n\nAlternatively, I could use the standard multiplication algorithm:\n```\n    23\n  × 17\n  ----\n   161  (23 × 7)\n  230   (23 × 10)","estimated_tokens":null}    }
+
+
+f9
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"\n  ----\n  391\n```\n\nLet me verify:\n23 × 7 = 161 ✓\n23 × 10 = 230 ✓\n161 + 230 = 391","estimated_tokens":null}        }
+
+
+b0
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":" ✓\n\nSo the answer is 391.","estimated_tokens":null}}
+
+
+5e0
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Ev8HCm4IDhgCKkDdPz0xHbTyQxshL/udndqMZTB3X1AxLX1+dK6K6+m27hfylN70yXIZh7DyLaCSOGWub9KCQHOIHGuwSoRyEuFDMhpjbGF1ZGUtc29ubmV0LTQtNS0yMDI1MDkyOTgAQgh0aGlua2luZxIMe4eqdpIh2rRR5uTJGgzhBjsdSIU7/r/0z88iMBqc0MYCAiKo7tnFwuAtjCQWUMUf4Pkdrpw0OUIu/zF6OZ0lXz8vzKRBkzA6+dRMliq+BtHcN1i6VVBAt9IdV3KEIWggsxY9GLvxp+vNlGZLSjQKIT2gRPvYq0eQX5Ip8W6j1Vs3Q/Kqyj3olHyJO9DYU7/aZQ56vkQKkAewpu+Oz9ofhGNLPB3Jc6Di1cuAqcJ7Oyr7TALg5H6U6KwuURJaONVUXvK9JFXFpHPIZtjyotvY+ezA3qU906yv1PXoBPELmYZuS08tkeCAEqWmvC5DIwEGL3/X1P5rwfPC7Bcejbw8GXgphzqJRIURAJ8HO0R4FoMk6ollNNuQDL98xVtHaCxx60pAOMkuPYyCRt1OUYBf2wcQPj0W8jljePQWdjNiYCBG7nrYLcH90KEh+a7tMsaMGROif5FziQPeep8NIeyOzKAL34KIvgAiZIcWzdLs29j6WyG4HeFcsd7yFX0zuxONMMk0NtEmfXEdUYsDxI23q+MsgKfMogEiWOUpbC9EibJaKVuSS8dc18yqnxz3T5Y3eQMmI9408KDFCNq6Mvv543P/gpW8bHlmCNwTy+hP75WmJBrpwtIJzbmScrLtX/XtzV0c8iEfdi3YwPIjYDM2Gwibvc8oBFhGXb+RAn3WOSq4hi7IQu7x8EfzzSP7UBPzQZvhZ4xmxSCF2oLz1WGwGIFxbAVdljetKzhtDP7tHhu+YCG9LFTvnO1BGo4xfsXVitheyoMl2HTDZzHhvX3FcLfNNrcxvfm7Iy4IG/prYUemhqAPa1IxnKqdjJozu29ewvYK4Ys/VVQKWOT1+GGhOLcxAWDqTnmhjXWKpZZcfXfffFk9iUcsyCoz6Sgu8NBNGaF4nh1P0qQfxjvMz9xgmfhukVwCmUOpGhXT/nxUc75qU06E2eZrDvtypEtZsriL4HGWuJUPlTNG2+GJw2QHPMd2j4uRGzDQrqF2qAC6yNYiu6g4cmkeXuDerUI1OF6nZ3oDLFkJxvuBw8yaO49TxjSBffQXWSExYFwUM3qod7lDaixSILOd+czD9uLy6L4WJfpA9IFIdjENPggVQoE7XOllqW9vHDKik02TtKoBoTt0rqVUA8hzxjBAuJJa3ij53l634CzlDEjw0VXhwgH2oeIqgddqNsYspF2LKc3/XxN2RYluzFbXAv0+KNApGAE="}       }
+
+
+54
+event: content_block_stop
+data: {"type":"content_block_stop","index":0           }
+
+
+82
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}             }
+
+
+ad
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"I'll calculate 17 × 23 step by step.\n\n**Method:"}        }
+
+
+e2
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" Breaking down using the distributive property**\n\n17 × 23 = 17 × (20 + 3)\n\nFirst, calculate 17 × "}       }
+
+
+e8
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"20:\n- 17 × 20 = 340\n\nNext, calculate 17 × 3:\n- 17 × 3 = 51\n\nFinally, add the results:\n- 340 +"}              }
+
+
+fa
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" 51 = 391\n\n**Final answer: 391**"}               }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1             }
+
+
+22c
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":35940,"output_tokens":464,"output_tokens_details":{"thinking_tokens":340},"iterations":[{"input_tokens":10,"output_tokens":464,"cache_read_input_tokens":35940,"cache_creation_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"type":"message"}]},"context_management":{"applied_edits":[]}          }
+
+
+35
+event: message_stop
+data: {"type":"message_stop"  }
+
+
+0
+

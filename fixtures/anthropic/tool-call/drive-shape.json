@@ -1,0 +1,24 @@
+{
+  "reply": {
+    "turns": [
+      {
+        "Text": "I'll create the greeting.txt file with the content \"bar\"."
+      },
+      {
+        "ToolCall": {
+          "id": "toolu_01QBZQQDaBUVUWLrvvZgTCoq",
+          "name": "Write",
+          "args": {
+            "content": "bar",
+            "file_path": "/tmp/claude-1000/jig-capture-tool-call/greeting.txt"
+          }
+        }
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 10,
+      "completion_tokens": 172
+    },
+    "stop": "ToolCalls"
+  }
+}

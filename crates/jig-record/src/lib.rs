@@ -37,7 +37,7 @@ pub use fixture::{
     CapturedRequest, CapturedResponse, Meta, Recording, Role, body_as_json, redacted_request,
     redacted_response, sse_ends_in_done,
 };
-pub use proxy::{ClientRequest, UpstreamResponse, bind, proxy_once};
+pub use proxy::{ClientRequest, UpstreamResponse, bind, handle_connection, proxy_once};
 pub use redact::{Header, REDACTED, redact_headers};
 pub use route::{Route, dialect_slug};
 

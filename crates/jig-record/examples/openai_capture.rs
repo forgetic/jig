@@ -79,10 +79,14 @@ fn parse_args() -> Args {
 }
 
 /// The default model id for a given upstream. DeepSeek's current cheap chat
-/// model when recording against DeepSeek; a cheap OpenAI model otherwise.
+/// model when recording against DeepSeek; a cheap OpenAI model otherwise. T3
+/// masks the requested model, so this only has to satisfy the live backend —
+/// keep it in step with `Scenario`'s subject model in
+/// `crates/jig-oracle/tests/support/subject.rs`.
 fn default_model(upstream_host: Option<&str>) -> &'static str {
     match upstream_host {
-        Some(h) if h.contains("deepseek") => "deepseek-chat",
+        // `deepseek-chat` was retired; `deepseek-v4-flash` is the current cheapest.
+        Some(h) if h.contains("deepseek") => "deepseek-v4-flash",
         _ => "gpt-4o-mini",
     }
 }

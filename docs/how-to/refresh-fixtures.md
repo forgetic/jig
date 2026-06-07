@@ -150,7 +150,7 @@ prompt must name two distinct inputs and ask for both calls in one turn.
     --captured "$(date -u +%F)" --recorder-sha "$(git rev-parse --short HEAD)"
   curl -s "$BASE/chat/completions" -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
     -H 'Content-Type: application/json' -d '{
-      "model":"deepseek-chat","stream":true,"stream_options":{"include_usage":true},
+      "model":"deepseek-v4-flash","stream":true,"stream_options":{"include_usage":true},
       "tools":[{"type":"function","function":{"name":"get_weather",
         "description":"Get current weather for a city",
         "parameters":{"type":"object","properties":{"city":{"type":"string"}},

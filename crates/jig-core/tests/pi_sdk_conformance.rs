@@ -27,6 +27,13 @@
 //!   counterpart, or whose reply shape legitimately differs (the model is free to
 //!   answer differently), are skipped rather than forced.
 //!
+//! On top of the data-driven T3/T4 checks, [`subject_matrix_is_complete`] is a
+//! **full-matrix guard**: it asserts every required `(dialect, scenario)` subject
+//! cell (the three tool-shape scenarios across all three dialects) is captured, or
+//! is an explicitly reviewed-unavailable cell. This is the issue #17 requirement
+//! that a missing subject recording *fails* the build instead of being silently
+//! tolerated by the older "at least one exists" check.
+//!
 //! A failure prints the readable JSON path that diverged, never two large blobs.
 
 use std::path::{Path, PathBuf};
@@ -111,6 +118,87 @@ fn subject_cases() -> Vec<SubjectCase> {
     cases
 }
 
+/// The **expected** pi-SDK subject matrix: every `(dialect, scenario)` cell for
+/// which a `recordings/pi-sdk/` recording is *required* to exist.
+///
+/// Issue #17 asks T3/T4 to "fail when a required subject recording cell is
+/// absent" so the missing Anthropic subject set can no longer be overlooked by
+/// the [`subject_cases_exist`] some-exist check. This constant is that required
+/// list. It is the **three tool-shape scenarios** (`single-text`, `tool-call`,
+/// `tool-result-final`) across **all three dialects** — exactly the scenarios the
+/// online subject harness (`crates/jig-oracle/tests/support/subject.rs`) can
+/// drive deterministically.
+///
+/// `thinking-text` is deliberately **not** here even though the `anthropic` and
+/// `codex` dialects have authoritative `thinking-text` templates: the subject
+/// driver omits it because jig steers the model only via the prompt and forcing a
+/// reasoning turn out of the SDK is not reliable (see the `Scenario` doc comment
+/// in `subject.rs`). Adding a subject `thinking-text` capture later is a one-line
+/// addition here.
+const EXPECTED_SUBJECT_MATRIX: &[(&str, &str)] = &[
+    ("openai", "single-text"),
+    ("openai", "tool-call"),
+    ("openai", "tool-result-final"),
+    ("anthropic", "single-text"),
+    ("anthropic", "tool-call"),
+    ("anthropic", "tool-result-final"),
+    ("codex", "single-text"),
+    ("codex", "tool-call"),
+    ("codex", "tool-result-final"),
+];
+
+/// **Reviewed missing subject cells**: required cells from
+/// [`EXPECTED_SUBJECT_MATRIX`] that are *currently uncaptured* for a reviewed,
+/// external reason, plus that reason. This is the "explicit reviewed skip list
+/// for cells that are unavailable" issue #17 calls for: the matrix-completeness
+/// guard treats these as a known, accepted gap rather than a hard failure, while
+/// every *other* missing cell fails the build.
+///
+/// The list is self-cleaning: [`subject_matrix_is_complete`] fails if an entry
+/// here is actually *present* on disk (a stale skip), and fails if an entry names
+/// a cell not in [`EXPECTED_SUBJECT_MATRIX`] (a typo or drift). So the moment the
+/// real Anthropic captures land, this list must be emptied or the build breaks —
+/// the gap cannot rot silently.
+///
+/// Each entry is `((dialect, scenario), why-unavailable)`.
+const REVIEWED_MISSING_SUBJECTS: &[((&str, &str), &str)] = &[
+    // The Anthropic subject cells require a live Claude **subscription OAuth**
+    // token. At capture time the stored access token had expired and the
+    // `console.anthropic.com/v1/oauth/token` refresh endpoint was returning
+    // `429 rate_limit_error` for every refresh attempt, so no fresh bearer could
+    // be obtained to drive the real `/v1/messages` backend. This is the exact
+    // blocker issue #17 anticipated ("the stored Anthropic OAuth access token was
+    // expired and the token-refresh endpoint was rate-limiting refresh
+    // attempts"). Re-record with
+    //   JIG_DIALECT=anthropic JIG_SCENARIO=<scenario> \
+    //     cargo test -p jig-oracle --test pi_subject_record \
+    //     record_one_subject_fixture -- --ignored --nocapture --exact
+    // once the refresh rate limit clears, then delete these three entries.
+    (
+        ("anthropic", "single-text"),
+        "Anthropic subscription OAuth refresh rate-limited (HTTP 429) and stored token expired; cannot reach the real backend to capture",
+    ),
+    (
+        ("anthropic", "tool-call"),
+        "Anthropic subscription OAuth refresh rate-limited (HTTP 429) and stored token expired; cannot reach the real backend to capture",
+    ),
+    (
+        ("anthropic", "tool-result-final"),
+        "Anthropic subscription OAuth refresh rate-limited (HTTP 429) and stored token expired; cannot reach the real backend to capture",
+    ),
+];
+
+/// Whether a pi-SDK subject recording exists on disk for `(dialect, scenario)`:
+/// the presence of its `request.json` is the same liveness signal
+/// [`subject_cases`] uses to admit a case.
+fn subject_recording_exists(dialect: &str, scenario: &str) -> bool {
+    fixtures_root()
+        .join(dialect)
+        .join(scenario)
+        .join("recordings/pi-sdk/request.json")
+        .exists()
+}
+
 /// The fixture-tree dialect-dir name (`openai`/`anthropic`/`codex`).
 fn dialect_slug(dialect_dir: &Path) -> String {
     dialect_dir
@@ -150,6 +238,81 @@ fn subject_cases_exist() {
         "no fixtures/*/*/recordings/pi-sdk recordings found; record them with \
          `cargo test -p jig-oracle --test pi_subject_record -- --ignored`"
     );
+}
+
+/// **Full-matrix guard (issue #17).** Every required subject cell in
+/// [`EXPECTED_SUBJECT_MATRIX`] must either be present on disk or be an explicitly
+/// reviewed-unavailable cell in [`REVIEWED_MISSING_SUBJECTS`]. This is the test
+/// that "fails when an expected subject recording cell is absent" — closing the
+/// gap where the missing Anthropic subject set was silently tolerated because the
+/// data-driven T3/T4 tests only ran over whatever happened to be committed.
+///
+/// Three failure modes, each with an actionable message:
+///   1. a required cell is **missing** and **not reviewed** → capture it (or, if
+///      genuinely unavailable, add a reviewed entry with the reason);
+///   2. a reviewed-missing cell is **actually present** → delete the now-stale
+///      skip entry so the cell rejoins the real T3/T4 gate; and
+///   3. a reviewed-missing entry names a cell **outside** the expected matrix →
+///      a typo/drift; fix the entry.
+#[test]
+fn subject_matrix_is_complete() {
+    let is_reviewed_missing =
+        |cell: (&str, &str)| REVIEWED_MISSING_SUBJECTS.iter().any(|(c, _)| *c == cell);
+
+    // (3) The reviewed-missing list must only name cells that are actually
+    // required; otherwise the skip list silently drifts from the matrix.
+    for ((dialect, scenario), _why) in REVIEWED_MISSING_SUBJECTS {
+        assert!(
+            EXPECTED_SUBJECT_MATRIX.contains(&(*dialect, *scenario)),
+            "REVIEWED_MISSING_SUBJECTS names {dialect}/{scenario}, which is not in \
+             EXPECTED_SUBJECT_MATRIX — remove the stale entry or add the cell to the matrix"
+        );
+    }
+
+    // (2) A reviewed-missing cell that is now present is a stale skip: drop it so
+    // the cell is held to the real T3/T4 conformance gate again.
+    let stale: Vec<String> = REVIEWED_MISSING_SUBJECTS
+        .iter()
+        .filter(|((dialect, scenario), _)| subject_recording_exists(dialect, scenario))
+        .map(|((dialect, scenario), _)| format!("{dialect}/{scenario}"))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "these cells are now captured but still listed in REVIEWED_MISSING_SUBJECTS — \
+         delete the stale skip entries so they rejoin the T3/T4 gate:\n  {}",
+        stale.join("\n  ")
+    );
+
+    // (1) The core guard: every required cell is present, or reviewed-unavailable.
+    let missing: Vec<String> = EXPECTED_SUBJECT_MATRIX
+        .iter()
+        .filter(|(dialect, scenario)| {
+            !subject_recording_exists(dialect, scenario)
+                && !is_reviewed_missing((dialect, scenario))
+        })
+        .map(|(dialect, scenario)| format!("{dialect}/{scenario}"))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "required pi-SDK subject recordings are missing and not reviewed (issue #17 full-matrix \
+         guard). Capture each with `JIG_DIALECT=<d> JIG_SCENARIO=<s> cargo test -p jig-oracle \
+         --test pi_subject_record record_one_subject_fixture -- --ignored --exact`, or add a \
+         reviewed entry to REVIEWED_MISSING_SUBJECTS if the cell is genuinely unavailable:\n  {}",
+        missing.join("\n  ")
+    );
+
+    // Surface the accepted gaps in test output so they stay visible rather than
+    // silently skipped.
+    let reviewed_gaps: Vec<String> = REVIEWED_MISSING_SUBJECTS
+        .iter()
+        .map(|((dialect, scenario), why)| format!("{dialect}/{scenario}: {why}"))
+        .collect();
+    if !reviewed_gaps.is_empty() {
+        eprintln!("subject matrix reviewed-unavailable cells (issue #17):");
+        for gap in &reviewed_gaps {
+            eprintln!("  - {gap}");
+        }
+    }
 }
 
 /// **Reviewed T3 findings**: cross-driver request-grammar divergences that a

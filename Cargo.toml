@@ -1,5 +1,9 @@
 [workspace]
 members = ["crates/jig-core", "crates/jig-runtime", "crates/jig-server", "crates/jig-record", "crates/xtask"]
+# The root manifest is also the `jig` [package], so without this a bare
+# `cargo test` / `cargo nextest run` from the root would select only the
+# root binary (which has no tests). Default to the whole workspace.
+default-members = [".", "crates/jig-core", "crates/jig-runtime", "crates/jig-server", "crates/jig-record", "crates/xtask"]
 resolver = "3"
 
 [workspace.package]

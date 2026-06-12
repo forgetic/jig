@@ -37,7 +37,10 @@ jobs:
           rm -rf skein
           git clone --depth 1 ${{ github.server_url }}/ai/skein.git skein
       - name: Format
-        run: cargo fmt --all -- --check
+        # Not `--all`: cargo-fmt's --all also formats local path-based
+        # dependencies (the skein checkout next door), which jig's CI must
+        # not police. List the workspace members explicitly instead.
+        run: cargo fmt -p jig -p jig-core -p jig-runtime -p jig-server -p jig-record -p xtask -- --check
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test

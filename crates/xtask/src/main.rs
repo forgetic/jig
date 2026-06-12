@@ -4,8 +4,8 @@
 //!
 //! - **record** — expand the scenario matrix for the given selection and, for
 //!   each (dialect, scenario, client) cell, **dispatch to the right driver**: the
-//!   official-client capture harness (OpenAI/DeepSeek, Claude Code, Codex) or the
-//!   pi-SDK subject harness, instead of only spawning a bare `jig record` the
+//!   official-client capture harness (OpenAI/DeepSeek, Claude Code, Codex),
+//!   instead of only spawning a bare `jig record` the
 //!   operator must drive by hand (#19). After successful authoritative captures
 //!   it re-derives the templates automatically (unless `--no-derive`), so a
 //!   refresh is genuinely one command. This leg is **manual and online**: each
@@ -220,7 +220,7 @@ fn run_record(args: Vec<String>) -> io::Result<ExitCode> {
 
     // One-shot refresh: after successful authoritative captures, re-derive the
     // templates so the committed `*.template.json`/`drive-shape.json` are in sync
-    // with the new recordings. Subject (pi-sdk) recordings never anchor a
+    // with the new recordings. Subject-role recordings never anchor a
     // template, so this is gated on an authoritative capture having succeeded.
     // `--no-derive` is the escape hatch for capturing without touching templates.
     if !parsed.no_derive && authoritative_ok > 0 {

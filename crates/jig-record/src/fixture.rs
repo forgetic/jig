@@ -12,8 +12,8 @@
 //!
 //! The writer is dialect-agnostic and hardcodes no specific consumer: the
 //! `client` label and `role` live in `meta.json` as free-form data, so the same
-//! recorder serves the official-client `authoritative` recordings now and the
-//! pi-SDK `subject` recordings later (P6) with no change here.
+//! recorder serves the official-client `authoritative` recordings now and any
+//! SDK-under-test `subject` recordings later with no change here.
 //!
 //! Everything except the final byte-writing is pure data, so the model and the
 //! serialization are unit-tested without touching the filesystem (the one test

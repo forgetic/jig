@@ -10,6 +10,8 @@
 use jig_core::ScriptFile;
 use serde_json::Value;
 
+mod support;
+
 /// Split a `text/event-stream` body into the payloads of its `data:` lines.
 fn data_payloads(body: &str) -> Vec<String> {
     body.lines()
@@ -33,17 +35,15 @@ fn streamed_openai_text(body: &str) -> String {
 }
 
 fn post_chat_completions(base_url: &str) -> String {
-    reqwest::blocking::Client::new()
-        .post(format!("{base_url}/chat/completions"))
-        .json(&serde_json::json!({
+    support::post_json(
+        &format!("{base_url}/chat/completions"),
+        &[],
+        &serde_json::json!({
             "model": "fake",
             "stream": true,
             "messages": [{ "role": "user", "content": "hi" }],
-        }))
-        .send()
-        .expect("request succeeds")
-        .text()
-        .expect("body is readable")
+        }),
+    )
 }
 
 #[test]

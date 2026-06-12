@@ -31,16 +31,14 @@ stays offline and green.
    `.gitignore`. OAuth-based clients log in out of band:
    - **Codex:** `codex login` once (browser OAuth, cached in
      `~/.codex/auth.json`, auto-refreshed).
-   - **Anthropic via the pi-SDK driver:** `pi /login anthropic` (subscription
-     OAuth; wired up in P6, #17).
 
 ## The one-shot refresh
 
 `xtask record` is the **primary** entry point. It expands the scenario matrix
 and, for each (dialect, scenario, client) cell, **drives the right capture
-harness end to end** — the official client for authoritative cells (a
-deterministic OpenAI/DeepSeek request, the Claude Code CLI, or `codex exec`) and
-the pi-SDK driver for subject cells — then re-derives the templates from the new
+harness end to end** — the official client for each authoritative cell (a
+deterministic OpenAI/DeepSeek request, the Claude Code CLI, or `codex exec`) —
+then re-derives the templates from the new
 authoritative captures. One command refreshes the selected fixtures and leaves
 the tree in sync; you do not start a recorder and drive a client by hand.
 
@@ -71,9 +69,6 @@ cargo run -p xtask -- record --all --upstream-host api.deepseek.com
   harness with the per-scenario prompt/marker/tools baked into the matrix.
 - **codex** (authoritative) — drives `codex exec` via the `codex_capture`
   harness, enabling reasoning for `thinking-text` automatically.
-- **pi-sdk** (subject) — drives `pi_agent_rust` directly via the
-  `pi_subject_record` harness, using the real credentials in
-  `~/.pi/agent/auth.json`.
 
 After the authoritative captures succeed, `record` runs the equivalent of
 `xtask derive` automatically, so the committed `*.template.json` /
@@ -136,8 +131,8 @@ one-shot `xtask record` path above is the supported way to refresh fixtures.
 `parallel-tool-calls` captures **two** tool calls emitted in a single assistant
 turn — the renderers and parsers already handle multiple indexed tool calls, and
 this scenario pins that behaviour against real provider traffic. The shape is
-elicited by the prompt; there is no `tool_choice` knob on the subject SDK, so the
-prompt must name two distinct inputs and ask for both calls in one turn.
+elicited by the prompt, which must name two distinct inputs and ask for both
+calls in one turn.
 
 - **openai / DeepSeek** — drive the recorder with a two-city request under
   `tool_choice: required`. DeepSeek reliably returns two `get_weather` calls
@@ -179,11 +174,7 @@ prompt must name two distinct inputs and ask for both calls in one turn.
   omits `parallel-tool-calls`; once a Codex capture can be produced, add the slug
   there and capture as for the other codex scenarios.
 
-The pi-SDK **subject** side records `parallel-tool-calls` with the same two-city
-prompt (`Scenario::ParallelToolCalls` in `subject.rs`) for `openai` and `codex`;
-the `anthropic` subject cell is reviewed-missing (subscription-OAuth blocker, same
-as the other anthropic subject cells). After capturing, run `xtask derive` and
-the offline T1–T4 conformance as usual.
+After capturing, run `xtask derive` and the offline T1/T2 conformance as usual.
 
 ## Lower-level harnesses (debugging)
 
@@ -275,73 +266,6 @@ canonical tool call. Before anything is written the recorder redacts the bearer,
 `thread-id`, `x-client-request-id`, `x-codex-window-id`, `x-codex-turn-metadata`),
 and the body's `client_metadata.x-codex-installation-id`. A Codex capture ends in
 the `response.completed` event (there is **no** `[DONE]` sentinel).
-
-### The pi-SDK `subject` recordings (P6, #17)
-
-The second driver is `pi_agent_rust` used **directly** (no smith) as the
-`subject` measured against the authoritative contract. `xtask record --client
-pi-sdk` (or any selection that includes the subject cells) drives it for you
-through the `pi_subject_record` example, capturing one `subject` recording per
-`(dialect, scenario)` against the **real** backends using the credentials in
-`~/.pi/agent/auth.json` (which you may use). To debug a single cell outside the
-orchestrator, run the example directly:
-
-```sh
-# One subject cell, the same code xtask record drives:
-cargo run -p jig-oracle --example pi_subject_record -- \
-  --dialect anthropic --scenario tool-call \
-  --captured "$(date -u +%F)" --recorder-sha "$(git rev-parse --short HEAD)"
-```
-
-The same capture logic is also still reachable as an `#[ignore]`d integration
-test — handy when you want the whole-matrix loop or to run it under the test
-harness:
-
-```sh
-# Record every (dialect, scenario) subject cell:
-cargo test -p jig-oracle --test pi_subject_record \
-  record_all_subject_fixtures -- --ignored --nocapture
-
-# Refresh one cell (e.g. after a finding):
-JIG_DIALECT=anthropic JIG_SCENARIO=tool-call \
-  cargo test -p jig-oracle --test pi_subject_record \
-  record_one_subject_fixture -- --ignored --nocapture --exact
-```
-
-For each cell the harness binds the recorder, resolves the dialect bearer, builds
-a pi-SDK provider with `base_url` at the recorder, and drives one completion to
-the real backend. Bearer resolution per dialect:
-
-- **OpenAI/DeepSeek** — the `deepseek` API key, a standard bearer; recorded
-  against `api.deepseek.com`.
-- **Codex** — the `openai-codex` OAuth access **JWT** (which carries the
-  `chatgpt_account_id` claim the SDK's codex provider extracts itself). Bearer
-  resolution only — no special headers.
-- **Anthropic** — the **subscription OAuth** workaround duplicated (with
-  attribution) from smith in `crates/jig-oracle/tests/support/anthropic_oauth.rs`:
-  it reads/refreshes the `anthropic` OAuth token (dual schema), sends the Claude
-  Code identity headers, and sets the mandatory first `system` block
-  (`You are Claude Code, …`) — without it the request is rejected with a `429`.
-  The token endpoint is itself rate-limited, so if a refresh returns `429` wait a
-  few minutes and retry.
-
-The recorder redacts every bearer/identity value at capture time, so the
-committed `recordings/pi-sdk/` are safe. A **non-2xx** subject capture is a
-*finding*, not a fixture: it is still written (with its real status) and surfaced,
-but never derived from. `xtask derive` is **not** run for `subject` recordings —
-templates are anchored to the *authoritative* client only. The offline
-**T3/T4** checks then validate the committed subject recordings:
-
-```sh
-cargo test -p jig-core --test pi_sdk_conformance
-```
-
-T3 reduces the subject `request.json` to its request grammar and asserts it is
-conformant with the authoritative `request.template.json` grammar; a reviewed,
-benign divergence (a spec-valid optional field the official sample omitted) is
-recorded in that test's `REVIEWED_T3_FINDINGS` allowlist, so an *unreviewed*
-divergence still fails. T4 checks the subject reply grammar against the
-authoritative response template (best-effort).
 
 ## Deriving the templates
 

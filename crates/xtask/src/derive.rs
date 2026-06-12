@@ -433,7 +433,7 @@ mod tests {
     fn derive_tree_skips_scenarios_without_an_authoritative_recording() {
         let tmp = tempfile::tempdir().unwrap();
         // A subject-only scenario: no authoritative recording → skipped.
-        let rec = tmp.path().join("openai/subject-only/recordings/pi-sdk");
+        let rec = tmp.path().join("openai/subject-only/recordings/some-sdk");
         fs::create_dir_all(&rec).unwrap();
         fs::write(rec.join("meta.json"), r#"{"role":"subject"}"#).unwrap();
 

@@ -5,12 +5,14 @@
 //! final `Text`, across two successive HTTP requests. This mirrors the real
 //! coding-agent loop: the client receives a tool call, executes it locally,
 //! feeds the tool result back as a follow-up request, and gets the final answer.
-//! The test drives the loop over the OpenAI dialect with blocking `reqwest` and
-//! asserts via `fake.requests()` that the second request carried the prior tool
+//! The test drives the loop over the OpenAI dialect with a blocking HTTP client
+//! and asserts via `fake.requests()` that the second request carried the prior tool
 //! result — exactly the seam the loop depends on.
 
 use jig_core::{Reply, Script, StopReason, Turn, Usage};
 use serde_json::Value;
+
+mod support;
 
 /// Split a `text/event-stream` body into the payloads of its `data:` lines.
 fn data_payloads(body: &str) -> Vec<String> {
@@ -69,19 +71,15 @@ fn first_tool_call(body: &str) -> Option<(String, String, String)> {
 
 /// POST a chat-completions request carrying `messages`, returning the SSE body.
 fn post_chat(base_url: &str, messages: Value) -> String {
-    let client = reqwest::blocking::Client::new();
-    client
-        .post(format!("{base_url}/chat/completions"))
-        .header("Authorization", "Bearer test-key")
-        .json(&serde_json::json!({
+    support::post_json(
+        &format!("{base_url}/chat/completions"),
+        &[("Authorization", "Bearer test-key")],
+        &serde_json::json!({
             "model": "deepseek-chat",
             "stream": true,
             "messages": messages,
-        }))
-        .send()
-        .expect("request succeeds")
-        .text()
-        .expect("body is readable")
+        }),
+    )
 }
 
 #[test]

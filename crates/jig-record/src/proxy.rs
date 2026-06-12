@@ -14,13 +14,12 @@
 //! unit-tested in their own modules.
 
 use std::io;
-use std::sync::Arc;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::TlsConnector;
-use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use jig_runtime::read_some;
+use skein::cx::Cx;
+use skein::io::AsyncWriteExt;
+use skein::net::{TcpListener, TcpStream};
+use skein::tls::TlsConnector;
 
 use crate::redact::Header;
 use crate::route::Route;
@@ -56,8 +55,9 @@ pub struct UpstreamResponse {
 ///
 /// Bound separately from [`proxy_once`] so a caller can read the local address
 /// (to point a client at it) before any connection arrives — the same shape as
-/// `FakeLlm::start`.
-pub async fn bind() -> io::Result<TcpListener> {
+/// `FakeLlm::start`. Like every socket call, it must run inside a skein task;
+/// the `Cx` parameter is that task's capability context.
+pub async fn bind(_cx: &Cx) -> io::Result<TcpListener> {
     TcpListener::bind(("127.0.0.1", 0)).await
 }
 
@@ -78,12 +78,13 @@ pub async fn bind() -> io::Result<TcpListener> {
 /// OpenAI-compatible backend (DeepSeek, a gateway). `None` uses the dialect
 /// default.
 pub async fn proxy_once(
+    cx: &Cx,
     listener: &TcpListener,
     upstream_host_override: Option<&str>,
 ) -> io::Result<(ClientRequest, UpstreamResponse, Route)> {
     loop {
         let (client, _peer) = listener.accept().await?;
-        if let Some(triple) = handle_connection(client, upstream_host_override).await? {
+        if let Some(triple) = handle_connection(cx, client, upstream_host_override).await? {
             return Ok(triple);
         }
         // A non-routable preflight was answered; wait for the next connection.
@@ -101,10 +102,11 @@ pub async fn proxy_once(
 /// reach the one carrying the `POST`. Driving this per-connection on its own
 /// task sidesteps that — each idle socket simply parks its own task.
 pub async fn handle_connection(
+    cx: &Cx,
     mut client: TcpStream,
     upstream_host_override: Option<&str>,
 ) -> io::Result<Option<(ClientRequest, UpstreamResponse, Route)>> {
-    let request = read_client_request(&mut client).await?;
+    let request = read_client_request(cx, &mut client).await?;
 
     let route = Route::resolve(request.path()).map(|r| match upstream_host_override {
         Some(host) => r.with_upstream_host(host),
@@ -114,18 +116,18 @@ pub async fn handle_connection(
     let Some(route) = route else {
         // A non-routable connectivity preflight (e.g. Claude Code's `HEAD /`
         // probe). Acknowledge it so the client proceeds to its real request.
-        let _ = answer_preflight(&mut client).await;
+        let _ = answer_preflight(cx, &mut client).await;
         return Ok(None);
     };
 
-    let response = forward(&mut client, &request, &route).await?;
+    let response = forward(cx, &mut client, &request, &route).await?;
     Ok(Some((request, response, route)))
 }
 
 /// Send a minimal, bodyless `204 No Content` to a preflight connection so the
 /// client treats the base URL as reachable and goes on to its real request.
 /// Best-effort: a failure here just means we drop the probe connection.
-async fn answer_preflight(client: &mut TcpStream) -> io::Result<()> {
+async fn answer_preflight(_cx: &Cx, client: &mut TcpStream) -> io::Result<()> {
     client
         .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
         .await?;
@@ -135,7 +137,7 @@ async fn answer_preflight(client: &mut TcpStream) -> io::Result<()> {
 /// Read the request line, headers, and full (Content-Length) body from the
 /// client. Mirrors `jig_server`'s reader but keeps every header (the recorder
 /// needs them) instead of only Content-Length.
-async fn read_client_request(stream: &mut TcpStream) -> io::Result<ClientRequest> {
+async fn read_client_request(_cx: &Cx, stream: &mut TcpStream) -> io::Result<ClientRequest> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
 
@@ -143,7 +145,7 @@ async fn read_client_request(stream: &mut TcpStream) -> io::Result<ClientRequest
         if let Some(pos) = find_header_end(&buf) {
             break pos;
         }
-        let n = stream.read(&mut chunk).await?;
+        let n = read_some(stream, &mut chunk).await?;
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -179,7 +181,7 @@ async fn read_client_request(stream: &mut TcpStream) -> io::Result<ClientRequest
     let mut remaining = content_length.saturating_sub(body.len());
     while remaining > 0 {
         let want = remaining.min(chunk.len());
-        let n = stream.read(&mut chunk[..want]).await?;
+        let n = read_some(stream, &mut chunk[..want]).await?;
         if n == 0 {
             break;
         }
@@ -200,15 +202,17 @@ async fn read_client_request(stream: &mut TcpStream) -> io::Result<ClientRequest
 /// neutralized so the captured SSE is plaintext), then pump the response back to
 /// the client unbuffered while capturing it.
 async fn forward(
+    _cx: &Cx,
     client: &mut TcpStream,
     request: &ClientRequest,
     route: &Route,
 ) -> io::Result<UpstreamResponse> {
-    let connector = tls_connector();
-    let tcp = TcpStream::connect((route.upstream_host.as_str(), route.upstream_port)).await?;
-    let server_name = ServerName::try_from(route.upstream_host.clone())
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
-    let mut upstream = connector.connect(server_name, tcp).await?;
+    let connector = tls_connector()?;
+    let tcp = TcpStream::connect((route.upstream_host.clone(), route.upstream_port)).await?;
+    let mut upstream = connector
+        .connect(&route.upstream_host, tcp)
+        .await
+        .map_err(io::Error::other)?;
 
     let head = build_upstream_request_head(request, route);
     upstream.write_all(head.as_bytes()).await?;
@@ -223,7 +227,7 @@ async fn forward(
         if let Some(pos) = find_header_end(&buf) {
             break pos;
         }
-        let n = upstream.read(&mut chunk).await?;
+        let n = read_some(&mut upstream, &mut chunk).await?;
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -250,7 +254,7 @@ async fn forward(
     // flushing each read so SSE frames reach the client as they arrive. We do
     // not parse or de-chunk; the bytes are forwarded and captured verbatim.
     loop {
-        let n = upstream.read(&mut chunk).await?;
+        let n = read_some(&mut upstream, &mut chunk).await?;
         if n == 0 {
             break;
         }
@@ -266,14 +270,13 @@ async fn forward(
     })
 }
 
-/// Build a rustls-based [`TlsConnector`] trusting the Mozilla webpki root set.
-fn tls_connector() -> TlsConnector {
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    TlsConnector::from(Arc::new(config))
+/// Build a [`TlsConnector`] trusting the Mozilla webpki root set — the same
+/// trust anchors the old tokio-rustls + webpki-roots pair used.
+fn tls_connector() -> io::Result<TlsConnector> {
+    TlsConnector::builder()
+        .with_webpki_roots()
+        .build()
+        .map_err(io::Error::other)
 }
 
 /// Render the request head to send upstream: the original request line and

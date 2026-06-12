@@ -14,9 +14,9 @@ jig/
     │   ├── parse/          # SSE → canonical Reply parsers (openai/anthropic/codex)
     │   ├── render/         # canonical Reply → SSE renderers
     │   └── conform/        # masking policy + structural-template derivation (P2)
+    ├── jig-runtime/        # shared skein runtime bootstrap (reactor + block_on with a Cx)
     ├── jig-server/         # the embeddable service API
     ├── jig-record/         # passthrough recorder: capture real interactions to redacted fixtures
-    ├── jig-oracle/         # offline pi-SDK ↔ jig oracle test (drives pi_agent_rust directly)
     └── xtask/              # developer task runner: `record` + `derive` + `staleness`
 ```
 

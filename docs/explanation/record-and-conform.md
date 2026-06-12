@@ -44,7 +44,7 @@ Conformance is therefore **structural**, not byte-equality.
     creds)   │  └────┬───────────┘
             │        │ http (the base_url the client is pointed at)
             │   ┌────┴───────────┐
-            └─  │ a client       │  official CLI/SDK  *and*  pi_agent_rust (P6)
+            └─  │ a client       │  an official CLI/SDK
                 └────────────────┘
                      │ redact secrets, derive templates
         fixtures/<dialect>/<scenario>/{recordings/, *.template.json, drive-shape.json}  ← committed
@@ -79,81 +79,22 @@ a stable `REDACTED` placeholder — so nothing secret is ever written to a fixtu
 No TLS interception or CA cert is needed: the client speaks plain HTTP to the
 proxy and the proxy speaks HTTPS upstream.
 
-## Two drivers, two roles
+## Drivers and roles
 
-The proxy does not care who drives it, so two kinds of client do, with strict
-roles that keep the oracle property honest:
+The proxy does not care who drives it. Every recording carries a `role`:
 
 | Driver | Role | Provides |
 | --- | --- | --- |
 | **Official clients** (Codex / Claude Code / OpenAI–DeepSeek SDK) | **`authoritative`** — the spec | Real response framing *and* request grammar, including each provider's real tool-call encoding |
-| **pi SDK** (`pi_agent_rust`, used directly) | **`subject`** — measured against the spec | Full control of tools/prompts/loop for deterministic shapes; its own requests, validated against the authoritative contract (P6, #17) |
+| An SDK under test | **`subject`** — measured against the spec | Its own requests, which can be validated against the authoritative contract |
 
 **Rule:** jig's response contract is anchored to the **official** recordings,
-never to the pi SDK. The `client` label and `role` are free-form data in
+never to an SDK under test. The `client` label and `role` are free-form data in
 `meta.json`; the recorder hardcodes no specific consumer, which is why the same
-recorder serves both roles with no code change.
-
-## The offline oracle (P6, #17)
-
-The `subject` driver doubles as an **offline oracle**: with jig proven faithful
-by the dialect work (P3/P4), driving the pi SDK against jig — with **no network
-and no credentials** — and asserting it parses jig and completes its agent loop
-turns jig into a fast, deterministic check that the SDK speaks each dialect.
-
-`crates/jig-oracle` is that check. Its integration test points a
-`pi_agent_rust` provider's `base_url` at an in-process `jig_server::FakeLlm`,
-streams a scripted reply, and asserts the SDK decodes jig's SSE into its
-canonical event model and reaches `Done` — for all three dialects, both for a
-single text reply and for a tool-call → tool-result → final loop. The pi SDK is
-consumed **directly** (no smith). Codex validates that its bearer is a JWT
-carrying a `chatgpt_account_id` claim before sending, so the test mints a
-synthetic unsigned JWT locally (the shape the SDK's own tests use); nothing
-leaves the machine. It runs in the default, network-free `cargo test`.
-
-This is the *oracle* half of P6.
-
-## The pi-SDK recording track: subject recordings + T3/T4 (P6, #17)
-
-On top of the oracle, P6 also drives `pi_agent_rust` through the **recorder**
-against the **real** backends to capture `role: subject` recordings, and adds two
-cross-driver conformance checks. This is the second half of the two-driver design
-from "Two drivers, two roles": the pi SDK as the measured *subject*.
-
-- **The recording harness** is `crates/jig-oracle/tests/pi_subject_record.rs`
-  (`#[ignore]`d — online, real credentials, never in `cargo test`). For each
-  `(dialect, scenario)` it binds the recorder, resolves the real bearer from
-  `~/.pi/agent/auth.json` (DeepSeek key / Codex access JWT / Anthropic OAuth), and
-  drives one completion through the recorder to the real backend. The shared
-  driving core (`tests/support/subject.rs`) builds the pi-SDK `ModelEntry` with
-  `base_url` at the recorder and forces the exact shapes (single text, single tool
-  call, tool-result→final). **No smith dependency.**
-- **The Anthropic subscription workaround** (`tests/support/anthropic_oauth.rs`)
-  is duplicated — *with attribution* — from
-  `smith/.../provider/anthropic_oauth.rs`, because the pinned SDK has no native
-  Claude subscription OAuth: it supplies the Claude Code identity headers, the
-  dual-schema bearer resolve/refresh, and the mandatory first-`system`-block
-  identity (`CLAUDE_CODE_SYSTEM_IDENTITY`, else a `429`). It is unit-tested
-  offline (headers / schema / no-token-leak).
-- **T3 — request validation** (`crates/jig-core/tests/pi_sdk_conformance.rs`):
-  the pi-SDK `subject` `request.json`, reduced to its **request grammar**, must be
-  *conformant* with the **authoritative** `request.template.json` grammar — every
-  JSON key, value-type, and array-element shape the SDK sends must appear in the
-  official client's request. The two requests are *not* equal (the official client
-  sends its whole prompt and tool catalogue), so T3 compares the **wire grammar**,
-  not content or size (`jig_core::conform::grammar`). A divergence is a reviewed
-  SDK finding; benign, spec-valid extras a human has vetted live in a small
-  commented allowlist (`REVIEWED_T3_FINDINGS`) so T3 stays a real gate.
-- **T4 — cross-driver response consistency (best-effort):** the subject
-  `response.sse`, parsed and masked like a template, must carry the same canonical
-  reply grammar as the authoritative `response.template.json` for the same
-  scenario.
-
-T3/T4 are **offline** — they read the committed `subject` recordings and the
-authoritative templates and run in the default `cargo test`. The recorder redacts
-every bearer/identity value at capture time, so the committed `subject`
-recordings are safe; a **failed** pi-SDK recording (e.g. a `4xx`) is surfaced as a
-finding and never derived into a jig fixture.
+recorder serves both roles with no code change. SDKs that want to prove
+themselves against jig do so from their own repositories, by driving their
+providers against an in-process `jig_server::FakeLlm` (offline) or through the
+recorder (online, as `subject` recordings).
 
 ## The fixture taxonomy
 
@@ -162,7 +103,7 @@ Each recording is written into the taxonomy from issue #13:
 ```
 fixtures/<dialect>/<scenario>/
   recordings/
-    <client>/                 # e.g. openai-sdk (authoritative) / pi-sdk (subject)
+    <client>/                 # e.g. openai-sdk (authoritative)
       request.json            # method, path, redacted headers, body
       response.headers        # status + redacted headers
       response.sse            # the full SSE byte stream, exactly as received
@@ -238,9 +179,7 @@ two independent `Bash` calls into two `tool_use` blocks in one turn). The
 **codex** authoritative cell is a reviewed, documented skip: the only official
 driver is the Codex CLI, and it is not available in every capture environment, so
 `CODEX_SCENARIOS` deliberately omits `parallel-tool-calls` until a Codex capture
-can be produced. The pi-SDK **subject** side covers `openai` and `codex`
-(captured) and lists `anthropic` as reviewed-missing, the same subscription-OAuth
-blocker as the other anthropic subject cells.
+can be produced.
 
 ## Staleness: a nudge, not a gate
 
@@ -257,8 +196,6 @@ and a reference date, so it is unit-tested deterministically without a clock.
   *format* matters.
 - Not a dependency of CI on live credentials — recording is manual and offline;
   CI runs only the offline conformance half.
-- Not a dependency on any private tooling — the second driver is `pi_agent_rust`
-  consumed directly.
 
 ## References
 

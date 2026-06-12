@@ -9,9 +9,9 @@
 //!
 //! # Shape
 //!
-//! Mirrors `jig-server`: a single-threaded tokio runtime on its own thread, so a
-//! synchronous caller can drive it. The pieces are split so the network-free
-//! parts are unit-testable on their own:
+//! Mirrors `jig-server`: a single-threaded skein runtime owned by the blocking
+//! entry point, so a synchronous caller can drive it. The pieces are split so
+//! the network-free parts are unit-testable on their own:
 //!
 //! - [`redact`] — pure secret redaction over captured headers.
 //! - [`fixture`] — the on-disk [`fixture::Recording`] model and writer.
@@ -111,43 +111,50 @@ pub fn build_recording(
 /// and writes the recording under `fixtures_root`.
 ///
 /// This is the async, network-touching entry point — driven manually against a
-/// real backend, never from `cargo test`.
+/// real backend, never from `cargo test`. Like every socket-touching future it
+/// must run inside a skein task; `cx` is that task's capability context.
 pub async fn record_once(
+    cx: &skein::cx::Cx,
     fixtures_root: &Path,
     provenance: &Provenance,
     upstream_host_override: Option<&str>,
     mut out: impl io::Write,
 ) -> io::Result<PathBuf> {
-    let listener = bind().await?;
+    let listener = bind(cx).await?;
     let addr = listener.local_addr()?;
     writeln!(out, "http://{addr}")?;
     out.flush()?;
 
-    let (request, response, route) = proxy_once(&listener, upstream_host_override).await?;
+    let (request, response, route) = proxy_once(cx, &listener, upstream_host_override).await?;
     let recording = build_recording(&request, &response, &route, provenance);
     recording.write(fixtures_root)
 }
 
 /// Blocking wrapper around [`record_once`] for synchronous callers (the binary).
 ///
-/// Owns the single-threaded tokio runtime so the `jig` binary stays
+/// Owns the single-threaded skein runtime so the `jig` binary stays
 /// runtime-free — the same division of labor as `jig-server`, which hides its
-/// runtime behind `FakeLlm`.
+/// runtime behind `FakeLlm`. The spawned task needs `'static` captures, so the
+/// borrowed parameters are cloned into it.
 pub fn record_once_blocking(
     fixtures_root: &Path,
     provenance: &Provenance,
     upstream_host_override: Option<&str>,
-    out: impl io::Write,
+    out: impl io::Write + Send + 'static,
 ) -> io::Result<PathBuf> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    runtime.block_on(record_once(
-        fixtures_root,
-        provenance,
-        upstream_host_override,
-        out,
-    ))
+    let fixtures_root = fixtures_root.to_path_buf();
+    let provenance = provenance.clone();
+    let upstream_host_override = upstream_host_override.map(str::to_string);
+    jig_runtime::block_on(move |cx| async move {
+        record_once(
+            &cx,
+            &fixtures_root,
+            &provenance,
+            upstream_host_override.as_deref(),
+            out,
+        )
+        .await
+    })
 }
 
 #[cfg(test)]

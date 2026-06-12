@@ -38,8 +38,8 @@ fixtures/<dialect>/<scenario>/recordings/<client>/
 
 `meta.json` carries a free-form `client` label (`openai-sdk`, `curl`, …) and a
 `role` (`authoritative` for official clients, `subject` for an SDK under test).
-jig hardcodes no specific consumer, so the same recorder serves the pi-SDK
-`subject` recordings later (P6, #17) with no change.
+jig hardcodes no specific consumer, so the same recorder can serve any
+SDK-under-test `subject` recordings with no change.
 
 ## Recording is manual
 

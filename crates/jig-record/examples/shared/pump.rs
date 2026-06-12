@@ -124,7 +124,9 @@ impl CapturePump {
             Ok(result) => result?,
             Err(_) => {
                 let _ = thread.join();
-                return Err(io::Error::other("capture pump thread exited before binding"));
+                return Err(io::Error::other(
+                    "capture pump thread exited before binding",
+                ));
             }
         };
 

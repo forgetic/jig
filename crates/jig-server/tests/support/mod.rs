@@ -6,6 +6,10 @@
 //! free of an embedded async runtime — the same spirit as jig's own
 //! hand-rolled server.
 
+// Each integration-test binary compiles its own copy of this module and uses
+// only a subset of the helpers, so per-binary dead-code warnings are noise.
+#![allow(dead_code)]
+
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
@@ -36,9 +40,7 @@ pub fn post_json(url: &str, headers: &[(&str, &str)], body: &serde_json::Value) 
 /// GET `url`, returning the response status code.
 pub fn get_status(url: &str) -> u16 {
     let (authority, path) = split_url(url);
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
-    );
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
     let response = exchange(&authority, request.as_bytes(), &[]);
     let head = String::from_utf8_lossy(&response);
     head.split_whitespace()

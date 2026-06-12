@@ -13,10 +13,7 @@ use skein::io::{AsyncRead, ReadBuf};
 
 /// Read whatever is available into `buf`, returning the number of bytes read
 /// (`0` means EOF). The skein analogue of `tokio::io::AsyncReadExt::read`.
-pub async fn read_some<R: AsyncRead + Unpin>(
-    reader: &mut R,
-    buf: &mut [u8],
-) -> io::Result<usize> {
+pub async fn read_some<R: AsyncRead + Unpin>(reader: &mut R, buf: &mut [u8]) -> io::Result<usize> {
     std::future::poll_fn(|task_cx| {
         let mut read_buf = ReadBuf::new(buf);
         match Pin::new(&mut *reader).poll_read(task_cx, &mut read_buf) {

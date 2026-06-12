@@ -61,14 +61,13 @@ impl FakeLlm {
                 // explicitly (skein has no ambient context).
                 jig_runtime::block_on(move |cx| async move {
                     // Bind first; report the result back to `start`.
-                    let listener =
-                        match skein::net::TcpListener::bind(("127.0.0.1", 0)).await {
-                            Ok(listener) => listener,
-                            Err(err) => {
-                                let _ = addr_tx.send(Err(err));
-                                return;
-                            }
-                        };
+                    let listener = match skein::net::TcpListener::bind(("127.0.0.1", 0)).await {
+                        Ok(listener) => listener,
+                        Err(err) => {
+                            let _ = addr_tx.send(Err(err));
+                            return;
+                        }
+                    };
                     match listener.local_addr() {
                         Ok(addr) => {
                             if addr_tx.send(Ok(addr)).is_err() {

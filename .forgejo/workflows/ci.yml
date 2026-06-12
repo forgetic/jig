@@ -12,12 +12,27 @@ on:
 # Builds are cached transparently by the kache daemon (rustc-wrapper in
 # ~/.cargo/config.toml on the host runner), so a clean checkout still gets
 # warm builds for everything except final binaries.
+#
+# jig depends on skein by sibling path (`../skein/crates/skein`), the same
+# layout every local checkout of this ecosystem uses. CI reproduces it by
+# checking jig out into a `jig/` subdirectory of the workspace with skein
+# next to it, so the relative path resolves identically.
 jobs:
   validate:
     runs-on: host
+    defaults:
+      run:
+        working-directory: jig
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          path: jig
+      - name: Checkout skein (sibling path dependency)
+        uses: actions/checkout@v4
+        with:
+          repository: ai/skein
+          path: skein
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint

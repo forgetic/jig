@@ -249,7 +249,10 @@ fn post_messages(fake: &jig_server::FakeLlm, body: Value) -> String {
         &format!("{}/v1/messages", fake.base_url()),
         // Auth is irrelevant to jig, but real Anthropic clients send these;
         // prove we accept them.
-        &[("x-api-key", "test-key"), ("anthropic-version", "2023-06-01")],
+        &[
+            ("x-api-key", "test-key"),
+            ("anthropic-version", "2023-06-01"),
+        ],
         &body,
     )
 }

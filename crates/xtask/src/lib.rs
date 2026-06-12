@@ -10,8 +10,8 @@
 //!   `--dialect`/`--scenario`/`--client` selection into concrete record
 //!   invocations. Pure.
 //! - [`driver`] — the dispatch table turning each invocation into the concrete
-//!   command that records it (the right official-client harness, the pi-SDK
-//!   subject harness, or a bare `jig record` fallback). Pure.
+//!   command that records it (the right official-client harness, or a bare
+//!   `jig record` fallback). Pure.
 //! - [`derive`] — reduce committed authoritative recordings to the masked
 //!   `*.template.json` + `drive-shape.json` conformance artifacts (P2, #14). The
 //!   reduction is a pure function of the recording bytes (so re-deriving is

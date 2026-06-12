@@ -2,12 +2,14 @@
 //! capture (issue #4).
 //!
 //! Each test is a plain synchronous `#[test]` that starts a `FakeLlm`, drives it
-//! with blocking `reqwest`, and asserts on the streamed replies and on
+//! with a blocking `std::net` HTTP client, and asserts on the streamed replies and on
 //! `fake.requests()` — the same start → blocking HTTP → drop lifecycle the M1
 //! test established, now exercising multi-turn scripting.
 
 use jig_core::{Reply, Script, StopReason, Turn, Usage};
 use serde_json::Value;
+
+mod support;
 
 /// Split a `text/event-stream` body into the payloads of its `data:` lines.
 fn data_payloads(body: &str) -> Vec<String> {
@@ -43,19 +45,15 @@ fn finish_reason(body: &str) -> Option<String> {
 
 /// POST a chat-completions request carrying `messages`, returning the SSE body.
 fn post_chat(base_url: &str, messages: Value) -> String {
-    let client = reqwest::blocking::Client::new();
-    client
-        .post(format!("{base_url}/chat/completions"))
-        .header("Authorization", "Bearer test-key")
-        .json(&serde_json::json!({
+    support::post_json(
+        &format!("{base_url}/chat/completions"),
+        &[("Authorization", "Bearer test-key")],
+        &serde_json::json!({
             "model": "deepseek-chat",
             "stream": true,
             "messages": messages,
-        }))
-        .send()
-        .expect("request succeeds")
-        .text()
-        .expect("body is readable")
+        }),
+    )
 }
 
 #[test]
@@ -176,13 +174,7 @@ fn rule_branches_on_request_view_turn_count() {
 fn unknown_path_is_captured_without_a_view() {
     let fake =
         jig_server::FakeLlm::start(Script::Fixed(Reply::text("unused"))).expect("FakeLlm starts");
-    let client = reqwest::blocking::Client::new();
-    let status = client
-        .get(format!("{}/nope", fake.base_url()))
-        .send()
-        .expect("request succeeds")
-        .status()
-        .as_u16();
+    let status = support::get_status(&format!("{}/nope", fake.base_url()));
     assert_eq!(status, 404);
 
     // The 404 path is still recorded, but with no dialect projection.

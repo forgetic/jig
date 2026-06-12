@@ -23,12 +23,13 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-
 use jig_record::fixture::Recording;
-use jig_record::proxy::{bind, handle_connection};
 use jig_record::{Provenance, Role, build_recording};
+
+#[path = "shared/pump.rs"]
+mod pump;
+
+use pump::CapturePump;
 
 #[derive(Debug)]
 struct Args {
@@ -200,16 +201,16 @@ fn scenario_body(scenario: &str, model: &str) -> serde_json::Value {
 
 /// Issue one plain-HTTP `POST /chat/completions` at the recorder's loopback
 /// `base_url`, draining the response so the full exchange round-trips through
-/// the proxy. The recorder forwards it to the real upstream over HTTPS.
-async fn drive_request(
-    addr: std::net::SocketAddr,
-    bearer: &str,
-    body: &[u8],
-) -> std::io::Result<()> {
-    let mut stream = TcpStream::connect(addr).await?;
+/// the proxy. The recorder forwards it to the real upstream over HTTPS. The
+/// pump accepts on its own runtime thread, so a plain blocking `std::net`
+/// client suffices here.
+fn drive_request(authority: &str, bearer: &str, body: &[u8]) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+
+    let mut stream = std::net::TcpStream::connect(authority)?;
     let head = format!(
         "POST /chat/completions HTTP/1.1\r\n\
-         Host: {addr}\r\n\
+         Host: {authority}\r\n\
          Authorization: Bearer {bearer}\r\n\
          Content-Type: application/json\r\n\
          Accept: text/event-stream\r\n\
@@ -217,23 +218,18 @@ async fn drive_request(
          Connection: close\r\n\r\n",
         body.len()
     );
-    stream.write_all(head.as_bytes()).await?;
-    stream.write_all(body).await?;
-    stream.flush().await?;
+    stream.write_all(head.as_bytes())?;
+    stream.write_all(body)?;
+    stream.flush()?;
 
     // Drain the response to EOF so the recorder captures the whole stream.
     let mut sink = Vec::new();
-    stream.read_to_end(&mut sink).await?;
+    stream.read_to_end(&mut sink)?;
     Ok(())
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-async fn main() {
+fn main() {
     let args = parse_args();
-
-    let listener = bind().await.expect("bind recorder");
-    let addr = listener.local_addr().expect("local addr");
-    eprintln!("recorder listening at http://{addr}");
 
     let upstream = args.upstream_host.clone();
     let model = args
@@ -243,20 +239,13 @@ async fn main() {
     let bearer = resolve_bearer(upstream.as_deref());
     let body = serde_json::to_vec(&scenario_body(&args.scenario, &model)).expect("serialize body");
 
-    // Accept the one routable connection in the background while we drive the
-    // request. The recorder answers any non-routable preflight with 204; the
-    // chat-completions POST is the capture.
-    let upstream_for_accept = upstream.clone();
-    let accept = tokio::spawn(async move {
-        loop {
-            let (client, _peer) = listener.accept().await.expect("accept");
-            match handle_connection(client, upstream_for_accept.as_deref()).await {
-                Ok(Some(triple)) => return triple,
-                Ok(None) => continue, // preflight, keep waiting for the real POST
-                Err(e) => panic!("connection error: {e}"),
-            }
-        }
-    });
+    // Accept connections on the pump's runtime thread while we drive the
+    // request from this one. The recorder answers any non-routable preflight
+    // with 204; the chat-completions POST is the capture.
+    let pump = CapturePump::start(upstream.clone()).expect("start capture pump");
+    let base_url = pump.base_url();
+    let authority = base_url.strip_prefix("http://").unwrap().to_string();
+    eprintln!("recorder listening at {base_url}");
 
     eprintln!(
         "driving {} request (model {}, upstream {})",
@@ -264,12 +253,18 @@ async fn main() {
         model,
         upstream.as_deref().unwrap_or("api.openai.com")
     );
-    if let Err(e) = drive_request(addr, &bearer, &body).await {
+    if let Err(e) = drive_request(&authority, &bearer, &body) {
         eprintln!("ERROR driving request: {e}");
         std::process::exit(1);
     }
 
-    let (request, response, route) = accept.await.expect("accept task panicked");
+    // Give the pump a beat to commit the exchange, then collect it.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let exchanges = pump.stop();
+    let Some((request, response, route)) = exchanges.into_iter().next() else {
+        eprintln!("ERROR: no routable exchange captured");
+        std::process::exit(1);
+    };
     eprintln!(
         "captured {} {} -> {} ({} body bytes)",
         request.method,

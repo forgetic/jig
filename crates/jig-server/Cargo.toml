@@ -4,12 +4,10 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Embeddable fake-LLM service API (single-threaded tokio runtime on its own thread)"
+description = "Embeddable fake-LLM service API (single-threaded skein runtime on its own thread)"
 
 [dependencies]
 jig-core.workspace = true
+jig-runtime.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "io-util", "sync", "macros"] }
-
-[dev-dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }
+skein.workspace = true

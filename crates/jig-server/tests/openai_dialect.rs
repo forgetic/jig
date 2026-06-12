@@ -1,13 +1,15 @@
 //! Synchronous end-to-end test for the OpenAI dialect.
 //!
-//! This is the M1 acceptance test: a plain `#[test]` (no `#[tokio::main]`,
-//! no async runtime of its own) that starts a `FakeLlm`, hits its `base_url()`
-//! with blocking `reqwest`, asserts the streamed reply parses and ends in
+//! This is the M1 acceptance test: a plain `#[test]` with no async runtime of
+//! its own that starts a `FakeLlm`, hits its `base_url()`
+//! with a blocking HTTP client, asserts the streamed reply parses and ends in
 //! `[DONE]`, then lets `Drop` tear the runtime thread down. It demonstrates
 //! that the entire in-process lifecycle is start → blocking HTTP → drop.
 
 use jig_core::{Reply, Script, StopReason, Turn, Usage};
 use serde_json::Value;
+
+mod support;
 
 /// Split a `text/event-stream` body into the payloads of its `data:` lines.
 fn data_payloads(body: &str) -> Vec<String> {
@@ -140,30 +142,20 @@ impl FakeLlmFixture {
     }
 
     fn post_chat_completions(&self) -> String {
-        let client = reqwest::blocking::Client::new();
-        client
-            .post(format!("{}/chat/completions", self.fake.base_url()))
+        support::post_json(
+            &format!("{}/chat/completions", self.fake.base_url()),
             // Auth is irrelevant to jig, but real clients send it; prove we
             // accept it.
-            .header("Authorization", "Bearer test-key")
-            .json(&serde_json::json!({
+            &[("Authorization", "Bearer test-key")],
+            &serde_json::json!({
                 "model": "fake",
                 "stream": true,
                 "messages": [{ "role": "user", "content": "hi" }],
-            }))
-            .send()
-            .expect("request succeeds")
-            .text()
-            .expect("body is readable")
+            }),
+        )
     }
 
     fn get_status(&self, path: &str) -> u16 {
-        let client = reqwest::blocking::Client::new();
-        client
-            .get(format!("{}{path}", self.fake.base_url()))
-            .send()
-            .expect("request succeeds")
-            .status()
-            .as_u16()
+        support::get_status(&format!("{}{path}", self.fake.base_url()))
     }
 }

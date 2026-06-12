@@ -1,14 +1,16 @@
 //! Synchronous end-to-end test for the OpenAI Codex responses dialect (M4).
 //!
 //! Mirrors the M1/M3 acceptance tests: a plain `#[test]` (no async runtime of
-//! its own) starts a `FakeLlm`, POSTs `/backend-api/codex/responses` with
-//! blocking `reqwest`, and asserts the streamed SSE frames parse as a text reply
+//! its own) starts a `FakeLlm`, POSTs `/backend-api/codex/responses` with a
+//! blocking HTTP client, and asserts the streamed SSE frames parse as a text reply
 //! — `event:` lines present, the canonical frame sequence, reassembled text, and
 //! the terminal `response.completed` usage. The request projection (top-level
 //! `instructions`, prior tool results) is asserted via `fake.requests()`.
 
 use jig_core::{Dialect, Reply, Script, StopReason, Turn, Usage};
 use serde_json::Value;
+
+mod support;
 
 /// One parsed SSE event: the `event:` name and its `data:` JSON payload.
 #[derive(Debug)]
@@ -241,13 +243,7 @@ fn codex_tool_call_renders_function_call_item_and_arguments() {
 #[test]
 fn unknown_path_is_404() {
     let fake = start_with(Script::Fixed(Reply::text("unused")));
-    let client = reqwest::blocking::Client::new();
-    let status = client
-        .get(format!("{}/nope", fake.base_url()))
-        .send()
-        .expect("request succeeds")
-        .status()
-        .as_u16();
+    let status = support::get_status(&format!("{}/nope", fake.base_url()));
     assert_eq!(status, 404);
 }
 
@@ -258,15 +254,11 @@ fn start_with(script: Script) -> jig_server::FakeLlm {
 
 /// POST a Codex responses request body, returning the SSE response body.
 fn post_responses(fake: &jig_server::FakeLlm, body: Value) -> String {
-    let client = reqwest::blocking::Client::new();
-    client
-        .post(format!("{}/backend-api/codex/responses", fake.base_url()))
+    support::post_json(
+        &format!("{}/backend-api/codex/responses", fake.base_url()),
         // Auth is irrelevant to jig, but real Codex clients send a bearer token;
         // prove we accept it.
-        .header("authorization", "Bearer test-key")
-        .json(&body)
-        .send()
-        .expect("request succeeds")
-        .text()
-        .expect("body is readable")
+        &[("authorization", "Bearer test-key")],
+        &body,
+    )
 }

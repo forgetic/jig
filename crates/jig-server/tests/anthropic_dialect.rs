@@ -1,7 +1,7 @@
 //! Synchronous end-to-end test for the Anthropic messages dialect (M3).
 //!
 //! Mirrors the M1 OpenAI acceptance test: a plain `#[test]` (no async runtime of
-//! its own) starts a `FakeLlm`, POSTs `/v1/messages` with blocking `reqwest`,
+//! its own) starts a `FakeLlm`, POSTs `/v1/messages` with a blocking HTTP client,
 //! and asserts the streamed SSE frames parse as a text reply — `event:` lines
 //! present, the canonical frame sequence, reassembled text, and the terminal
 //! `stop_reason`. The request projection (top-level `system`, prior tool
@@ -9,6 +9,8 @@
 
 use jig_core::{Dialect, Reply, Script, StopReason, Turn, Usage};
 use serde_json::Value;
+
+mod support;
 
 /// One parsed SSE event: the `event:` name and its `data:` JSON payload.
 #[derive(Debug)]
@@ -232,13 +234,7 @@ fn anthropic_rule_branches_on_prior_tool_results() {
 #[test]
 fn unknown_path_is_404() {
     let fake = start_with(Script::Fixed(Reply::text("unused")));
-    let client = reqwest::blocking::Client::new();
-    let status = client
-        .get(format!("{}/nope", fake.base_url()))
-        .send()
-        .expect("request succeeds")
-        .status()
-        .as_u16();
+    let status = support::get_status(&format!("{}/nope", fake.base_url()));
     assert_eq!(status, 404);
 }
 
@@ -249,16 +245,11 @@ fn start_with(script: Script) -> jig_server::FakeLlm {
 
 /// POST an Anthropic messages request body, returning the SSE response body.
 fn post_messages(fake: &jig_server::FakeLlm, body: Value) -> String {
-    let client = reqwest::blocking::Client::new();
-    client
-        .post(format!("{}/v1/messages", fake.base_url()))
+    support::post_json(
+        &format!("{}/v1/messages", fake.base_url()),
         // Auth is irrelevant to jig, but real Anthropic clients send these;
         // prove we accept them.
-        .header("x-api-key", "test-key")
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
-        .send()
-        .expect("request succeeds")
-        .text()
-        .expect("body is readable")
+        &[("x-api-key", "test-key"), ("anthropic-version", "2023-06-01")],
+        &body,
+    )
 }

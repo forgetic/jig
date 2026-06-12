@@ -22,8 +22,8 @@ Auth headers are accepted but ignored. Unknown paths return `404`.
 
 ## Using it in-process (the test API)
 
-`jig` runs a single-threaded tokio runtime on its own OS thread, so a
-*synchronous* test can drive it with blocking HTTP and no async runtime of its
+`jig` runs a single-threaded [skein](../skein) runtime on its own OS thread, so
+a *synchronous* test can drive it with blocking HTTP and no async runtime of its
 own:
 
 ```rust
@@ -118,6 +118,8 @@ for the design.
 
 - `crates/jig-core` — dialect-agnostic, async-free core: `Reply`/`Turn`/`Usage`/
   `StopReason`, `Script`, the SSE renderers, and the `ScriptFile` file format.
+- `crates/jig-runtime` — the shared skein runtime bootstrap: builds the
+  single-threaded reactor runtime and runs a future as a task with its `Cx`.
 - `crates/jig-server` — the embeddable service API (`FakeLlm`): spawns the
   runtime thread, runs the HTTP server, routes per dialect, renders replies.
 - `crates/jig-record` — the passthrough recorder: forwards a client request to

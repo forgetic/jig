@@ -21,11 +21,14 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::{Arc, Mutex};
 
 use jig_record::fixture::Recording;
-use jig_record::proxy::{bind, handle_connection};
 use jig_record::{Provenance, Role, build_recording};
+
+#[path = "shared/pump.rs"]
+mod pump;
+
+use pump::CapturePump;
 
 #[derive(Debug)]
 struct Args {
@@ -95,64 +98,15 @@ fn parse_args() -> Args {
     }
 }
 
-#[tokio::main(flavor = "multi_thread", worker_threads = 4)]
-async fn main() {
+fn main() {
     let args = parse_args();
 
-    let listener = bind().await.expect("bind recorder");
-    let addr = listener.local_addr().expect("local addr");
-    let base_url = format!("http://{addr}");
+    // Capture every routable exchange while `claude` runs, accepting
+    // connections concurrently on the pump's own runtime thread (see
+    // `shared/pump.rs` for why concurrency matters here).
+    let pump = CapturePump::start(None).expect("start capture pump");
+    let base_url = pump.base_url();
     eprintln!("recorder listening at {base_url}");
-
-    // Capture every routable exchange while `claude` runs. Real clients pre-open
-    // a *pool* of connections and send the request on one of them, so we accept
-    // connections **concurrently** — one task per connection — rather than
-    // serially. A serial loop blocks reading an idle pooled socket and never
-    // reaches the one carrying the `POST`.
-    let captured: Arc<
-        Mutex<
-            Vec<(
-                jig_record::ClientRequest,
-                jig_record::UpstreamResponse,
-                jig_record::Route,
-            )>,
-        >,
-    > = Arc::new(Mutex::new(Vec::new()));
-    let captured_bg = Arc::clone(&captured);
-    let pump = tokio::spawn(async move {
-        loop {
-            let (client, _peer) = match listener.accept().await {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("accept ended: {e}");
-                    break;
-                }
-            };
-            let captured_conn = Arc::clone(&captured_bg);
-            tokio::spawn(async move {
-                match handle_connection(client, None).await {
-                    Ok(Some(triple)) => {
-                        let n = {
-                            let mut g = captured_conn.lock().unwrap();
-                            g.push(triple);
-                            g.len() - 1
-                        };
-                        let g = captured_conn.lock().unwrap();
-                        let (req, resp, _) = &g[n];
-                        eprintln!(
-                            "captured exchange #{n} {} {} -> {} ({} body bytes)",
-                            req.method,
-                            req.path(),
-                            resp.status,
-                            resp.body.len()
-                        );
-                    }
-                    Ok(None) => {} // preflight, answered with 204
-                    Err(e) => eprintln!("connection error: {e}"),
-                }
-            });
-        }
-    });
 
     // Drive the claude CLI through the recorder against the real backend.
     //
@@ -211,9 +165,7 @@ async fn main() {
 
     // Give the pump a beat to record the final exchange, then stop it.
     std::thread::sleep(std::time::Duration::from_millis(300));
-    pump.abort();
-
-    let exchanges = captured.lock().unwrap();
+    let exchanges = pump.stop();
     eprintln!("total routable exchanges captured: {}", exchanges.len());
     if exchanges.is_empty() {
         eprintln!("ERROR: no routable exchanges captured");

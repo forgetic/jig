@@ -1,4 +1,4 @@
-//! The async HTTP/1.1 + chunked-SSE server, hand-rolled on a tokio socket.
+//! The async HTTP/1.1 + chunked-SSE server, hand-rolled on a skein socket.
 //!
 //! Kept deliberately tiny: this is a single-threaded, low-traffic test double,
 //! not a server under load (see bootstrap.md "Runtime & HTTP layer"). We read
@@ -6,6 +6,7 @@
 //! SSE frames as an HTTP/1.1 chunked body.
 
 use std::io;
+use std::pin::pin;
 use std::sync::{Arc, Mutex};
 
 use jig_core::request::{parse_anthropic, parse_codex, parse_openai};
@@ -13,9 +14,12 @@ use jig_core::{
     Dialect, RecordedRequest, RequestView, Script, render::frames_to_body, render_anthropic,
     render_codex, render_openai,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::oneshot;
+use jig_runtime::read_some;
+use skein::combinator::{Either, Select};
+use skein::cx::Cx;
+use skein::io::AsyncWriteExt;
+use skein::net::{TcpListener, TcpStream};
+use skein::sync::Notify;
 
 /// Shared, append-only log of every request the server handled, in arrival
 /// order. Held behind `Arc<Mutex<…>>` so it is reachable from both the runtime
@@ -23,48 +27,52 @@ use tokio::sync::oneshot;
 /// `FakeLlm::requests()`).
 pub type RequestLog = Arc<Mutex<Vec<RecordedRequest>>>;
 
-/// Run the accept loop until `shutdown` fires, then return.
+/// Run the accept loop until `shutdown` is notified, then return.
 ///
 /// `listener` is already bound (the caller binds before spawning so `base_url`
 /// is valid immediately). Each accepted connection is handled inline — the
 /// single-threaded runtime keeps ordering deterministic, which is also what lets
 /// `Sequence` advance and the request log append in a stable order.
 pub async fn serve(
+    cx: &Cx,
     listener: TcpListener,
     script: Arc<Script>,
     log: RequestLog,
-    mut shutdown: oneshot::Receiver<()>,
+    shutdown: Arc<Notify>,
 ) {
     loop {
-        tokio::select! {
+        // Race shutdown against the next accept. Both futures are dropped at
+        // the end of the iteration; `Notified` is cancel-safe and `notify_one`
+        // stores an un-consumed notification, so a signal can never be lost
+        // between iterations. Dropping the loser holds no obligations here.
+        let notified = pin!(shutdown.notified());
+        let accepted = pin!(listener.accept());
+        match Select::new(notified, accepted).await {
             // Drop signalled shutdown: stop accepting and unwind.
-            _ = &mut shutdown => return,
-            accepted = listener.accept() => {
-                match accepted {
-                    Ok((stream, _peer)) => {
-                        let script = Arc::clone(&script);
-                        let log = Arc::clone(&log);
-                        // Handle inline; connections are short-lived SSE streams.
-                        if let Err(err) = handle_connection(stream, &script, &log).await {
-                            // A client hang-up mid-stream is normal for a test
-                            // double; never let it take the server down.
-                            let _ = err;
-                        }
-                    }
-                    Err(_) => return,
+            Either::Left(()) => return,
+            Either::Right(Ok((stream, _peer))) => {
+                let script = Arc::clone(&script);
+                let log = Arc::clone(&log);
+                // Handle inline; connections are short-lived SSE streams.
+                if let Err(err) = handle_connection(cx, stream, &script, &log).await {
+                    // A client hang-up mid-stream is normal for a test
+                    // double; never let it take the server down.
+                    let _ = err;
                 }
             }
+            Either::Right(Err(_)) => return,
         }
     }
 }
 
 /// Read one request, record it, route it, and stream the response.
 async fn handle_connection(
+    cx: &Cx,
     mut stream: TcpStream,
     script: &Script,
     log: &RequestLog,
 ) -> io::Result<()> {
-    let request = read_request(&mut stream).await?;
+    let request = read_request(cx, &mut stream).await?;
 
     // Project the body for the matched dialect (if any) so it is available both
     // to the script and to the recorded request.
@@ -85,7 +93,7 @@ async fn handle_connection(
             let view = view.unwrap_or_else(empty_openai_view);
             let reply = script.next_reply(&view);
             let body = frames_to_body(&render_openai(&reply));
-            write_sse_response(&mut stream, &body).await
+            write_sse_response(cx, &mut stream, &body).await
         }
         "/v1/messages" => {
             // Anthropic messages dialect. Same script seam as OpenAI — only the
@@ -93,7 +101,7 @@ async fn handle_connection(
             let view = view.unwrap_or_else(empty_anthropic_view);
             let reply = script.next_reply(&view);
             let body = frames_to_body(&render_anthropic(&reply));
-            write_sse_response(&mut stream, &body).await
+            write_sse_response(cx, &mut stream, &body).await
         }
         "/backend-api/codex/responses" => {
             // OpenAI Codex responses dialect. Same script seam as the others —
@@ -101,9 +109,9 @@ async fn handle_connection(
             let view = view.unwrap_or_else(empty_codex_view);
             let reply = script.next_reply(&view);
             let body = frames_to_body(&render_codex(&reply));
-            write_sse_response(&mut stream, &body).await
+            write_sse_response(cx, &mut stream, &body).await
         }
-        _ => write_not_found(&mut stream).await,
+        _ => write_not_found(cx, &mut stream).await,
     }
 }
 
@@ -158,7 +166,7 @@ struct Request {
 /// `Content-Length`. The body is captured (not just drained) so it can be parsed
 /// into a `RequestView` and recorded for assertions; reading it fully also keeps
 /// the socket clean so clients that wait for us to read don't stall.
-async fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
+async fn read_request(_cx: &Cx, stream: &mut TcpStream) -> io::Result<Request> {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
 
@@ -167,7 +175,7 @@ async fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         if let Some(pos) = find_header_end(&buf) {
             break pos;
         }
-        let n = stream.read(&mut chunk).await?;
+        let n = read_some(stream, &mut chunk).await?;
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -204,7 +212,7 @@ async fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
     let mut remaining = content_length.saturating_sub(body.len());
     while remaining > 0 {
         let want = remaining.min(chunk.len());
-        let n = stream.read(&mut chunk[..want]).await?;
+        let n = read_some(stream, &mut chunk[..want]).await?;
         if n == 0 {
             break;
         }
@@ -225,7 +233,7 @@ fn find_header_end(buf: &[u8]) -> Option<usize> {
 /// Chunked transfer-encoding is what real providers use; emitting the whole
 /// body as one chunk is sufficient for the SDK parser and keeps the writer
 /// trivial. `Connection: close` lets the client treat EOF as end-of-stream.
-async fn write_sse_response(stream: &mut TcpStream, body: &str) -> io::Result<()> {
+async fn write_sse_response(_cx: &Cx, stream: &mut TcpStream, body: &str) -> io::Result<()> {
     let headers = "HTTP/1.1 200 OK\r\n\
          Content-Type: text/event-stream\r\n\
          Cache-Control: no-cache\r\n\
@@ -244,7 +252,7 @@ async fn write_sse_response(stream: &mut TcpStream, body: &str) -> io::Result<()
 }
 
 /// Write a bare `404` for unknown paths.
-async fn write_not_found(stream: &mut TcpStream) -> io::Result<()> {
+async fn write_not_found(_cx: &Cx, stream: &mut TcpStream) -> io::Result<()> {
     let response = "HTTP/1.1 404 Not Found\r\n\
          Content-Length: 0\r\n\
          Connection: close\r\n\

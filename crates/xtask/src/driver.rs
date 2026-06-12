@@ -2,9 +2,9 @@
 //! recorded.
 //!
 //! P5 (#19) promised a *one-command* refresh: `xtask record --all` should start
-//! the recorder, drive the relevant official client (or the pi-SDK subject
-//! harness) end to end, and leave the fixture tree refreshed — not just spawn a
-//! bare `jig record` per cell and wait for a human to drive the client by hand.
+//! the recorder, drive the relevant official client end to end, and leave the
+//! fixture tree refreshed — not just spawn a bare `jig record` per cell and
+//! wait for a human to drive the client by hand.
 //!
 //! This module is the table that turns a [`RecordInvocation`] into the concrete
 //! command that records it:
@@ -18,9 +18,6 @@
 //!   here so the matrix stays the single source of truth.
 //! - **codex** (authoritative) reuses the `codex_capture` example: the agentic
 //!   `codex exec` harness, with the per-scenario prompt/marker/config baked in.
-//! - **pi-sdk** (subject) drives the factored pi-SDK harness via the
-//!   `pi_subject_record` example — the same logic the `#[ignore]`d test used,
-//!   now callable from xtask without `cargo test -- --ignored`.
 //!
 //! Like [`crate::matrix`], this is **pure**: [`driver_for`] is a data transform
 //! from an invocation to a [`DriverCommand`] (program + argv + a one-line dry-run
@@ -56,17 +53,15 @@ pub fn cargo() -> String {
 /// writing under `fixtures_root`.
 ///
 /// Dispatches on `(role, client)`: official clients (`authoritative`) each have a
-/// bespoke `jig-record` example harness; the pi-SDK (`subject`) has the factored
-/// `jig-oracle` example. An unknown client falls back to the generic
-/// `jig record` spawn, preserving the pre-#19 behaviour for any cell not yet
-/// taught a real driver.
+/// bespoke `jig-record` example harness. An unknown client falls back to the
+/// generic `jig record` spawn, preserving the pre-#19 behaviour for any cell not
+/// yet taught a real driver.
 pub fn driver_for(
     inv: &RecordInvocation,
     fixtures_root: &str,
     provenance: &Provenance,
 ) -> DriverCommand {
     match (inv.role, inv.client.as_str()) {
-        (Role::Subject, "pi-sdk") => pi_subject_driver(inv, fixtures_root, provenance),
         (Role::Authoritative, "openai-sdk") => openai_driver(inv, fixtures_root, provenance),
         (Role::Authoritative, "claude-code") => claude_driver(inv, fixtures_root, provenance),
         (Role::Authoritative, "codex") => codex_driver(inv, fixtures_root, provenance),
@@ -209,32 +204,6 @@ fn codex_driver(
     let describe = format!(
         "codex_capture example: codex exec, scenario {}, marker {}, capture-index {}",
         inv.scenario, plan.marker, plan.capture_index
-    );
-    DriverCommand {
-        program: cargo(),
-        args,
-        describe,
-    }
-}
-
-/// **pi-sdk subject** → the factored `pi_subject_record` example, selecting the
-/// cell by `--dialect`/`--scenario` (the same logic the ignored test ran).
-fn pi_subject_driver(
-    inv: &RecordInvocation,
-    fixtures_root: &str,
-    provenance: &Provenance,
-) -> DriverCommand {
-    let mut args = cargo_example("jig-oracle", "pi_subject_record");
-    args.push("--dialect".to_string());
-    args.push(inv.dialect.clone());
-    args.push("--scenario".to_string());
-    args.push(inv.scenario.clone());
-    args.push("--fixtures-root".to_string());
-    args.push(fixtures_root.to_string());
-    push_provenance(&mut args, provenance);
-    let describe = format!(
-        "pi_subject_record example: pi-SDK subject, {}/{}",
-        inv.dialect, inv.scenario
     );
     DriverCommand {
         program: cargo(),
@@ -539,22 +508,6 @@ mod tests {
         );
         assert_eq!(value_after(&cmd.args, "--capture-index"), Some("1"));
         assert_eq!(value_after(&cmd.args, "--match-body"), Some("JIGEXEC55"));
-    }
-
-    #[test]
-    fn pi_subject_driver_selects_cell_by_dialect_and_scenario() {
-        let cmd = driver_for(
-            &inv("anthropic", "tool-call", "pi-sdk", Role::Subject),
-            "fixtures",
-            &provenance(),
-        );
-        assert!(cmd.args.contains(&"jig-oracle".to_string()));
-        assert_eq!(
-            value_after(&cmd.args, "--example"),
-            Some("pi_subject_record")
-        );
-        assert_eq!(value_after(&cmd.args, "--dialect"), Some("anthropic"));
-        assert_eq!(value_after(&cmd.args, "--scenario"), Some("tool-call"));
     }
 
     #[test]

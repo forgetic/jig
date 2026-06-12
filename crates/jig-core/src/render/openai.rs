@@ -1,7 +1,7 @@
 //! OpenAI / DeepSeek chat-completions SSE renderer.
 //!
 //! Emits `data:`-only frames terminated by `data: [DONE]`, matching the shape
-//! the `pi_agent_rust` OpenAI parser accepts (see bootstrap.md "Minimal SSE
+//! real chat-completions SSE parsers accept (see bootstrap.md "Minimal SSE
 //! sequences"). M1 renders [`Turn::Text`]; M5 adds [`Turn::ToolCall`].
 
 use serde_json::json;

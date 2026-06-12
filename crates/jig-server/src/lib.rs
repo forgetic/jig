@@ -1,12 +1,11 @@
 //! The embeddable `jig` service API.
 //!
 //! [`FakeLlm`] spawns one dedicated OS thread that hosts a **single-threaded**
-//! tokio runtime (`new_current_thread`) and serves a [`Script`] over HTTP until
-//! the handle is dropped. Because the runtime lives on its own thread, callers
-//! never share its executor: a *synchronous* test can [`FakeLlm::start`], make
-//! blocking `reqwest` calls against [`FakeLlm::base_url`], and let [`Drop`] tear
-//! the thread down — no async runtime of its own (see bootstrap.md "Public
-//! API").
+//! skein runtime and serves a [`Script`] over HTTP until the handle is
+//! dropped. Because the runtime lives on its own thread, callers never share
+//! its executor: a *synchronous* test can [`FakeLlm::start`], make blocking
+//! HTTP calls against [`FakeLlm::base_url`], and let [`Drop`] tear the thread
+//! down — no async runtime of its own (see bootstrap.md "Public API").
 
 use std::io;
 use std::net::SocketAddr;
@@ -14,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use jig_core::{RecordedRequest, Script};
-use tokio::sync::oneshot;
+use skein::sync::Notify;
 
 mod server;
 
@@ -27,20 +26,24 @@ use server::RequestLog;
 /// signals shutdown and joins the thread.
 pub struct FakeLlm {
     addr: SocketAddr,
-    shutdown: Option<oneshot::Sender<()>>,
+    /// Shared with the serve loop; `notify_one` is synchronous and stores the
+    /// notification if the loop is not waiting yet, so a `Drop` racing the
+    /// accept loop never loses the signal.
+    shutdown: Arc<Notify>,
     thread: Option<JoinHandle<()>>,
     /// Shared with the runtime thread, which appends one entry per request.
     log: RequestLog,
 }
 
 impl FakeLlm {
-    /// Spawn a dedicated OS thread hosting a single-threaded tokio runtime that
-    /// serves `script` until this handle is dropped.
+    /// Spawn a dedicated OS thread hosting a single-threaded skein runtime
+    /// that serves `script` until this handle is dropped.
     ///
     /// The listener is bound on the runtime thread *before* this returns, so
     /// [`base_url`](FakeLlm::base_url) is valid the instant `start` yields.
     pub fn start(script: Script) -> io::Result<FakeLlm> {
-        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let shutdown = Arc::new(Notify::new());
+        let server_shutdown = Arc::clone(&shutdown);
         // The runtime thread sends back the bound address (or a bind error).
         let (addr_tx, addr_rx) = std::sync::mpsc::channel::<io::Result<SocketAddr>>();
         let script = Arc::new(script);
@@ -53,26 +56,19 @@ impl FakeLlm {
         let thread = std::thread::Builder::new()
             .name("jig-runtime".to_string())
             .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(rt) => rt,
-                    Err(err) => {
-                        let _ = addr_tx.send(Err(err));
-                        return;
-                    }
-                };
-
-                runtime.block_on(async move {
+                // Sockets need a task's capability context, so the whole serve
+                // future runs as a spawned task with its `Cx` handed in
+                // explicitly (skein has no ambient context).
+                jig_runtime::block_on(move |cx| async move {
                     // Bind first; report the result back to `start`.
-                    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {
-                        Ok(listener) => listener,
-                        Err(err) => {
-                            let _ = addr_tx.send(Err(err));
-                            return;
-                        }
-                    };
+                    let listener =
+                        match skein::net::TcpListener::bind(("127.0.0.1", 0)).await {
+                            Ok(listener) => listener,
+                            Err(err) => {
+                                let _ = addr_tx.send(Err(err));
+                                return;
+                            }
+                        };
                     match listener.local_addr() {
                         Ok(addr) => {
                             if addr_tx.send(Ok(addr)).is_err() {
@@ -86,7 +82,7 @@ impl FakeLlm {
                         }
                     }
 
-                    server::serve(listener, script, server_log, shutdown_rx).await;
+                    server::serve(&cx, listener, script, server_log, server_shutdown).await;
                 });
             })?;
 
@@ -102,7 +98,7 @@ impl FakeLlm {
 
         Ok(FakeLlm {
             addr,
-            shutdown: Some(shutdown_tx),
+            shutdown,
             thread: Some(thread),
             log,
         })
@@ -126,9 +122,7 @@ impl FakeLlm {
 impl Drop for FakeLlm {
     fn drop(&mut self) {
         // Signal shutdown; the accept loop selects on this and returns.
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
+        self.shutdown.notify_one();
         // Join the runtime thread so the port is released by the time `drop`
         // returns.
         if let Some(thread) = self.thread.take() {

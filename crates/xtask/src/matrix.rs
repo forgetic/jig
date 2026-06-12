@@ -19,8 +19,8 @@ use crate::Provenance;
 ///
 /// The `client` label and `role` are stamped verbatim into `meta.json` by
 /// `jig record` (see `jig_record::Provenance`); the matrix only decides which
-/// combinations exist. Official clients are `authoritative` (the spec); the
-/// pi-SDK driver is `subject` (measured against the spec — P6, #17).
+/// combinations exist. Official clients are `authoritative` (the spec); an SDK
+/// under test would be `subject` (measured against the spec).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Client {
     /// Free-form client label, e.g. `openai-sdk`, `claude-code`, `codex`.
@@ -77,14 +77,6 @@ const CODEX_CLI: Client = Client {
     label: "codex",
     role: Role::Authoritative,
 };
-/// The pi-SDK driver, used directly as a library. Drives every dialect as the
-/// `subject` under test; wired up in P6 (#17) but listed here so the matrix is
-/// the single source of truth and `--client pi-sdk` already resolves.
-const PI_SDK: Client = Client {
-    label: "pi-sdk",
-    role: Role::Subject,
-};
-
 /// Scenarios that exist for the OpenAI/DeepSeek chat-completions dialect.
 ///
 /// `parallel-tool-calls` (issue #30) captures **two** tool calls emitted in one
@@ -127,17 +119,17 @@ pub const MATRIX: &[DialectMatrix] = &[
     DialectMatrix {
         dialect: "openai",
         scenarios: OPENAI_SCENARIOS,
-        clients: &[OPENAI_SDK, PI_SDK],
+        clients: &[OPENAI_SDK],
     },
     DialectMatrix {
         dialect: "anthropic",
         scenarios: ANTHROPIC_SCENARIOS,
-        clients: &[CLAUDE_CODE, PI_SDK],
+        clients: &[CLAUDE_CODE],
     },
     DialectMatrix {
         dialect: "codex",
         scenarios: CODEX_SCENARIOS,
-        clients: &[CODEX_CLI, PI_SDK],
+        clients: &[CODEX_CLI],
     },
 ];
 
@@ -277,8 +269,8 @@ mod tests {
         let plan = plan(&sel);
         assert!(!plan.is_empty());
         assert!(plan.iter().all(|i| i.dialect == "openai"));
-        // openai has 4 scenarios (incl. parallel-tool-calls) × 2 clients.
-        assert_eq!(plan.len(), 8);
+        // openai has 4 scenarios (incl. parallel-tool-calls) × 1 client.
+        assert_eq!(plan.len(), 4);
     }
 
     #[test]
@@ -304,20 +296,6 @@ mod tests {
             ..Default::default()
         };
         assert!(plan(&sel).is_empty());
-    }
-
-    #[test]
-    fn pi_sdk_is_subject_on_every_dialect() {
-        let sel = Selection {
-            client: Some("pi-sdk".to_string()),
-            ..Default::default()
-        };
-        let plan = plan(&sel);
-        assert!(!plan.is_empty());
-        assert!(plan.iter().all(|i| i.role == Role::Subject));
-        // One pi-sdk subject recording per (dialect, scenario).
-        let scenario_total: usize = MATRIX.iter().map(|d| d.scenarios.len()).sum();
-        assert_eq!(plan.len(), scenario_total);
     }
 
     #[test]

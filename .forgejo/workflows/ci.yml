@@ -28,11 +28,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: jig
+      # A second actions/checkout cannot fetch ai/skein: the job token is
+      # scoped to ai/jig, so the action's repo lookup 404s. The repo is
+      # public, so a plain anonymous clone does the job.
       - name: Checkout skein (sibling path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: ai/skein
-          path: skein
+        working-directory: .
+        run: |
+          rm -rf skein
+          git clone --depth 1 ${{ github.server_url }}/ai/skein.git skein
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint

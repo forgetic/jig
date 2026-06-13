@@ -11,9 +11,6 @@ edition = "2024"
 license = "MIT"
 repository = "http://localhost:3000/ai/jig"
 
-[profile.dev]
-debug = false
-
 [workspace.dependencies]
 jig-core = { path = "crates/jig-core" }
 jig-runtime = { path = "crates/jig-runtime" }

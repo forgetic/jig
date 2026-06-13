@@ -50,7 +50,14 @@ const ANY_KEY: &str = "<*>";
 /// not structure. The value of such a key is reduced as a map (every child key →
 /// the wildcard [`ANY_KEY`], child grammars unioned) so two tool schemas with
 /// different argument names but the same shape reduce identically.
-const CONTENT_MAP_KEYS: &[&str] = &["properties"];
+///
+/// `input` is the same thing one level down: an Anthropic `tool_use` block's
+/// `input` carries the tool-call *argument values* (`{"city": "Paris"}` vs
+/// `{"file_path": …}`), keyed by the same per-tool argument names. The other
+/// dialects are unaffected: their tool-call arguments travel as a JSON-encoded
+/// *string*, and the Codex request's top-level `input` is an array (the
+/// collapse only applies to object values).
+const CONTENT_MAP_KEYS: &[&str] = &["properties", "input"];
 
 /// Reduce a request body [`Value`] to its **grammar skeleton**: a canonical shape
 /// where content is abstracted to types but structure (keys, nesting, array
@@ -379,6 +386,29 @@ mod tests {
         assert!(
             findings.is_empty(),
             "schema property names should be content, not grammar: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn anthropic_tool_use_input_keys_are_content_not_grammar() {
+        // An echoed Anthropic `tool_use` block carries the tool-call *argument
+        // values* under `input`; two clients calling different tools have
+        // entirely different argument names there. Like JSON-Schema
+        // `properties`, those names are content — a subject calling
+        // `get_weather(city)` must conform to an authoritative capture that
+        // called `Write(file_path, content)`.
+        let subject = json!({ "messages": [{ "role": "assistant", "content": [{
+            "type": "tool_use", "id": "toolu_1", "name": "get_weather",
+            "input": { "city": "Paris" }
+        }]}]});
+        let authoritative = json!({ "messages": [{ "role": "assistant", "content": [{
+            "type": "tool_use", "id": "toolu_x", "name": "Write",
+            "input": { "file_path": "/tmp/x", "content": "hi" }
+        }]}]});
+        let findings = grammar_findings(&subject, &authoritative);
+        assert!(
+            findings.is_empty(),
+            "tool-call argument names should be content, not grammar: {findings:?}"
         );
     }
 

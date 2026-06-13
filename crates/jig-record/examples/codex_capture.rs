@@ -29,12 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use jig_record::fixture::Recording;
-use jig_record::{Provenance, Role, build_recording};
-
-#[path = "shared/pump.rs"]
-mod pump;
-
-use pump::CapturePump;
+use jig_record::{CapturePump, Provenance, Role, build_recording};
 
 #[derive(Debug)]
 struct Args {
@@ -113,7 +108,7 @@ fn main() {
 
     // Capture every routable exchange while `codex` runs, accepting
     // connections concurrently on the pump's own runtime thread (see
-    // `shared/pump.rs` for why concurrency matters here).
+    // `jig_record::pump` for why concurrency matters here).
     let pump = CapturePump::start(None).expect("start capture pump");
     let base_url = format!("{}{}", pump.base_url(), args.base_path);
     eprintln!("recorder listening; provider base_url = {base_url}");

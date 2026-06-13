@@ -17,6 +17,8 @@
 //! - [`fixture`] — the on-disk [`fixture::Recording`] model and writer.
 //! - [`route`] — path → dialect → upstream, mirroring the server's route table.
 //! - [`proxy`] — the one async, network-touching part: forward + stream-capture.
+//! - [`pump`] — the concurrent capture pump for multi-connection clients: the
+//!   recorder on its own runtime thread while the caller drives the client.
 //!
 //! # Usage (manual)
 //!
@@ -30,6 +32,7 @@ use std::path::{Path, PathBuf};
 
 pub mod fixture;
 pub mod proxy;
+pub mod pump;
 pub mod redact;
 pub mod route;
 
@@ -38,6 +41,7 @@ pub use fixture::{
     redacted_response, sse_ends_in_done,
 };
 pub use proxy::{ClientRequest, UpstreamResponse, bind, handle_connection, proxy_once};
+pub use pump::{CapturePump, Exchange};
 pub use redact::{Header, REDACTED, redact_headers};
 pub use route::{Route, dialect_slug};
 

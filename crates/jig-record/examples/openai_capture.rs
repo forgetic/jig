@@ -24,12 +24,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use jig_record::fixture::Recording;
-use jig_record::{Provenance, Role, build_recording};
-
-#[path = "shared/pump.rs"]
-mod pump;
-
-use pump::CapturePump;
+use jig_record::{CapturePump, Provenance, Role, build_recording};
 
 #[derive(Debug)]
 struct Args {

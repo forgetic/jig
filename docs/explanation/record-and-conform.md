@@ -96,6 +96,26 @@ themselves against jig do so from their own repositories, by driving their
 providers against an in-process `jig_server::FakeLlm` (offline) or through the
 recorder (online, as `subject` recordings).
 
+For the subject leg jig provides the building blocks; the SDK's repo owns the
+harness and the committed recordings:
+
+- `jig_record::CapturePump` — the recorder on its own runtime thread, so the
+  SDK can drive a request through it synchronously;
+- `jig_record::build_recording` + `Recording::write` — redact and persist a
+  `role: subject` recording under the SDK's own fixture tree;
+- `jig_core::conform::grammar` — reduce the subject's recorded request body to
+  its wire-grammar skeleton and check it is conformant with the authoritative
+  `request.template.json` (`grammar_findings` empty = the SDK invents no wire
+  structure the official client does not use);
+- `jig_core::fixtures_root()` — locate jig's authoritative templates from a
+  path-dependency consumer.
+
+[tongs](https://github.com/forgetic/tongs) is the worked example: an
+online `#[ignore]` harness records tongs' own requests against the real
+backends, and its offline `cargo test` validates every committed subject
+recording against jig's templates (T3 request grammar, T4 reply-shape
+consistency).
+
 ## The fixture taxonomy
 
 Each recording is written into the taxonomy from issue #13:

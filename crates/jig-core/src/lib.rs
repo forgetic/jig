@@ -23,6 +23,18 @@ pub use render::{render_anthropic, render_codex, render_openai};
 pub use request::{Dialect, RequestView, ViewMessage};
 pub use script_file::{ReplySpec, ScriptFile, ScriptFileError, StopSpec, ToolCallSpec, TurnSpec};
 
+/// The jig repository's `fixtures/` root, resolved from this crate's
+/// compile-time manifest dir.
+///
+/// Valid only for workspace and path-dependency consumers (jig is never
+/// published, so the source tree — and with it `fixtures/` — is always on
+/// disk). This is how a **subject SDK** anchors its conformance tests to jig's
+/// authoritative templates from its own repository without hardcoding a
+/// relative checkout layout: the path dependency already pins where jig lives.
+pub fn fixtures_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures")
+}
+
 /// One thing the fake model emits within a single assistant turn.
 ///
 /// M1 only renders [`Turn::Text`]; the other variants are part of the canonical

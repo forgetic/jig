@@ -1,4 +1,4 @@
-//! The concurrent capture pump shared by the manual example harnesses.
+//! The concurrent capture pump for driving a client through the recorder.
 //!
 //! Real official clients pre-open a *pool* of connections and send the request
 //! that matters on one of them, so the recorder must accept connections
@@ -8,19 +8,22 @@
 //!
 //! [`CapturePump`] runs that concurrent accept loop on a dedicated OS thread
 //! hosting a single-threaded skein runtime (sockets only work inside a spawned
-//! task, whose `Cx` skein hands over explicitly), while the example's main
-//! thread drives the official client synchronously. `stop` signals the loop,
-//! joins the thread, and returns every captured routable exchange.
+//! task, whose `Cx` skein hands over explicitly), while the caller's main
+//! thread drives the client synchronously. `stop` signals the loop, joins the
+//! thread, and returns every captured routable exchange. The manual capture
+//! examples use it to drive official clients; subject SDKs use it from their
+//! own repositories to record their own `role: subject` fixtures.
 
 use std::io;
 use std::net::SocketAddr;
 use std::pin::pin;
 use std::sync::{Arc, Mutex};
 
-use jig_record::proxy::{bind, handle_connection};
-use jig_record::{ClientRequest, Route, UpstreamResponse};
 use skein::combinator::{Either, Select};
 use skein::sync::Notify;
+
+use crate::proxy::{bind, handle_connection};
+use crate::{ClientRequest, Route, UpstreamResponse};
 
 /// One captured routable exchange: the client request, the upstream response,
 /// and the route it was forwarded on.

@@ -10,9 +10,8 @@ on:
       - reopened
 
 # Builds are cached transparently by the kache daemon (rustc-wrapper in
-# ~/.cargo/config.toml on the host runner), so a clean checkout still gets
-# warm builds for everything except final binaries.
-#
+# ~/.cargo/config.toml on the host runner), so a clean checkout still gets warm
+# builds for everything that emits real artifacts (rlibs and test executables).
 # skein is a git dependency (pinned by rev), so Cargo fetches it itself — no
 # sibling checkout, working-directory trick, or path-dependency layout needed.
 jobs:
@@ -23,6 +22,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Format
         run: cargo fmt --all -- --check
+      - name: Build tests
+        run: cargo test --workspace --no-run
       - name: Lint
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test

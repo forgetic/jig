@@ -244,7 +244,7 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 [[package]]
 name = "franken-decision"
 version = "0.2.0"
-source = "git+http://127.0.0.1:3000/ai/skein.git?rev=d2c98ecbad0825cdfef7feeb58f1e7f7e4f4d853#d2c98ecbad0825cdfef7feeb58f1e7f7e4f4d853"
+source = "git+http://127.0.0.1:3000/ai/skein.git?rev=5cd8c4d88a41720afa8f509279bde53b16bf38d0#5cd8c4d88a41720afa8f509279bde53b16bf38d0"
 dependencies = [
  "franken-evidence",
  "franken-kernel",
@@ -254,7 +254,7 @@ dependencies = [
 [[package]]
 name = "franken-evidence"
 version = "0.2.0"
-source = "git+http://127.0.0.1:3000/ai/skein.git?rev=d2c98ecbad0825cdfef7feeb58f1e7f7e4f4d853#d2c98ecbad0825cdfef7feeb58f1e7f7e4f4d853"
+source = "git+http://127.0.0.1:3000/ai/skein.git?rev=5cd8c4d88a41720afa8f509279bde53b16bf38d0#5cd8c4d88a41720afa8f509279bde53b16bf38d0"
 dependencies = [
  "serde",
  "serde_json",
@@ -263,7 +263,7 @@ dependencies = [
 [[package]]
 name = "franken-kernel"
 version = "0.2.0"
-source = "git+http://127.0.0.1:3000/ai/skein.git?rev=d2c98ecbad0825cdfef7feeb58f1e7f7e4f4d853#d2c98ecbad0825cdfef7feeb58f1e7f7e4f4d853"
+source = "git+http://127.0.0.1:3000/ai/skein.git?rev=5cd8c4d88a41720afa8f509279bde53b16bf38d0#5cd8c4d88a41720afa8f509279bde53b16bf38d0"
 dependencies = [
  "serde",
 ]
@@ -854,7 +854,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 [[package]]
 name = "skein"
 version = "0.2.4"
-source = "git+http://127.0.0.1:3000/ai/skein.git?rev=d2c98ecbad0825cdfef7feeb58f1e7f7e4f4d853#d2c98ecbad0825cdfef7feeb58f1e7f7e4f4d853"
+source = "git+http://127.0.0.1:3000/ai/skein.git?rev=5cd8c4d88a41720afa8f509279bde53b16bf38d0#5cd8c4d88a41720afa8f509279bde53b16bf38d0"
 dependencies = [
  "base64",
  "bincode-next",

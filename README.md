@@ -44,6 +44,9 @@ cargo run
 
 # Or load a script file:
 cargo run -- script.json
+
+# Or drive the Temper basic-delivery sequence fixture:
+cargo run -- fixtures/basic-delivery.json
 ```
 
 It prints the bound `base_url` on stdout and blocks until stdin closes (Ctrl-D)

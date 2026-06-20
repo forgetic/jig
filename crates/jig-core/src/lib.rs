@@ -21,7 +21,10 @@ pub use parse::{
 };
 pub use render::{render_anthropic, render_codex, render_openai};
 pub use request::{Dialect, RequestView, ViewMessage};
-pub use script_file::{ReplySpec, ScriptFile, ScriptFileError, StopSpec, ToolCallSpec, TurnSpec};
+pub use script_file::{
+    CountSpec, DialectSpec, PhaseMatcher, PhaseSpec, ReplySpec, ScriptFile, ScriptFileError,
+    StopSpec, ToolCallSpec, TurnSpec,
+};
 
 /// The jig repository's `fixtures/` root, resolved from this crate's
 /// compile-time manifest dir.

@@ -392,8 +392,8 @@ impl CountSpec {
         match self {
             CountSpec::Exact(expected) => count == *expected,
             CountSpec::Range { min, max } => {
-                min.as_ref().map_or(true, |min| count >= *min)
-                    && max.as_ref().map_or(true, |max| count <= *max)
+                min.as_ref().is_none_or(|min| count >= *min)
+                    && max.as_ref().is_none_or(|max| count <= *max)
             }
         }
     }

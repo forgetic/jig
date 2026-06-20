@@ -1,4 +1,4 @@
-use jig_core::{ReplySpec, ScriptFile, StopSpec, TurnSpec, fixtures_root};
+use jig_core::{PhaseSpec, ReplySpec, ScriptFile, StopSpec, TurnSpec, fixtures_root};
 use serde_json::Value;
 
 fn text_reply(reply: &ReplySpec) -> &str {
@@ -30,15 +30,31 @@ fn workspace_result(text: &str) -> Value {
     value
 }
 
+fn phase_by_name<'a>(phases: &'a [PhaseSpec], name: &str) -> &'a PhaseSpec {
+    phases
+        .iter()
+        .find(|phase| phase.name == name)
+        .unwrap_or_else(|| panic!("missing phase {name}"))
+}
+
 #[test]
-fn basic_delivery_fixture_matches_temper_sequence_contract() {
+fn basic_delivery_fixture_matches_temper_phase_contract() {
     let file = ScriptFile::load(fixtures_root().join("basic-delivery.json"))
         .expect("basic-delivery fixture loads");
-    let replies = match file {
-        ScriptFile::Sequence(replies) => replies,
-        other => panic!("expected a sequence script, got {other:?}"),
+    let phases = match file {
+        ScriptFile::Phases(phases) => phases,
+        other => panic!("expected a phase script, got {other:?}"),
     };
-    assert_eq!(replies.len(), 4, "sequence serves four replies");
+    assert_eq!(phases.len(), 2, "fixture has architect and engineer phases");
+
+    let architect_phase = phase_by_name(&phases, "architect-triage");
+    assert_eq!(
+        architect_phase.when.messages_contain,
+        vec!["ROLE: architect".to_string()],
+        "architect phase is selected from the Temper role prompt"
+    );
+    let replies = &architect_phase.sequence;
+    assert_eq!(replies.len(), 2, "architect phase serves tool then result");
 
     let ReplySpec::Full {
         turns,
@@ -78,11 +94,20 @@ fn basic_delivery_fixture_matches_temper_sequence_contract() {
         "architect body must begin with the code spec"
     );
 
+    let engineer_phase = phase_by_name(&phases, "engineer-implementation");
+    assert_eq!(
+        engineer_phase.when.messages_contain,
+        vec!["ROLE: engineer".to_string()],
+        "engineer phase is selected from the Temper role prompt"
+    );
+    let replies = &engineer_phase.sequence;
+    assert_eq!(replies.len(), 2, "engineer phase serves tool then result");
+
     let ReplySpec::Full {
         turns,
         stop,
         usage: _,
-    } = &replies[2]
+    } = &replies[0]
     else {
         panic!("engineer turn must use full form for a tool-call stop");
     };
@@ -110,7 +135,7 @@ fn basic_delivery_fixture_matches_temper_sequence_contract() {
     assert!(content.contains("SERVICE_ENVIRONMENT"));
     assert!(content.contains("SERVICE_BANNER_GREETING"));
 
-    let engineer = workspace_result(text_reply(&replies[3]));
+    let engineer = workspace_result(text_reply(&replies[1]));
     assert!(
         engineer.get("verdict").is_none(),
         "engineer workspace result must not declare a verdict"

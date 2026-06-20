@@ -348,18 +348,10 @@ impl PhaseMatcher {
     /// request view.
     pub fn matches(&self, view: &RequestView) -> bool {
         let transcript = normalized_transcript(view);
-        if !contains_all(
-            &transcript,
-            &self.messages_contain,
-            self.ignore_case,
-        ) {
+        if !contains_all(&transcript, &self.messages_contain, self.ignore_case) {
             return false;
         }
-        if !contains_any(
-            &transcript,
-            &self.any_message_contains,
-            self.ignore_case,
-        ) {
+        if !contains_any(&transcript, &self.any_message_contains, self.ignore_case) {
             return false;
         }
 
@@ -578,11 +570,17 @@ mod tests {
         let architect = view_with_message("ROLE: architect (triage_workspace capability)");
         let engineer = view_with_message("ROLE: engineer (coding_workspace capability)");
 
-        assert_eq!(script.next_reply(&architect), Reply::text("architect first"));
+        assert_eq!(
+            script.next_reply(&architect),
+            Reply::text("architect first")
+        );
         assert_eq!(script.next_reply(&engineer), Reply::text("engineer first"));
         // Returning to the architect phase uses the architect cursor, not the
         // global position that the engineer request advanced.
-        assert_eq!(script.next_reply(&architect), Reply::text("architect final"));
+        assert_eq!(
+            script.next_reply(&architect),
+            Reply::text("architect final")
+        );
         assert_eq!(script.next_reply(&engineer), Reply::text("engineer final"));
         assert_eq!(script.next_reply(&engineer), Reply::text("engineer final"));
     }
@@ -606,9 +604,18 @@ mod tests {
         "#;
         let script = ScriptFile::from_json_str(json).unwrap().into_script();
 
-        assert_eq!(script.next_reply(&view_with_tool_results(0)), Reply::text("before tool"));
-        assert_eq!(script.next_reply(&view_with_tool_results(1)), Reply::text("after tool"));
-        assert_eq!(script.next_reply(&view_with_tool_results(3)), Reply::text("after tool"));
+        assert_eq!(
+            script.next_reply(&view_with_tool_results(0)),
+            Reply::text("before tool")
+        );
+        assert_eq!(
+            script.next_reply(&view_with_tool_results(1)),
+            Reply::text("after tool")
+        );
+        assert_eq!(
+            script.next_reply(&view_with_tool_results(3)),
+            Reply::text("after tool")
+        );
     }
 
     #[test]

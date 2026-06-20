@@ -1,39 +1,55 @@
 {
-  "sequence": [
+  "phases": [
     {
-      "turns": [
+      "name": "architect-triage",
+      "when": {
+        "messages_contain": ["ROLE: architect"]
+      },
+      "sequence": [
         {
-          "tool_call": {
-            "id": "call_architect_inspect",
-            "name": "bash",
-            "args": {
-              "command": "printf 'jig-basic-delivery-inspection\\n'; if [ -d service ]; then find service -maxdepth 2 -type f -print | sort; else printf 'service/ not present\\n'; fi"
+          "turns": [
+            {
+              "tool_call": {
+                "id": "call_architect_inspect",
+                "name": "bash",
+                "args": {
+                  "command": "printf 'jig-basic-delivery-inspection\\n'; if [ -d service ]; then find service -maxdepth 2 -type f -print | sort; else printf 'service/ not present\\n'; fi"
+                }
+              }
             }
-          }
-        }
-      ],
-      "stop": "tool_calls"
-    },
-    {
-      "text": "{\"verdict\":\"ready_code\",\"body\":\"## Code spec\\n\\nImplement: Service banner should identify the environment\\n\\n### Requirements\\n\\n- Add or update `service/src/banner.py` with a `service_banner(environment=None, greeting=None)` helper.\\n- Include the active environment in the returned banner.\\n- Default `environment` from `SERVICE_ENVIRONMENT`, falling back to `development`.\\n- Default `greeting` from `SERVICE_BANNER_GREETING`, falling back to `Hello`.\\n\"}"
-    },
-    {
-      "turns": [
+          ],
+          "stop": "tool_calls"
+        },
         {
-          "tool_call": {
-            "id": "call_engineer_write_banner",
-            "name": "write",
-            "args": {
-              "path": "service/src/banner.py",
-              "content": "\"\"\"Service banner helpers.\"\"\"\n\nfrom __future__ import annotations\n\nimport os\n\n\ndef service_banner(environment=None, greeting=None):\n    \"\"\"Return a greeting that identifies the active service environment.\"\"\"\n    active_environment = (\n        environment\n        if environment is not None\n        else os.getenv(\"SERVICE_ENVIRONMENT\", \"development\")\n    )\n    active_greeting = (\n        greeting\n        if greeting is not None\n        else os.getenv(\"SERVICE_BANNER_GREETING\", \"Hello\")\n    )\n    return f\"{active_greeting} from the {active_environment} environment\"\n\n\n__all__ = [\"service_banner\"]\n"
-            }
-          }
+          "text": "{\"verdict\":\"ready_code\",\"body\":\"## Code spec\\n\\nImplement: Service banner should identify the environment\\n\\n### Requirements\\n\\n- Add or update `service/src/banner.py` with a `service_banner(environment=None, greeting=None)` helper.\\n- Include the active environment in the returned banner.\\n- Default `environment` from `SERVICE_ENVIRONMENT`, falling back to `development`.\\n- Default `greeting` from `SERVICE_BANNER_GREETING`, falling back to `Hello`.\\n\"}"
         }
-      ],
-      "stop": "tool_calls"
+      ]
     },
     {
-      "text": "{\"summary\":\"Updated service/src/banner.py with an environment-aware service_banner helper.\"}"
+      "name": "engineer-implementation",
+      "when": {
+        "messages_contain": ["ROLE: engineer"]
+      },
+      "sequence": [
+        {
+          "turns": [
+            {
+              "tool_call": {
+                "id": "call_engineer_write_banner",
+                "name": "write",
+                "args": {
+                  "path": "service/src/banner.py",
+                  "content": "\"\"\"Service banner helpers.\"\"\"\n\nfrom __future__ import annotations\n\nimport os\n\n\ndef service_banner(environment=None, greeting=None):\n    \"\"\"Return a greeting that identifies the active service environment.\"\"\"\n    active_environment = (\n        environment\n        if environment is not None\n        else os.getenv(\"SERVICE_ENVIRONMENT\", \"development\")\n    )\n    active_greeting = (\n        greeting\n        if greeting is not None\n        else os.getenv(\"SERVICE_BANNER_GREETING\", \"Hello\")\n    )\n    return f\"{active_greeting} from the {active_environment} environment\"\n\n\n__all__ = [\"service_banner\"]\n"
+                }
+              }
+            }
+          ],
+          "stop": "tool_calls"
+        },
+        {
+          "text": "{\"summary\":\"Updated service/src/banner.py with an environment-aware service_banner helper.\"}"
+        }
+      ]
     }
   ]
 }

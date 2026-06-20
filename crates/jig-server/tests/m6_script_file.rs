@@ -35,13 +35,20 @@ fn streamed_openai_text(body: &str) -> String {
 }
 
 fn post_chat_completions(base_url: &str) -> String {
+    post_chat_completions_with_messages(
+        base_url,
+        serde_json::json!([{ "role": "user", "content": "hi" }]),
+    )
+}
+
+fn post_chat_completions_with_messages(base_url: &str, messages: Value) -> String {
     support::post_json(
         &format!("{base_url}/chat/completions"),
         &[],
         &serde_json::json!({
             "model": "fake",
             "stream": true,
-            "messages": [{ "role": "user", "content": "hi" }],
+            "messages": messages,
         }),
     )
 }
@@ -88,6 +95,78 @@ fn sequence_script_file_serves_replies_in_order_then_repeats_the_last() {
 
     // The server recorded all three requests.
     assert_eq!(fake.requests().len(), 3);
+}
+
+#[test]
+fn phase_script_file_selects_by_message_content_with_independent_sequences() {
+    let json = r#"
+        {
+          "phases": [
+            {
+              "name": "architect-triage",
+              "when": { "messages_contain": ["ROLE: architect"] },
+              "sequence": [
+                { "text": "architect first" },
+                { "text": "architect final" }
+              ]
+            },
+            {
+              "name": "engineer-implementation",
+              "when": { "messages_contain": ["ROLE: engineer"] },
+              "sequence": [
+                { "text": "engineer first" },
+                { "text": "engineer final" }
+              ]
+            }
+          ]
+        }
+    "#;
+    let script = ScriptFile::from_json_str(json)
+        .expect("phase script file parses")
+        .into_script();
+
+    let fake = jig_server::FakeLlm::start(script).expect("FakeLlm starts");
+    let base = fake.base_url();
+    let architect = serde_json::json!([
+        { "role": "system", "content": "ROLE: architect (triage_workspace capability)" },
+        { "role": "user", "content": "triage intake" }
+    ]);
+    let engineer = serde_json::json!([
+        { "role": "system", "content": "ROLE: engineer (coding_workspace capability)" },
+        { "role": "user", "content": "implement spec" }
+    ]);
+
+    assert_eq!(
+        streamed_openai_text(&post_chat_completions_with_messages(
+            &base,
+            architect.clone()
+        )),
+        "architect first"
+    );
+    assert_eq!(
+        streamed_openai_text(&post_chat_completions_with_messages(
+            &base,
+            engineer.clone()
+        )),
+        "engineer first"
+    );
+    // Each phase has its own sequence cursor: switching to engineer did not
+    // consume the architect phase's final reply.
+    assert_eq!(
+        streamed_openai_text(&post_chat_completions_with_messages(&base, architect)),
+        "architect final"
+    );
+    assert_eq!(
+        streamed_openai_text(&post_chat_completions_with_messages(
+            &base,
+            engineer.clone()
+        )),
+        "engineer final"
+    );
+    assert_eq!(
+        streamed_openai_text(&post_chat_completions_with_messages(&base, engineer)),
+        "engineer final"
+    );
 }
 
 #[test]

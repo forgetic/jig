@@ -8,14 +8,17 @@
 //! author by hand). Changing an internal type's derive must not silently reshape
 //! the file format.
 //!
-//! Only the data-driven [`Script`] variants are expressible: [`Script::Fixed`]
-//! and [`Script::Sequence`]. [`Script::Rule`] is a `Fn` closure — code-only by
-//! nature — and has no file representation (see bootstrap.md: "the `Rule` variant
-//! is code-only").
+//! The file schema supports two simple data-driven scripts — [`Script::Fixed`]
+//! and [`Script::Sequence`] — plus a phase-aware script that lowers to a
+//! data-driven subset of [`Script::Rule`]. A phase script inspects each
+//! [`RequestView`](crate::RequestView), picks the first matching phase, and
+//! advances that phase's own sequence cursor. This lets one file model a
+//! multi-step workflow (for example architect triage and engineer implementation)
+//! without one phase's extra tool calls shifting the replies for another phase.
 //!
 //! # Schema
 //!
-//! The top level is exactly one of `fixed` or `sequence`:
+//! The top level is exactly one of `fixed`, `sequence`, or `phases`:
 //!
 //! ```json
 //! { "fixed": <reply> }
@@ -23,6 +26,42 @@
 //! ```json
 //! { "sequence": [ <reply>, <reply>, ... ] }
 //! ```
+//! ```json
+//! {
+//!   "phases": [
+//!     {
+//!       "name": "architect-triage",
+//!       "when": { "messages_contain": ["ROLE: architect"] },
+//!       "sequence": [ <reply>, <reply>, ... ]
+//!     },
+//!     {
+//!       "name": "engineer-implementation",
+//!       "when": { "messages_contain": ["ROLE: engineer"] },
+//!       "sequence": [ <reply>, <reply>, ... ]
+//!     }
+//!   ]
+//! }
+//! ```
+//!
+//! Phase matching is first-match-wins. A phase whose `when` is omitted (or whose
+//! matcher has no fields) matches every request, so it can be used as a catch-all
+//! by placing it last. Each phase's sequence repeats its last reply once
+//! exhausted, exactly like top-level `sequence`. If no phase matches, or the
+//! matching phase has an empty sequence, the script returns an empty text reply.
+//!
+//! A phase `when` matcher may use:
+//! - `messages_contain`: all listed substrings must appear somewhere in the
+//!   normalized transcript (`"role: content"` lines across all messages).
+//!   `all_messages_contain` is accepted as an alias.
+//! - `any_message_contains`: at least one listed substring must appear in the
+//!   normalized transcript.
+//! - `last_message_contains`: all listed substrings must appear in the last
+//!   message's content.
+//! - `prior_tool_results`: either an exact number (`1`) or a range object
+//!   (`{ "min": 1 }`, `{ "max": 0 }`, or `{ "min": 1, "max": 3 }`).
+//! - `model`: an exact model id.
+//! - `dialect`: one of `"open_ai"`, `"anthropic"`, or `"codex"`.
+//! - `ignore_case`: when `true`, string comparisons are case-insensitive.
 //!
 //! A `<reply>` is either the **text shorthand**
 //!
@@ -52,14 +91,16 @@
 //!
 //! A `<stop>` is one of `"stop"`, `"tool_calls"`, or `"error"`.
 
+use std::sync::Mutex;
+
 use serde::{Deserialize, Serialize};
 
-use crate::{Reply, Script, StopReason, Turn, Usage};
+use crate::{Dialect, Reply, RequestView, Script, StopReason, Turn, Usage};
 
-/// A parsed script file: the data-driven half of [`Script`].
+/// A parsed script file.
 ///
-/// `serde`'s default externally-tagged enum encoding is exactly the
-/// `{ "fixed": … }` / `{ "sequence": [ … ] }` schema documented on this module,
+/// `serde`'s default externally-tagged enum encoding is exactly the documented
+/// `{ "fixed": … }` / `{ "sequence": [ … ] }` / `{ "phases": [ … ] }` schema,
 /// with the variant names lowercased.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,6 +110,70 @@ pub enum ScriptFile {
     /// Serve replies in order, repeating the last once exhausted — becomes
     /// [`Script::Sequence`].
     Sequence(Vec<ReplySpec>),
+    /// Select a named phase from the request and advance that phase's own
+    /// sequence cursor — becomes a data-driven [`Script::Rule`].
+    Phases(Vec<PhaseSpec>),
+}
+
+/// One named phase in a [`ScriptFile::Phases`] script.
+///
+/// Phases are checked in file order. The first phase whose [`PhaseMatcher`]
+/// matches the incoming [`RequestView`] serves the next reply from `sequence`.
+/// The `name` is for humans and diagnostics; selection is entirely by `when`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhaseSpec {
+    pub name: String,
+    #[serde(default)]
+    pub when: PhaseMatcher,
+    pub sequence: Vec<ReplySpec>,
+}
+
+/// Request predicates for selecting a phase.
+///
+/// All populated fields must match. Empty lists are ignored, and an entirely
+/// empty matcher matches every request (useful as a final catch-all phase).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PhaseMatcher {
+    /// All listed substrings must appear somewhere in the normalized transcript.
+    #[serde(alias = "all_messages_contain")]
+    pub messages_contain: Vec<String>,
+    /// At least one listed substring must appear somewhere in the normalized
+    /// transcript. An empty list imposes no condition.
+    pub any_message_contains: Vec<String>,
+    /// All listed substrings must appear in the last message's content. An empty
+    /// list imposes no condition.
+    pub last_message_contains: Vec<String>,
+    /// Match by prior tool-result count.
+    pub prior_tool_results: Option<CountSpec>,
+    /// Match by exact model id.
+    pub model: Option<String>,
+    /// Match by dialect route.
+    pub dialect: Option<DialectSpec>,
+    /// Make string predicates case-insensitive.
+    pub ignore_case: bool,
+}
+
+/// A numeric guard used by [`PhaseMatcher::prior_tool_results`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum CountSpec {
+    /// Match exactly this count.
+    Exact(usize),
+    /// Match an inclusive range. Missing bounds are open-ended.
+    Range {
+        min: Option<usize>,
+        max: Option<usize>,
+    },
+}
+
+/// Dialect names accepted in a phase matcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DialectSpec {
+    OpenAi,
+    Anthropic,
+    Codex,
 }
 
 /// A reply in the file format: either the `{ "text": … }` shorthand or the full
@@ -192,7 +297,173 @@ impl ScriptFile {
             ScriptFile::Sequence(replies) => {
                 Script::sequence(replies.into_iter().map(ReplySpec::into_reply).collect())
             }
+            ScriptFile::Phases(phases) => phases_into_script(phases),
         }
+    }
+}
+
+/// Lower a phase file script into a rule closure with one sequence cursor per
+/// phase. Keeping the cursors independent is what prevents an extra tool turn in
+/// one phase from consuming another phase's reply.
+fn phases_into_script(phases: Vec<PhaseSpec>) -> Script {
+    struct CompiledPhase {
+        when: PhaseMatcher,
+        replies: Vec<Reply>,
+    }
+
+    let phases: Vec<CompiledPhase> = phases
+        .into_iter()
+        .map(|phase| CompiledPhase {
+            when: phase.when,
+            replies: phase
+                .sequence
+                .into_iter()
+                .map(ReplySpec::into_reply)
+                .collect(),
+        })
+        .collect();
+    let cursors = Mutex::new(vec![0usize; phases.len()]);
+
+    Script::rule(move |view| {
+        let Some(phase_index) = phases.iter().position(|phase| phase.when.matches(view)) else {
+            return Reply::text("");
+        };
+        let phase = &phases[phase_index];
+        if phase.replies.is_empty() {
+            return Reply::text("");
+        }
+
+        let mut cursors = cursors.lock().unwrap_or_else(|p| p.into_inner());
+        let cursor = &mut cursors[phase_index];
+        let chosen = phase.replies[*cursor].clone();
+        if *cursor + 1 < phase.replies.len() {
+            *cursor += 1;
+        }
+        chosen
+    })
+}
+
+impl PhaseMatcher {
+    /// Return true when every populated predicate in this matcher matches the
+    /// request view.
+    pub fn matches(&self, view: &RequestView) -> bool {
+        let transcript = normalized_transcript(view);
+        if !contains_all(
+            &transcript,
+            &self.messages_contain,
+            self.ignore_case,
+        ) {
+            return false;
+        }
+        if !contains_any(
+            &transcript,
+            &self.any_message_contains,
+            self.ignore_case,
+        ) {
+            return false;
+        }
+
+        let last = view
+            .last_message()
+            .map(|message| message.content.as_str())
+            .unwrap_or("");
+        if !contains_all(last, &self.last_message_contains, self.ignore_case) {
+            return false;
+        }
+
+        if let Some(count) = &self.prior_tool_results
+            && !count.matches(view.prior_tool_results)
+        {
+            return false;
+        }
+        if let Some(expected) = &self.model {
+            let Some(actual) = view.model.as_deref() else {
+                return false;
+            };
+            if !string_eq(actual, expected, self.ignore_case) {
+                return false;
+            }
+        }
+        if let Some(expected) = self.dialect
+            && !expected.matches(view.dialect)
+        {
+            return false;
+        }
+
+        true
+    }
+}
+
+impl CountSpec {
+    /// Return true when `count` satisfies this exact/range matcher.
+    pub fn matches(&self, count: usize) -> bool {
+        match self {
+            CountSpec::Exact(expected) => count == *expected,
+            CountSpec::Range { min, max } => {
+                min.as_ref().map_or(true, |min| count >= *min)
+                    && max.as_ref().map_or(true, |max| count <= *max)
+            }
+        }
+    }
+}
+
+impl DialectSpec {
+    /// Return true when this file-format dialect matches the request dialect.
+    pub fn matches(self, dialect: Dialect) -> bool {
+        matches!(
+            (self, dialect),
+            (DialectSpec::OpenAi, Dialect::OpenAi)
+                | (DialectSpec::Anthropic, Dialect::Anthropic)
+                | (DialectSpec::Codex, Dialect::Codex)
+        )
+    }
+}
+
+/// Render the request's message list into the text surface matchers inspect.
+fn normalized_transcript(view: &RequestView) -> String {
+    let mut transcript = String::new();
+    for message in &view.messages {
+        transcript.push_str(&message.role);
+        transcript.push_str(": ");
+        transcript.push_str(&message.content);
+        transcript.push('\n');
+    }
+    transcript
+}
+
+fn contains_all(haystack: &str, needles: &[String], ignore_case: bool) -> bool {
+    if needles.is_empty() {
+        return true;
+    }
+    if ignore_case {
+        let haystack = haystack.to_lowercase();
+        needles
+            .iter()
+            .all(|needle| haystack.contains(&needle.to_lowercase()))
+    } else {
+        needles.iter().all(|needle| haystack.contains(needle))
+    }
+}
+
+fn contains_any(haystack: &str, needles: &[String], ignore_case: bool) -> bool {
+    if needles.is_empty() {
+        return true;
+    }
+    if ignore_case {
+        let haystack = haystack.to_lowercase();
+        needles
+            .iter()
+            .any(|needle| haystack.contains(&needle.to_lowercase()))
+    } else {
+        needles.iter().any(|needle| haystack.contains(needle))
+    }
+}
+
+fn string_eq(left: &str, right: &str, ignore_case: bool) -> bool {
+    if ignore_case {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
     }
 }
 
@@ -237,7 +508,23 @@ impl StopSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Dialect, RequestView};
+    use crate::{Dialect, RequestView, ViewMessage};
+
+    fn view_with_message(content: &str) -> RequestView {
+        RequestView::new(
+            Dialect::OpenAi,
+            Some("fake".to_string()),
+            vec![ViewMessage {
+                role: "system".to_string(),
+                content: content.to_string(),
+            }],
+            0,
+        )
+    }
+
+    fn view_with_tool_results(count: usize) -> RequestView {
+        RequestView::new(Dialect::OpenAi, None, vec![], count)
+    }
 
     #[test]
     fn fixed_text_shorthand_round_trips_into_a_text_reply() {
@@ -267,6 +554,61 @@ mod tests {
         assert_eq!(script.next_reply(&view), Reply::text("first"));
         assert_eq!(script.next_reply(&view), Reply::text("second"));
         assert_eq!(script.next_reply(&view), Reply::text("second"));
+    }
+
+    #[test]
+    fn phases_branch_by_message_content_and_keep_independent_sequences() {
+        let json = r#"
+            {
+              "phases": [
+                {
+                  "name": "architect-triage",
+                  "when": { "messages_contain": ["ROLE: architect"] },
+                  "sequence": [ { "text": "architect first" }, { "text": "architect final" } ]
+                },
+                {
+                  "name": "engineer-implementation",
+                  "when": { "messages_contain": ["ROLE: engineer"] },
+                  "sequence": [ { "text": "engineer first" }, { "text": "engineer final" } ]
+                }
+              ]
+            }
+        "#;
+        let script = ScriptFile::from_json_str(json).unwrap().into_script();
+        let architect = view_with_message("ROLE: architect (triage_workspace capability)");
+        let engineer = view_with_message("ROLE: engineer (coding_workspace capability)");
+
+        assert_eq!(script.next_reply(&architect), Reply::text("architect first"));
+        assert_eq!(script.next_reply(&engineer), Reply::text("engineer first"));
+        // Returning to the architect phase uses the architect cursor, not the
+        // global position that the engineer request advanced.
+        assert_eq!(script.next_reply(&architect), Reply::text("architect final"));
+        assert_eq!(script.next_reply(&engineer), Reply::text("engineer final"));
+        assert_eq!(script.next_reply(&engineer), Reply::text("engineer final"));
+    }
+
+    #[test]
+    fn phase_matchers_can_use_tool_result_counts_and_catch_all_phases() {
+        let json = r#"
+            {
+              "phases": [
+                {
+                  "name": "after-tool",
+                  "when": { "prior_tool_results": { "min": 1 } },
+                  "sequence": [ { "text": "after tool" } ]
+                },
+                {
+                  "name": "catch-all",
+                  "sequence": [ { "text": "before tool" } ]
+                }
+              ]
+            }
+        "#;
+        let script = ScriptFile::from_json_str(json).unwrap().into_script();
+
+        assert_eq!(script.next_reply(&view_with_tool_results(0)), Reply::text("before tool"));
+        assert_eq!(script.next_reply(&view_with_tool_results(1)), Reply::text("after tool"));
+        assert_eq!(script.next_reply(&view_with_tool_results(3)), Reply::text("after tool"));
     }
 
     #[test]
@@ -330,7 +672,7 @@ mod tests {
 
     #[test]
     fn unknown_top_level_variant_is_rejected() {
-        // Neither `fixed` nor `sequence`: must not silently succeed.
+        // Neither `fixed`, `sequence`, nor `phases`: must not silently succeed.
         let err = ScriptFile::from_json_str(r#"{ "rule": {} }"#).unwrap_err();
         assert!(matches!(err, ScriptFileError::Parse(_)));
     }

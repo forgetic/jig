@@ -10,15 +10,17 @@
 //!
 //! The file schema supports two simple data-driven scripts — [`Script::Fixed`]
 //! and [`Script::Sequence`] — plus a phase-aware script that lowers to a
-//! data-driven subset of [`Script::Rule`]. A phase script inspects each
-//! [`RequestView`](crate::RequestView), picks the first matching phase, and
+//! data-driven subset of [`Script::Rule`]. It also includes a small specialized
+//! `reference_delivery` built-in used by Temper's operator demo. A phase script
+//! inspects each [`RequestView`](crate::RequestView), picks the first matching phase, and
 //! advances that phase's own sequence cursor. This lets one file model a
 //! multi-step workflow (for example architect triage and engineer implementation)
 //! without one phase's extra tool calls shifting the replies for another phase.
 //!
 //! # Schema
 //!
-//! The top level is exactly one of `fixed`, `sequence`, or `phases`:
+//! The top level is exactly one of `fixed`, `sequence`, `phases`, or
+//! `reference_delivery`:
 //!
 //! ```json
 //! { "fixed": <reply> }
@@ -41,6 +43,9 @@
 //!     }
 //!   ]
 //! }
+//! ```
+//! ```json
+//! { "reference_delivery": {} }
 //! ```
 //!
 //! Phase matching is first-match-wins. A phase whose `when` is omitted (or whose
@@ -113,6 +118,24 @@ pub enum ScriptFile {
     /// Select a named phase from the request and advance that phase's own
     /// sequence cursor — becomes a data-driven [`Script::Rule`].
     Phases(Vec<PhaseSpec>),
+    /// Built-in behavior for Temper's reference-delivery example.
+    ReferenceDelivery(ReferenceDeliverySpec),
+}
+
+/// Options for the Temper reference-delivery built-in fixture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReferenceDeliverySpec {
+    /// Repository-relative file the engineer role creates.
+    pub greeting_file: String,
+}
+
+impl Default for ReferenceDeliverySpec {
+    fn default() -> Self {
+        Self {
+            greeting_file: "REFERENCE_DELIVERY_GREETING.md".to_string(),
+        }
+    }
 }
 
 /// One named phase in a [`ScriptFile::Phases`] script.
@@ -298,6 +321,9 @@ impl ScriptFile {
                 Script::sequence(replies.into_iter().map(ReplySpec::into_reply).collect())
             }
             ScriptFile::Phases(phases) => phases_into_script(phases),
+            ScriptFile::ReferenceDelivery(spec) => {
+                crate::reference_delivery::script(spec.greeting_file)
+            }
         }
     }
 }
@@ -679,9 +705,19 @@ mod tests {
 
     #[test]
     fn unknown_top_level_variant_is_rejected() {
-        // Neither `fixed`, `sequence`, nor `phases`: must not silently succeed.
+        // Neither `fixed`, `sequence`, `phases`, nor a known built-in: must not
+        // silently succeed.
         let err = ScriptFile::from_json_str(r#"{ "rule": {} }"#).unwrap_err();
         assert!(matches!(err, ScriptFileError::Parse(_)));
+    }
+
+    #[test]
+    fn reference_delivery_builtin_loads_with_defaults() {
+        let file = ScriptFile::from_json_str(r#"{ "reference_delivery": {} }"#).unwrap();
+        assert_eq!(
+            file,
+            ScriptFile::ReferenceDelivery(ReferenceDeliverySpec::default())
+        );
     }
 
     #[test]

@@ -47,6 +47,9 @@ cargo run -- script.json
 
 # Or drive the Temper basic-delivery phase fixture:
 cargo run -- fixtures/basic-delivery.json
+
+# Or drive the richer Temper reference-delivery fixture:
+cargo run -- fixtures/reference-delivery.json
 ```
 
 It prints the bound `base_url` on stdout and blocks until stdin closes (Ctrl-D)
@@ -63,6 +66,8 @@ of:
 - `sequence`: serve replies in order, then repeat the last once exhausted
 - `phases`: inspect the incoming request, pick the first matching named phase,
   and advance that phase's own sequence cursor
+- `reference_delivery`: Temper's built-in operator-demo rule, deriving target
+  repositories and checkout paths from each request
 
 ```json
 { "fixed": { "text": "hello" } }
@@ -101,6 +106,15 @@ extra tool loop in the architect phase does not consume the engineer phase's
 first reply. Matchers can check message substrings (`messages_contain`,
 `any_message_contains`, `last_message_contains`), `prior_tool_results`, `model`,
 `dialect`, and `ignore_case`.
+
+```json
+{ "reference_delivery": {} }
+```
+
+The `reference_delivery` built-in keeps the richer Temper demo configurable: it
+parses the request transcript to find `target_repo` entries, repository checkout
+lines, and architect/engineer/reviewer roles, then emits deterministic role
+replies.
 
 A **reply** is either the `{ "text": "…" }` shorthand — one normal-stop text turn
 — or the full form with explicit turns and optional `usage` / `stop`:

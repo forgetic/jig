@@ -52,7 +52,10 @@ fn anthropic_route_can_return_provider_http_error_and_records_request() {
     let requests = fake.requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].path, "/v1/messages");
-    assert_eq!(requests[0].view.as_ref().unwrap().dialect, Dialect::Anthropic);
+    assert_eq!(
+        requests[0].view.as_ref().unwrap().dialect,
+        Dialect::Anthropic
+    );
 }
 
 #[test]
@@ -87,6 +90,40 @@ fn codex_route_can_return_provider_http_error_and_records_request() {
     assert_eq!(requests[0].view.as_ref().unwrap().dialect, Dialect::Codex);
 }
 
+#[test]
+fn raw_http_error_preserves_content_type_body_and_request_log() {
+    let fake = start_with_error(HttpError {
+        status: 502,
+        body: ErrorBody::Raw {
+            content_type: "text/plain".to_string(),
+            body: "bad gateway".to_string(),
+        },
+        headers: vec![("x-jig-test".to_string(), "raw-error".to_string())],
+    });
+
+    let response = support::post_json_response(
+        &format!("{}/chat/completions", fake.base_url()),
+        &[("authorization", "Bearer test-key")],
+        &serde_json::json!({
+            "model": "gpt-fake",
+            "messages": [{ "role": "user", "content": "hi" }],
+        }),
+    );
+
+    assert_eq!(response.status, 502);
+    assert_eq!(response.header("content-type"), Some("text/plain"));
+    assert_eq!(response.header("connection"), Some("close"));
+    assert_eq!(response.header("x-jig-test"), Some("raw-error"));
+    assert_eq!(response.header("transfer-encoding"), None);
+    assert_content_length(&response);
+    assert_eq!(response.body, "bad gateway");
+
+    let requests = fake.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].path, "/chat/completions");
+    assert_eq!(requests[0].view.as_ref().unwrap().dialect, Dialect::OpenAi);
+}
+
 fn start_with_error(error: HttpError) -> jig_server::FakeLlm {
     jig_server::FakeLlm::start(Script::fixed_action(ScriptAction::HttpError(error)))
         .expect("FakeLlm starts")
@@ -112,9 +149,16 @@ fn assert_http_error_headers(response: &support::Response, status: u16) {
     assert_eq!(response.header("connection"), Some("close"));
     assert_eq!(response.header("x-jig-test"), Some("provider-error"));
     assert_eq!(response.header("transfer-encoding"), None);
+    assert_content_length(response);
+    assert!(
+        !response.body.contains("data: "),
+        "error body must not be SSE"
+    );
+}
+
+fn assert_content_length(response: &support::Response) {
     assert_eq!(
         response.header("content-length"),
         Some(response.body.len().to_string().as_str())
     );
-    assert!(!response.body.contains("data: "), "error body must not be SSE");
 }

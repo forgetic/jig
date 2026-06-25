@@ -115,8 +115,7 @@ fn parse_response(response: &[u8]) -> Response {
         .collect();
 
     let chunked = headers.iter().any(|(name, value)| {
-        name.eq_ignore_ascii_case("transfer-encoding")
-            && value.eq_ignore_ascii_case("chunked")
+        name.eq_ignore_ascii_case("transfer-encoding") && value.eq_ignore_ascii_case("chunked")
     });
     let body = if chunked {
         dechunk(body)

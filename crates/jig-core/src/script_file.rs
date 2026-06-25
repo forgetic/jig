@@ -416,10 +416,7 @@ fn fixed_action_into_script(action: ActionSpec) -> Script {
 }
 
 fn sequence_actions_into_script(actions: Vec<ActionSpec>) -> Script {
-    let actions: Vec<ScriptAction> = actions
-        .into_iter()
-        .map(ActionSpec::into_action)
-        .collect();
+    let actions: Vec<ScriptAction> = actions.into_iter().map(ActionSpec::into_action).collect();
 
     if actions
         .iter()
@@ -819,8 +816,14 @@ mod tests {
             other => panic!("expected second HTTP error, got {other:?}"),
         }
 
-        assert_eq!(script.next_action(&view), ScriptAction::Reply(Reply::text("eventual success")));
-        assert_eq!(script.next_action(&view), ScriptAction::Reply(Reply::text("eventual success")));
+        assert_eq!(
+            script.next_action(&view),
+            ScriptAction::Reply(Reply::text("eventual success"))
+        );
+        assert_eq!(
+            script.next_action(&view),
+            ScriptAction::Reply(Reply::text("eventual success"))
+        );
     }
 
     #[test]

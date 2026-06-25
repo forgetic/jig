@@ -196,11 +196,7 @@ pub struct HttpError {
 
 impl HttpError {
     /// Build a provider-shaped HTTP error using the request route's dialect.
-    pub fn provider(
-        status: u16,
-        code: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
+    pub fn provider(status: u16, code: impl Into<String>, message: impl Into<String>) -> Self {
         HttpError {
             status,
             body: ErrorBody::provider(code, message),
@@ -209,11 +205,7 @@ impl HttpError {
     }
 
     /// Build an exact raw HTTP error body.
-    pub fn raw(
-        status: u16,
-        content_type: impl Into<String>,
-        body: impl Into<String>,
-    ) -> Self {
+    pub fn raw(status: u16, content_type: impl Into<String>, body: impl Into<String>) -> Self {
         HttpError {
             status,
             body: ErrorBody::Raw {
@@ -455,9 +447,7 @@ impl Script {
     }
 
     /// Build a request-aware action rule.
-    pub fn action_rule(
-        f: impl Fn(&RequestView) -> ScriptAction + Send + Sync + 'static,
-    ) -> Self {
+    pub fn action_rule(f: impl Fn(&RequestView) -> ScriptAction + Send + Sync + 'static) -> Self {
         Script::ActionRule(Box::new(f))
     }
 
@@ -474,8 +464,9 @@ impl Script {
                 .unwrap_or_else(|| ScriptAction::Reply(Reply::text(""))),
             Script::Rule(f) => ScriptAction::Reply(f(view)),
             Script::FixedAction(action) => action.clone(),
-            Script::ActionSequence { actions, cursor } => choose_next(actions, cursor)
-                .unwrap_or_else(|| ScriptAction::Reply(Reply::text(""))),
+            Script::ActionSequence { actions, cursor } => {
+                choose_next(actions, cursor).unwrap_or_else(|| ScriptAction::Reply(Reply::text("")))
+            }
             Script::ActionRule(f) => f(view),
         }
     }
@@ -601,8 +592,14 @@ mod tests {
             }
             other => panic!("expected HTTP error action, got {other:?}"),
         }
-        assert_eq!(script.next_action(&view), ScriptAction::Reply(Reply::text("success")));
-        assert_eq!(script.next_action(&view), ScriptAction::Reply(Reply::text("success")));
+        assert_eq!(
+            script.next_action(&view),
+            ScriptAction::Reply(Reply::text("success"))
+        );
+        assert_eq!(
+            script.next_action(&view),
+            ScriptAction::Reply(Reply::text("success"))
+        );
     }
 
     #[test]

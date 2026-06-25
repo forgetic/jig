@@ -100,7 +100,10 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Dialect, Reply, RequestView, Script, StopReason, Turn, Usage};
+use crate::{
+    Dialect, ErrorBody, HttpError, Reply, RequestView, Script, ScriptAction, StopReason, Turn,
+    Usage,
+};
 
 /// A parsed script file.
 ///
@@ -110,13 +113,15 @@ use crate::{Dialect, Reply, RequestView, Script, StopReason, Turn, Usage};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScriptFile {
-    /// Serve the same reply for every request — becomes [`Script::Fixed`].
-    Fixed(ReplySpec),
-    /// Serve replies in order, repeating the last once exhausted — becomes
-    /// [`Script::Sequence`].
-    Sequence(Vec<ReplySpec>),
+    /// Serve the same action for every request. A reply action becomes
+    /// [`Script::Fixed`] for source compatibility; other actions become
+    /// [`Script::FixedAction`](crate::Script::FixedAction).
+    Fixed(ActionSpec),
+    /// Serve actions in order, repeating the last once exhausted. A reply-only
+    /// sequence becomes [`Script::Sequence`].
+    Sequence(Vec<ActionSpec>),
     /// Select a named phase from the request and advance that phase's own
-    /// sequence cursor — becomes a data-driven [`Script::Rule`].
+    /// action sequence cursor — becomes a data-driven action rule.
     Phases(Vec<PhaseSpec>),
     /// Built-in behavior for Temper's reference-delivery example.
     ReferenceDelivery(ReferenceDeliverySpec),
@@ -148,7 +153,7 @@ pub struct PhaseSpec {
     pub name: String,
     #[serde(default)]
     pub when: PhaseMatcher,
-    pub sequence: Vec<ReplySpec>,
+    pub sequence: Vec<ActionSpec>,
 }
 
 /// Request predicates for selecting a phase.
@@ -197,6 +202,61 @@ pub enum DialectSpec {
     OpenAi,
     Anthropic,
     Codex,
+}
+
+/// A script action in the file format: either an existing reply form or an
+/// action object such as `{ "http_error": { ... } }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ActionSpec {
+    /// Any existing reply shorthand/full form.
+    Reply(ReplySpec),
+    /// An action object keyed by action kind.
+    Action(ActionObjectSpec),
+}
+
+/// Action objects accepted at reply positions in a script file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionObjectSpec {
+    /// Return a provider-shaped or raw non-2xx HTTP response.
+    HttpError(HttpErrorSpec),
+}
+
+/// The `http_error` action payload in the file format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpErrorSpec {
+    pub status: u16,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(flatten)]
+    pub body: HttpErrorBodySpec,
+}
+
+/// The body portion of a file-format `http_error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HttpErrorBodySpec {
+    /// Provider-shaped JSON body. The dialect defaults to the route dialect.
+    Provider {
+        #[serde(default)]
+        dialect: Option<DialectSpec>,
+        code: String,
+        message: String,
+        #[serde(default, alias = "type")]
+        error_type: Option<String>,
+        #[serde(default)]
+        extra: serde_json::Value,
+    },
+    /// Exact raw body and content type.
+    Raw { raw: RawErrorSpec },
+}
+
+/// Exact raw HTTP error body for fixtures / parser regression tests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawErrorSpec {
+    pub content_type: String,
+    pub body: String,
 }
 
 /// A reply in the file format: either the `{ "text": … }` shorthand or the full
@@ -316,15 +376,43 @@ impl ScriptFile {
     /// Convert the parsed file into an in-memory [`Script`].
     pub fn into_script(self) -> Script {
         match self {
-            ScriptFile::Fixed(reply) => Script::Fixed(reply.into_reply()),
-            ScriptFile::Sequence(replies) => {
-                Script::sequence(replies.into_iter().map(ReplySpec::into_reply).collect())
-            }
+            ScriptFile::Fixed(action) => fixed_action_into_script(action),
+            ScriptFile::Sequence(actions) => sequence_actions_into_script(actions),
             ScriptFile::Phases(phases) => phases_into_script(phases),
             ScriptFile::ReferenceDelivery(spec) => {
                 crate::reference_delivery::script(spec.greeting_file)
             }
         }
+    }
+}
+
+fn fixed_action_into_script(action: ActionSpec) -> Script {
+    match action.into_action() {
+        ScriptAction::Reply(reply) => Script::Fixed(reply),
+        action => Script::fixed_action(action),
+    }
+}
+
+fn sequence_actions_into_script(actions: Vec<ActionSpec>) -> Script {
+    let actions: Vec<ScriptAction> = actions
+        .into_iter()
+        .map(ActionSpec::into_action)
+        .collect();
+
+    if actions
+        .iter()
+        .all(|action| matches!(action, ScriptAction::Reply(_)))
+    {
+        let replies = actions
+            .into_iter()
+            .map(|action| match action {
+                ScriptAction::Reply(reply) => reply,
+                _ => unreachable!("checked above that every action is a reply"),
+            })
+            .collect();
+        Script::sequence(replies)
+    } else {
+        Script::action_sequence(actions)
     }
 }
 

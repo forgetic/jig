@@ -23,7 +23,8 @@ pub use parse::{
 pub use render::{render_anthropic, render_codex, render_openai};
 pub use request::{Dialect, RequestView, ViewMessage};
 pub use script_file::{
-    CountSpec, DialectSpec, PhaseMatcher, PhaseSpec, ReferenceDeliverySpec, ReplySpec, ScriptFile,
+    ActionObjectSpec, ActionSpec, CountSpec, DialectSpec, HttpErrorBodySpec, HttpErrorSpec,
+    PhaseMatcher, PhaseSpec, RawErrorSpec, ReferenceDeliverySpec, ReplySpec, ScriptFile,
     ScriptFileError, StopSpec, ToolCallSpec, TurnSpec,
 };
 

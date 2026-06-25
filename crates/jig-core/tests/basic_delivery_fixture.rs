@@ -1,7 +1,8 @@
-use jig_core::{PhaseSpec, ReplySpec, ScriptFile, StopSpec, TurnSpec, fixtures_root};
+use jig_core::{ActionSpec, PhaseSpec, ReplySpec, ScriptFile, StopSpec, TurnSpec, fixtures_root};
 use serde_json::Value;
 
-fn text_reply(reply: &ReplySpec) -> &str {
+fn text_reply(action: &ActionSpec) -> &str {
+    let reply = action.as_reply().expect("expected a reply action");
     match reply {
         ReplySpec::Text { text } => text.as_str(),
         ReplySpec::Full { turns, stop, .. } => {
@@ -56,11 +57,11 @@ fn basic_delivery_fixture_matches_temper_phase_contract() {
     let replies = &architect_phase.sequence;
     assert_eq!(replies.len(), 2, "architect phase serves tool then result");
 
-    let ReplySpec::Full {
+    let ActionSpec::Reply(ReplySpec::Full {
         turns,
         stop,
         usage: _,
-    } = &replies[0]
+    }) = &replies[0]
     else {
         panic!("architect turn must use full form for a tool-call stop");
     };
@@ -103,11 +104,11 @@ fn basic_delivery_fixture_matches_temper_phase_contract() {
     let replies = &engineer_phase.sequence;
     assert_eq!(replies.len(), 2, "engineer phase serves tool then result");
 
-    let ReplySpec::Full {
+    let ActionSpec::Reply(ReplySpec::Full {
         turns,
         stop,
         usage: _,
-    } = &replies[0]
+    }) = &replies[0]
     else {
         panic!("engineer turn must use full form for a tool-call stop");
     };

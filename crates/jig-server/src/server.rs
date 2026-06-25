@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use jig_core::request::{parse_anthropic, parse_codex, parse_openai};
 use jig_core::{
-    Dialect, RecordedRequest, RequestView, Script, render::frames_to_body, render_anthropic,
-    render_codex, render_openai,
+    Dialect, HttpError, RecordedRequest, Reply, RequestView, Script, ScriptAction,
+    render::{SseFrame, frames_to_body},
+    render_anthropic, render_codex, render_openai,
 };
 use jig_runtime::read_some;
 use skein::combinator::{Either, Select};
@@ -91,27 +92,59 @@ async fn handle_connection(
             // Every dialect route has a projected view; default to an empty
             // OpenAI view if projection somehow yielded nothing.
             let view = view.unwrap_or_else(empty_openai_view);
-            let reply = script.next_reply(&view);
-            let body = frames_to_body(&render_openai(&reply));
-            write_sse_response(cx, &mut stream, &body).await
+            let action = script.next_action(&view);
+            write_action_response(cx, &mut stream, Dialect::OpenAi, action).await
         }
         "/v1/messages" => {
             // Anthropic messages dialect. Same script seam as OpenAI — only the
             // renderer differs.
             let view = view.unwrap_or_else(empty_anthropic_view);
-            let reply = script.next_reply(&view);
-            let body = frames_to_body(&render_anthropic(&reply));
-            write_sse_response(cx, &mut stream, &body).await
+            let action = script.next_action(&view);
+            write_action_response(cx, &mut stream, Dialect::Anthropic, action).await
         }
         "/backend-api/codex/responses" => {
             // OpenAI Codex responses dialect. Same script seam as the others —
             // only the projection and renderer differ.
             let view = view.unwrap_or_else(empty_codex_view);
-            let reply = script.next_reply(&view);
-            let body = frames_to_body(&render_codex(&reply));
-            write_sse_response(cx, &mut stream, &body).await
+            let action = script.next_action(&view);
+            write_action_response(cx, &mut stream, Dialect::Codex, action).await
         }
         _ => write_not_found(cx, &mut stream).await,
+    }
+}
+
+async fn write_action_response(
+    cx: &Cx,
+    stream: &mut TcpStream,
+    dialect: Dialect,
+    action: ScriptAction,
+) -> io::Result<()> {
+    match action {
+        ScriptAction::Reply(reply) => {
+            let body = frames_to_body(&render_reply(dialect, &reply));
+            write_sse_response(cx, stream, &body).await
+        }
+        ScriptAction::HttpError(error) => write_http_error(cx, stream, dialect, &error).await,
+        ScriptAction::StreamError(_) | ScriptAction::AbortStream(_) => {
+            // These are public extension points for follow-up work. Until their
+            // dialect-specific stream renderers exist, fail loudly as a normal
+            // provider-shaped HTTP response rather than silently pretending the
+            // model completed successfully.
+            let error = HttpError::provider(
+                501,
+                "unsupported_script_action",
+                "script action is not implemented by jig-server yet",
+            );
+            write_http_error(cx, stream, dialect, &error).await
+        }
+    }
+}
+
+fn render_reply(dialect: Dialect, reply: &Reply) -> Vec<SseFrame> {
+    match dialect {
+        Dialect::OpenAi => render_openai(reply),
+        Dialect::Anthropic => render_anthropic(reply),
+        Dialect::Codex => render_codex(reply),
     }
 }
 
@@ -226,6 +259,73 @@ async fn read_request(_cx: &Cx, stream: &mut TcpStream) -> io::Result<Request> {
 /// Find the byte index of the end of the header block (the `\r\n\r\n` start).
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+/// Write a non-2xx HTTP error response without SSE or chunked framing.
+async fn write_http_error(
+    _cx: &Cx,
+    stream: &mut TcpStream,
+    route_dialect: Dialect,
+    error: &HttpError,
+) -> io::Result<()> {
+    let rendered = error.render_body(route_dialect);
+    let content_type = header_value(&error.headers, "content-type")
+        .map(str::to_string)
+        .unwrap_or(rendered.content_type);
+    let body = rendered.body;
+    let reason = reason_phrase(error.status);
+
+    let mut response = format!(
+        "HTTP/1.1 {} {reason}\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n",
+        error.status,
+        body.len()
+    );
+    for (name, value) in &error.headers {
+        if name.eq_ignore_ascii_case("content-type")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("connection")
+        {
+            continue;
+        }
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("\r\n");
+
+    stream.write_all(response.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    }
 }
 
 /// Write a `200` SSE response with the body as a single HTTP/1.1 chunk.

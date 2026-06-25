@@ -9,13 +9,15 @@
 //! the file format.
 //!
 //! The file schema supports two simple data-driven scripts — [`Script::Fixed`]
-//! and [`Script::Sequence`] — plus a phase-aware script that lowers to a
-//! data-driven subset of [`Script::Rule`]. It also includes a small specialized
-//! `reference_delivery` built-in used by Temper's operator demo. A phase script
-//! inspects each [`RequestView`](crate::RequestView), picks the first matching phase, and
-//! advances that phase's own sequence cursor. This lets one file model a
-//! multi-step workflow (for example architect triage and engineer implementation)
-//! without one phase's extra tool calls shifting the replies for another phase.
+//! and [`Script::Sequence`] for reply-only data — plus action-aware fixed and
+//! sequence forms for provider failures. It also supports a phase-aware script
+//! that lowers to a data-driven subset of [`Script::action_rule`]. A small
+//! specialized `reference_delivery` built-in is used by Temper's operator demo.
+//! A phase script inspects each [`RequestView`](crate::RequestView), picks the
+//! first matching phase, and advances that phase's own sequence cursor. This
+//! lets one file model a multi-step workflow (for example architect triage and
+//! engineer implementation) without one phase's extra tool calls shifting the
+//! replies or errors for another phase.
 //!
 //! # Schema
 //!
@@ -23,10 +25,10 @@
 //! `reference_delivery`:
 //!
 //! ```json
-//! { "fixed": <reply> }
+//! { "fixed": <action> }
 //! ```
 //! ```json
-//! { "sequence": [ <reply>, <reply>, ... ] }
+//! { "sequence": [ <action>, <action>, ... ] }
 //! ```
 //! ```json
 //! {
@@ -34,12 +36,12 @@
 //!     {
 //!       "name": "architect-triage",
 //!       "when": { "messages_contain": ["ROLE: architect"] },
-//!       "sequence": [ <reply>, <reply>, ... ]
+//!       "sequence": [ <action>, <action>, ... ]
 //!     },
 //!     {
 //!       "name": "engineer-implementation",
 //!       "when": { "messages_contain": ["ROLE: engineer"] },
-//!       "sequence": [ <reply>, <reply>, ... ]
+//!       "sequence": [ <action>, <action>, ... ]
 //!     }
 //!   ]
 //! }
@@ -50,7 +52,7 @@
 //!
 //! Phase matching is first-match-wins. A phase whose `when` is omitted (or whose
 //! matcher has no fields) matches every request, so it can be used as a catch-all
-//! by placing it last. Each phase's sequence repeats its last reply once
+//! by placing it last. Each phase's sequence repeats its last action once
 //! exhausted, exactly like top-level `sequence`. If no phase matches, or the
 //! matching phase has an empty sequence, the script returns an empty text reply.
 //!
@@ -67,6 +69,26 @@
 //! - `model`: an exact model id.
 //! - `dialect`: one of `"open_ai"`, `"anthropic"`, or `"codex"`.
 //! - `ignore_case`: when `true`, string comparisons are case-insensitive.
+//!
+//! An `<action>` is either a `<reply>` (the existing format) or an action object.
+//! The currently implemented action object is `http_error`:
+//!
+//! ```json
+//! {
+//!   "http_error": {
+//!     "status": 500,
+//!     "code": "server_error",
+//!     "message": "temporary upstream failure"
+//!   }
+//! }
+//! ```
+//!
+//! `http_error.dialect` is optional and defaults to the route dialect. Provider
+//! bodies render as OpenAI/Codex `{ "error": { "code": "…", "message": "…" } }`
+//! or Anthropic `{ "type": "error", "error": { "type": "…", "message": "…" } }`.
+//! Optional `extra` object fields are merged into the provider `error` object.
+//! For exact fixtures, use `{ "raw": { "content_type": "…", "body": "…" } }`
+//! instead of `code` / `message`.
 //!
 //! A `<reply>` is either the **text shorthand**
 //!
@@ -100,7 +122,10 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Dialect, Reply, RequestView, Script, StopReason, Turn, Usage};
+use crate::{
+    Dialect, ErrorBody, HttpError, Reply, RequestView, Script, ScriptAction, StopReason, Turn,
+    Usage,
+};
 
 /// A parsed script file.
 ///
@@ -110,13 +135,15 @@ use crate::{Dialect, Reply, RequestView, Script, StopReason, Turn, Usage};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScriptFile {
-    /// Serve the same reply for every request — becomes [`Script::Fixed`].
-    Fixed(ReplySpec),
-    /// Serve replies in order, repeating the last once exhausted — becomes
-    /// [`Script::Sequence`].
-    Sequence(Vec<ReplySpec>),
+    /// Serve the same action for every request. A reply action becomes
+    /// [`Script::Fixed`] for source compatibility; other actions become
+    /// [`Script::FixedAction`](crate::Script::FixedAction).
+    Fixed(ActionSpec),
+    /// Serve actions in order, repeating the last once exhausted. A reply-only
+    /// sequence becomes [`Script::Sequence`].
+    Sequence(Vec<ActionSpec>),
     /// Select a named phase from the request and advance that phase's own
-    /// sequence cursor — becomes a data-driven [`Script::Rule`].
+    /// action sequence cursor — becomes a data-driven action rule.
     Phases(Vec<PhaseSpec>),
     /// Built-in behavior for Temper's reference-delivery example.
     ReferenceDelivery(ReferenceDeliverySpec),
@@ -148,7 +175,7 @@ pub struct PhaseSpec {
     pub name: String,
     #[serde(default)]
     pub when: PhaseMatcher,
-    pub sequence: Vec<ReplySpec>,
+    pub sequence: Vec<ActionSpec>,
 }
 
 /// Request predicates for selecting a phase.
@@ -197,6 +224,61 @@ pub enum DialectSpec {
     OpenAi,
     Anthropic,
     Codex,
+}
+
+/// A script action in the file format: either an existing reply form or an
+/// action object such as `{ "http_error": { ... } }`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ActionSpec {
+    /// Any existing reply shorthand/full form.
+    Reply(ReplySpec),
+    /// An action object keyed by action kind.
+    Action(ActionObjectSpec),
+}
+
+/// Action objects accepted at reply positions in a script file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionObjectSpec {
+    /// Return a provider-shaped or raw non-2xx HTTP response.
+    HttpError(HttpErrorSpec),
+}
+
+/// The `http_error` action payload in the file format.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HttpErrorSpec {
+    pub status: u16,
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
+    #[serde(flatten)]
+    pub body: HttpErrorBodySpec,
+}
+
+/// The body portion of a file-format `http_error`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum HttpErrorBodySpec {
+    /// Provider-shaped JSON body. The dialect defaults to the route dialect.
+    Provider {
+        #[serde(default)]
+        dialect: Option<DialectSpec>,
+        code: String,
+        message: String,
+        #[serde(default, alias = "type")]
+        error_type: Option<String>,
+        #[serde(default)]
+        extra: serde_json::Value,
+    },
+    /// Exact raw body and content type.
+    Raw { raw: RawErrorSpec },
+}
+
+/// Exact raw HTTP error body for fixtures / parser regression tests.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RawErrorSpec {
+    pub content_type: String,
+    pub body: String,
 }
 
 /// A reply in the file format: either the `{ "text": … }` shorthand or the full
@@ -316,10 +398,8 @@ impl ScriptFile {
     /// Convert the parsed file into an in-memory [`Script`].
     pub fn into_script(self) -> Script {
         match self {
-            ScriptFile::Fixed(reply) => Script::Fixed(reply.into_reply()),
-            ScriptFile::Sequence(replies) => {
-                Script::sequence(replies.into_iter().map(ReplySpec::into_reply).collect())
-            }
+            ScriptFile::Fixed(action) => fixed_action_into_script(action),
+            ScriptFile::Sequence(actions) => sequence_actions_into_script(actions),
             ScriptFile::Phases(phases) => phases_into_script(phases),
             ScriptFile::ReferenceDelivery(spec) => {
                 crate::reference_delivery::script(spec.greeting_file)
@@ -328,41 +408,68 @@ impl ScriptFile {
     }
 }
 
-/// Lower a phase file script into a rule closure with one sequence cursor per
-/// phase. Keeping the cursors independent is what prevents an extra tool turn in
-/// one phase from consuming another phase's reply.
+fn fixed_action_into_script(action: ActionSpec) -> Script {
+    match action.into_action() {
+        ScriptAction::Reply(reply) => Script::Fixed(reply),
+        action => Script::fixed_action(action),
+    }
+}
+
+fn sequence_actions_into_script(actions: Vec<ActionSpec>) -> Script {
+    let actions: Vec<ScriptAction> = actions.into_iter().map(ActionSpec::into_action).collect();
+
+    if actions
+        .iter()
+        .all(|action| matches!(action, ScriptAction::Reply(_)))
+    {
+        let replies = actions
+            .into_iter()
+            .map(|action| match action {
+                ScriptAction::Reply(reply) => reply,
+                _ => unreachable!("checked above that every action is a reply"),
+            })
+            .collect();
+        Script::sequence(replies)
+    } else {
+        Script::action_sequence(actions)
+    }
+}
+
+/// Lower a phase file script into an action-rule closure with one sequence
+/// cursor per phase. Keeping the cursors independent is what prevents an extra
+/// tool turn in one phase from consuming another phase's reply/action.
 fn phases_into_script(phases: Vec<PhaseSpec>) -> Script {
     struct CompiledPhase {
         when: PhaseMatcher,
-        replies: Vec<Reply>,
+        actions: Vec<ScriptAction>,
     }
 
     let phases: Vec<CompiledPhase> = phases
         .into_iter()
         .map(|phase| CompiledPhase {
             when: phase.when,
-            replies: phase
+            actions: phase
                 .sequence
                 .into_iter()
-                .map(ReplySpec::into_reply)
+                .map(ActionSpec::into_action)
                 .collect(),
         })
         .collect();
     let cursors = Mutex::new(vec![0usize; phases.len()]);
 
-    Script::rule(move |view| {
+    Script::action_rule(move |view| {
         let Some(phase_index) = phases.iter().position(|phase| phase.when.matches(view)) else {
-            return Reply::text("");
+            return ScriptAction::Reply(Reply::text(""));
         };
         let phase = &phases[phase_index];
-        if phase.replies.is_empty() {
-            return Reply::text("");
+        if phase.actions.is_empty() {
+            return ScriptAction::Reply(Reply::text(""));
         }
 
         let mut cursors = cursors.lock().unwrap_or_else(|p| p.into_inner());
         let cursor = &mut cursors[phase_index];
-        let chosen = phase.replies[*cursor].clone();
-        if *cursor + 1 < phase.replies.len() {
+        let chosen = phase.actions[*cursor].clone();
+        if *cursor + 1 < phase.actions.len() {
             *cursor += 1;
         }
         chosen
@@ -435,6 +542,21 @@ impl DialectSpec {
                 | (DialectSpec::Codex, Dialect::Codex)
         )
     }
+
+    /// Convert this file-format dialect into the core dialect enum.
+    pub fn into_dialect(self) -> Dialect {
+        match self {
+            DialectSpec::OpenAi => Dialect::OpenAi,
+            DialectSpec::Anthropic => Dialect::Anthropic,
+            DialectSpec::Codex => Dialect::Codex,
+        }
+    }
+}
+
+impl From<DialectSpec> for Dialect {
+    fn from(value: DialectSpec) -> Self {
+        value.into_dialect()
+    }
 }
 
 /// Render the request's message list into the text surface matchers inspect.
@@ -482,6 +604,75 @@ fn string_eq(left: &str, right: &str, ignore_case: bool) -> bool {
         left.eq_ignore_ascii_case(right)
     } else {
         left == right
+    }
+}
+
+impl ActionSpec {
+    /// Lower a file-format action into the canonical [`ScriptAction`].
+    pub fn into_action(self) -> ScriptAction {
+        match self {
+            ActionSpec::Reply(reply) => ScriptAction::Reply(reply.into_reply()),
+            ActionSpec::Action(action) => action.into_action(),
+        }
+    }
+
+    /// Borrow this action as a reply spec, if it is one.
+    pub fn as_reply(&self) -> Option<&ReplySpec> {
+        match self {
+            ActionSpec::Reply(reply) => Some(reply),
+            ActionSpec::Action(_) => None,
+        }
+    }
+}
+
+impl From<ReplySpec> for ActionSpec {
+    fn from(reply: ReplySpec) -> Self {
+        ActionSpec::Reply(reply)
+    }
+}
+
+impl ActionObjectSpec {
+    /// Lower a file-format action object into the canonical [`ScriptAction`].
+    pub fn into_action(self) -> ScriptAction {
+        match self {
+            ActionObjectSpec::HttpError(error) => ScriptAction::HttpError(error.into_http_error()),
+        }
+    }
+}
+
+impl HttpErrorSpec {
+    /// Lower a file-format HTTP error into the canonical [`HttpError`].
+    pub fn into_http_error(self) -> HttpError {
+        HttpError {
+            status: self.status,
+            body: self.body.into_error_body(),
+            headers: self.headers,
+        }
+    }
+}
+
+impl HttpErrorBodySpec {
+    /// Lower a file-format HTTP error body into the canonical [`ErrorBody`].
+    pub fn into_error_body(self) -> ErrorBody {
+        match self {
+            HttpErrorBodySpec::Provider {
+                dialect,
+                code,
+                message,
+                error_type,
+                extra,
+            } => ErrorBody::Provider {
+                dialect: dialect.map(DialectSpec::into_dialect),
+                code,
+                message,
+                error_type,
+                extra,
+            },
+            HttpErrorBodySpec::Raw { raw } => ErrorBody::Raw {
+                content_type: raw.content_type,
+                body: raw.body,
+            },
+        }
     }
 }
 
@@ -549,9 +740,9 @@ mod tests {
         let file = ScriptFile::from_json_str(r#"{ "fixed": { "text": "hello" } }"#).unwrap();
         assert_eq!(
             file,
-            ScriptFile::Fixed(ReplySpec::Text {
+            ScriptFile::Fixed(ActionSpec::Reply(ReplySpec::Text {
                 text: "hello".into()
-            })
+            }))
         );
 
         let script = file.into_script();
@@ -572,6 +763,67 @@ mod tests {
         assert_eq!(script.next_reply(&view), Reply::text("first"));
         assert_eq!(script.next_reply(&view), Reply::text("second"));
         assert_eq!(script.next_reply(&view), Reply::text("second"));
+    }
+
+    #[test]
+    fn sequence_can_mix_http_errors_then_a_normal_reply() {
+        let json = r#"
+            {
+              "sequence": [
+                {
+                  "http_error": {
+                    "status": 500,
+                    "code": "server_error",
+                    "message": "temporary upstream failure"
+                  }
+                },
+                {
+                  "http_error": {
+                    "status": 429,
+                    "dialect": "codex",
+                    "code": "usage_limit_reached",
+                    "message": "usage limit reached",
+                    "extra": { "plan_type": "pro", "resets_at": "2026-01-01T00:00:00Z" }
+                  }
+                },
+                { "text": "eventual success" }
+              ]
+            }
+        "#;
+        let script = ScriptFile::from_json_str(json).unwrap().into_script();
+        let view = RequestView::new(Dialect::Codex, None, vec![], 0);
+
+        match script.next_action(&view) {
+            ScriptAction::HttpError(error) => {
+                assert_eq!(error.status, 500);
+                let rendered = error.render_body(Dialect::Codex);
+                let json: serde_json::Value = serde_json::from_str(&rendered.body).unwrap();
+                assert_eq!(json["error"]["code"], "server_error");
+                assert_eq!(json["error"]["message"], "temporary upstream failure");
+            }
+            other => panic!("expected first HTTP error, got {other:?}"),
+        }
+
+        match script.next_action(&view) {
+            ScriptAction::HttpError(error) => {
+                assert_eq!(error.status, 429);
+                let rendered = error.render_body(Dialect::OpenAi);
+                let json: serde_json::Value = serde_json::from_str(&rendered.body).unwrap();
+                assert_eq!(json["error"]["code"], "usage_limit_reached");
+                assert_eq!(json["error"]["plan_type"], "pro");
+                assert_eq!(json["error"]["resets_at"], "2026-01-01T00:00:00Z");
+            }
+            other => panic!("expected second HTTP error, got {other:?}"),
+        }
+
+        assert_eq!(
+            script.next_action(&view),
+            ScriptAction::Reply(Reply::text("eventual success"))
+        );
+        assert_eq!(
+            script.next_action(&view),
+            ScriptAction::Reply(Reply::text("eventual success"))
+        );
     }
 
     #[test]
@@ -661,8 +913,8 @@ mod tests {
         "#;
         let file = ScriptFile::from_json_str(json).unwrap();
         let reply = match file {
-            ScriptFile::Fixed(spec) => spec.into_reply(),
-            _ => panic!("expected fixed"),
+            ScriptFile::Fixed(ActionSpec::Reply(spec)) => spec.into_reply(),
+            _ => panic!("expected fixed reply"),
         };
         assert_eq!(
             reply,
@@ -689,8 +941,8 @@ mod tests {
         // The smallest full form: just turns. usage → default, stop → Stop.
         let json = r#"{ "fixed": { "turns": [ { "text": "hi" } ] } }"#;
         let reply = match ScriptFile::from_json_str(json).unwrap() {
-            ScriptFile::Fixed(spec) => spec.into_reply(),
-            _ => panic!("expected fixed"),
+            ScriptFile::Fixed(ActionSpec::Reply(spec)) => spec.into_reply(),
+            _ => panic!("expected fixed reply"),
         };
         assert_eq!(reply.usage, Usage::default());
         assert_eq!(reply.stop, StopReason::Stop);
@@ -725,12 +977,12 @@ mod tests {
         // A round-trip through serialize → parse must be stable, which is what
         // makes the schema a dependable public contract.
         let file = ScriptFile::Sequence(vec![
-            ReplySpec::Text { text: "a".into() },
-            ReplySpec::Full {
+            ActionSpec::Reply(ReplySpec::Text { text: "a".into() }),
+            ActionSpec::Reply(ReplySpec::Full {
                 turns: vec![TurnSpec::Text("b".into())],
                 usage: Usage::default(),
                 stop: StopSpec::Stop,
-            },
+            }),
         ]);
         let json = serde_json::to_string(&file).unwrap();
         let reparsed = ScriptFile::from_json_str(&json).unwrap();

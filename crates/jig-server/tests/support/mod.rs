@@ -1,10 +1,9 @@
 //! A tiny blocking HTTP/1.1 test client on `std::net`, replacing `reqwest`.
 //!
 //! jig's tests drive a loopback `FakeLlm` with two shapes only: POST a JSON
-//! body and read the (single-chunk) SSE response, or GET a path and read the
-//! status line. Hand-rolling those ~80 lines keeps the dev-dependency tree
-//! free of an embedded async runtime — the same spirit as jig's own
-//! hand-rolled server.
+//! body and read the response, or GET a path and read the status line.
+//! Hand-rolling those ~100 lines keeps the dev-dependency tree free of an
+//! embedded async runtime — the same spirit as jig's own hand-rolled server.
 
 // Each integration-test binary compiles its own copy of this module and uses
 // only a subset of the helpers, so per-binary dead-code warnings are noise.
@@ -13,10 +12,37 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
+/// Parsed blocking HTTP response from the fake server.
+#[derive(Debug, Clone)]
+pub struct Response {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: String,
+}
+
+impl Response {
+    /// Return a header value by case-insensitive name.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+            .map(|(_, value)| value.as_str())
+    }
+}
+
 /// POST `body` as JSON to `url` (e.g. `http://127.0.0.1:PORT/path`) with the
 /// extra `headers`, returning the response body (de-chunked if the response
 /// uses chunked transfer-encoding).
 pub fn post_json(url: &str, headers: &[(&str, &str)], body: &serde_json::Value) -> String {
+    post_json_response(url, headers, body).body
+}
+
+/// POST `body` as JSON to `url`, returning status, headers, and body.
+pub fn post_json_response(
+    url: &str,
+    headers: &[(&str, &str)],
+    body: &serde_json::Value,
+) -> Response {
     let (authority, path) = split_url(url);
     let payload = serde_json::to_vec(body).expect("serialize request body");
 
@@ -34,7 +60,7 @@ pub fn post_json(url: &str, headers: &[(&str, &str)], body: &serde_json::Value) 
     request.push_str("\r\n");
 
     let response = exchange(&authority, request.as_bytes(), &payload);
-    String::from_utf8_lossy(&response_body(&response)).into_owned()
+    parse_response(&response)
 }
 
 /// GET `url`, returning the response status code.
@@ -42,11 +68,7 @@ pub fn get_status(url: &str) -> u16 {
     let (authority, path) = split_url(url);
     let request = format!("GET {path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
     let response = exchange(&authority, request.as_bytes(), &[]);
-    let head = String::from_utf8_lossy(&response);
-    head.split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .expect("status code in response")
+    parse_response(&response).status
 }
 
 /// Split `http://host:port/path` into (`host:port`, `/path`).
@@ -70,9 +92,8 @@ fn exchange(authority: &str, head: &[u8], body: &[u8]) -> Vec<u8> {
     response
 }
 
-/// Extract the response body from raw response bytes, de-chunking when the
-/// head declares `Transfer-Encoding: chunked`.
-fn response_body(response: &[u8]) -> Vec<u8> {
+/// Parse raw response bytes, de-chunking the body when needed.
+fn parse_response(response: &[u8]) -> Response {
     let header_end = response
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
@@ -80,19 +101,39 @@ fn response_body(response: &[u8]) -> Vec<u8> {
     let head = String::from_utf8_lossy(&response[..header_end]);
     let body = &response[header_end + 4..];
 
-    let chunked = head.lines().any(|line| {
-        line.split_once(':').is_some_and(|(name, value)| {
-            name.trim().eq_ignore_ascii_case("transfer-encoding")
-                && value.trim().eq_ignore_ascii_case("chunked")
+    let mut lines = head.lines();
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .expect("status code in response");
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_string(), value.trim().to_string()))
         })
-    });
-    if !chunked {
-        return body.to_vec();
-    }
+        .collect();
 
-    // De-chunk: repeated "<hex len>\r\n<data>\r\n" until the "0\r\n\r\n" end.
+    let chunked = headers.iter().any(|(name, value)| {
+        name.eq_ignore_ascii_case("transfer-encoding")
+            && value.eq_ignore_ascii_case("chunked")
+    });
+    let body = if chunked {
+        dechunk(body)
+    } else {
+        body.to_vec()
+    };
+
+    Response {
+        status,
+        headers,
+        body: String::from_utf8_lossy(&body).into_owned(),
+    }
+}
+
+/// De-chunk repeated "<hex len>\r\n<data>\r\n" until the "0\r\n\r\n" end.
+fn dechunk(mut rest: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
-    let mut rest = body;
     loop {
         let line_end = rest
             .windows(2)

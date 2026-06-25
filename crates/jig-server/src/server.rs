@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use jig_core::request::{parse_anthropic, parse_codex, parse_openai};
 use jig_core::{
-    Dialect, ErrorBody, HttpError, RecordedRequest, Reply, RequestView, Script, ScriptAction,
-    render::frames_to_body, render_anthropic, render_codex, render_openai,
+    Dialect, HttpError, RecordedRequest, Reply, RequestView, Script, ScriptAction,
+    render::{SseFrame, frames_to_body},
+    render_anthropic, render_codex, render_openai,
 };
 use jig_runtime::read_some;
 use skein::combinator::{Either, Select};
@@ -139,7 +140,7 @@ async fn write_action_response(
     }
 }
 
-fn render_reply(dialect: Dialect, reply: &Reply) -> Vec<String> {
+fn render_reply(dialect: Dialect, reply: &Reply) -> Vec<SseFrame> {
     match dialect {
         Dialect::OpenAi => render_openai(reply),
         Dialect::Anthropic => render_anthropic(reply),
@@ -258,6 +259,73 @@ async fn read_request(_cx: &Cx, stream: &mut TcpStream) -> io::Result<Request> {
 /// Find the byte index of the end of the header block (the `\r\n\r\n` start).
 fn find_header_end(buf: &[u8]) -> Option<usize> {
     buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+/// Write a non-2xx HTTP error response without SSE or chunked framing.
+async fn write_http_error(
+    _cx: &Cx,
+    stream: &mut TcpStream,
+    route_dialect: Dialect,
+    error: &HttpError,
+) -> io::Result<()> {
+    let rendered = error.render_body(route_dialect);
+    let content_type = header_value(&error.headers, "content-type")
+        .map(str::to_string)
+        .unwrap_or(rendered.content_type);
+    let body = rendered.body;
+    let reason = reason_phrase(error.status);
+
+    let mut response = format!(
+        "HTTP/1.1 {} {reason}\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n",
+        error.status,
+        body.as_bytes().len()
+    );
+    for (name, value) in &error.headers {
+        if name.eq_ignore_ascii_case("content-type")
+            || name.eq_ignore_ascii_case("content-length")
+            || name.eq_ignore_ascii_case("connection")
+        {
+            continue;
+        }
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("\r\n");
+
+    stream.write_all(response.as_bytes()).await?;
+    stream.write_all(body.as_bytes()).await?;
+    stream.flush().await?;
+    Ok(())
+}
+
+fn header_value<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(header_name, _)| header_name.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        408 => "Request Timeout",
+        409 => "Conflict",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    }
 }
 
 /// Write a `200` SSE response with the body as a single HTTP/1.1 chunk.

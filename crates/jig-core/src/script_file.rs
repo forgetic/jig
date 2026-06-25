@@ -9,13 +9,15 @@
 //! the file format.
 //!
 //! The file schema supports two simple data-driven scripts — [`Script::Fixed`]
-//! and [`Script::Sequence`] — plus a phase-aware script that lowers to a
-//! data-driven subset of [`Script::Rule`]. It also includes a small specialized
-//! `reference_delivery` built-in used by Temper's operator demo. A phase script
-//! inspects each [`RequestView`](crate::RequestView), picks the first matching phase, and
-//! advances that phase's own sequence cursor. This lets one file model a
-//! multi-step workflow (for example architect triage and engineer implementation)
-//! without one phase's extra tool calls shifting the replies for another phase.
+//! and [`Script::Sequence`] for reply-only data — plus action-aware fixed and
+//! sequence forms for provider failures. It also supports a phase-aware script
+//! that lowers to a data-driven subset of [`Script::action_rule`]. A small
+//! specialized `reference_delivery` built-in is used by Temper's operator demo.
+//! A phase script inspects each [`RequestView`](crate::RequestView), picks the
+//! first matching phase, and advances that phase's own sequence cursor. This
+//! lets one file model a multi-step workflow (for example architect triage and
+//! engineer implementation) without one phase's extra tool calls shifting the
+//! replies or errors for another phase.
 //!
 //! # Schema
 //!
@@ -23,10 +25,10 @@
 //! `reference_delivery`:
 //!
 //! ```json
-//! { "fixed": <reply> }
+//! { "fixed": <action> }
 //! ```
 //! ```json
-//! { "sequence": [ <reply>, <reply>, ... ] }
+//! { "sequence": [ <action>, <action>, ... ] }
 //! ```
 //! ```json
 //! {
@@ -34,12 +36,12 @@
 //!     {
 //!       "name": "architect-triage",
 //!       "when": { "messages_contain": ["ROLE: architect"] },
-//!       "sequence": [ <reply>, <reply>, ... ]
+//!       "sequence": [ <action>, <action>, ... ]
 //!     },
 //!     {
 //!       "name": "engineer-implementation",
 //!       "when": { "messages_contain": ["ROLE: engineer"] },
-//!       "sequence": [ <reply>, <reply>, ... ]
+//!       "sequence": [ <action>, <action>, ... ]
 //!     }
 //!   ]
 //! }
@@ -50,7 +52,7 @@
 //!
 //! Phase matching is first-match-wins. A phase whose `when` is omitted (or whose
 //! matcher has no fields) matches every request, so it can be used as a catch-all
-//! by placing it last. Each phase's sequence repeats its last reply once
+//! by placing it last. Each phase's sequence repeats its last action once
 //! exhausted, exactly like top-level `sequence`. If no phase matches, or the
 //! matching phase has an empty sequence, the script returns an empty text reply.
 //!
@@ -67,6 +69,26 @@
 //! - `model`: an exact model id.
 //! - `dialect`: one of `"open_ai"`, `"anthropic"`, or `"codex"`.
 //! - `ignore_case`: when `true`, string comparisons are case-insensitive.
+//!
+//! An `<action>` is either a `<reply>` (the existing format) or an action object.
+//! The currently implemented action object is `http_error`:
+//!
+//! ```json
+//! {
+//!   "http_error": {
+//!     "status": 500,
+//!     "code": "server_error",
+//!     "message": "temporary upstream failure"
+//!   }
+//! }
+//! ```
+//!
+//! `http_error.dialect` is optional and defaults to the route dialect. Provider
+//! bodies render as OpenAI/Codex `{ "error": { "code": "…", "message": "…" } }`
+//! or Anthropic `{ "type": "error", "error": { "type": "…", "message": "…" } }`.
+//! Optional `extra` object fields are merged into the provider `error` object.
+//! For exact fixtures, use `{ "raw": { "content_type": "…", "body": "…" } }`
+//! instead of `code` / `message`.
 //!
 //! A `<reply>` is either the **text shorthand**
 //!

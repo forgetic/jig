@@ -17,8 +17,9 @@ and drives its agent loop.
 | Anthropic messages | `POST {base}/v1/messages` |
 | OpenAI Codex responses | `POST {base}/backend-api/codex/responses` |
 
-Every route streams Server-Sent Events with `Content-Type: text/event-stream`.
-Auth headers are accepted but ignored. Unknown paths return `404`.
+Successful replies stream Server-Sent Events with `Content-Type: text/event-stream`.
+Scripted HTTP errors return a normal non-2xx response instead (no SSE or chunked
+framing). Auth headers are accepted but ignored. Unknown paths return `404`.
 
 ## Using it in-process (the test API)
 
@@ -139,9 +140,48 @@ A **reply** is either the `{ "text": "…" }` shorthand — one normal-stop text
 - `stop` is one of `"stop"` (default), `"tool_calls"`, or `"error"`.
 - `usage` defaults to `{ "prompt_tokens": 1, "completion_tokens": 1 }`.
 
+A **script action** is either a successful reply (the existing format) or an
+HTTP error action. Use `http_error` when a test needs the client to observe a
+provider/API failure rather than a normal terminal model stop:
+
+```json
+{
+  "sequence": [
+    {
+      "http_error": {
+        "status": 500,
+        "code": "server_error",
+        "message": "temporary upstream failure"
+      }
+    },
+    { "text": "eventual success" }
+  ]
+}
+```
+
+`http_error.dialect` is optional; when omitted, the body shape follows the route
+being called. OpenAI chat-completions and Codex responses render
+`{"error":{"code":"…","message":"…"}}`; Anthropic messages render
+`{"type":"error","error":{"type":"…","message":"…"}}`. Any `extra` object is
+merged into the provider `error` object, which can express fixtures such as
+Codex usage limits (`plan_type`, `resets_at`). For exact parser-regression
+fixtures, use a raw body:
+
+```json
+{
+  "fixed": {
+    "http_error": {
+      "status": 502,
+      "raw": { "content_type": "text/plain", "body": "bad gateway" }
+    }
+  }
+}
+```
+
 For fully custom Rust logic, `Script::Rule` remains available through the
-in-process API. The `phases` file format is a data-driven subset of that power
-for multi-phase workflow fixtures. See
+in-process API, and `Script::action_rule` can return HTTP errors or future action
+kinds. The `phases` file format is a data-driven subset of that power for
+multi-phase workflow fixtures. See
 [`crates/jig-core/src/script_file.rs`](crates/jig-core/src/script_file.rs) for the
 authoritative schema and `jig_core::ScriptFile` to load it programmatically.
 

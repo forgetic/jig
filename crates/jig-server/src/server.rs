@@ -281,7 +281,7 @@ async fn write_http_error(
          Content-Length: {}\r\n\
          Connection: close\r\n",
         error.status,
-        body.as_bytes().len()
+        body.len()
     );
     for (name, value) in &error.headers {
         if name.eq_ignore_ascii_case("content-type")

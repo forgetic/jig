@@ -156,10 +156,10 @@ pub fn parse_codex_sse(bytes: &[u8]) -> Result<Reply, ParseError> {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                if let Some(call) = call_at_mut(&mut calls, output_index)
-                    && let Some(delta) = data.get("delta").and_then(Value::as_str)
-                {
-                    call.partial_args.push_str(delta);
+                if let Some(call) = call_at_mut(&mut calls, output_index) {
+                    if let Some(delta) = data.get("delta").and_then(Value::as_str) {
+                        call.partial_args.push_str(delta);
+                    }
                 }
             }
             "response.output_item.done" => {
@@ -173,9 +173,10 @@ pub fn parse_codex_sse(bytes: &[u8]) -> Result<Reply, ParseError> {
                     .get("item")
                     .and_then(|i| i.get("arguments"))
                     .and_then(Value::as_str)
-                    && let Some(call) = call_at_mut(&mut calls, output_index)
                 {
-                    call.final_args = Some(args.to_string());
+                    if let Some(call) = call_at_mut(&mut calls, output_index) {
+                        call.final_args = Some(args.to_string());
+                    }
                 }
             }
             "response.completed" => {

@@ -252,15 +252,15 @@ fn fold_tool_call_delta(calls: &mut Vec<ToolCall>, tc: &Value) {
         return;
     };
 
-    if let Some(id) = tc.get("id").and_then(Value::as_str)
-        && !id.is_empty()
-    {
-        call.id = id.to_string();
+    if let Some(id) = tc.get("id").and_then(Value::as_str) {
+        if !id.is_empty() {
+            call.id = id.to_string();
+        }
     }
-    if let Some(name) = function.and_then(|f| f.get("name")).and_then(Value::as_str)
-        && !name.is_empty()
-    {
-        call.name = name.to_string();
+    if let Some(name) = function.and_then(|f| f.get("name")).and_then(Value::as_str) {
+        if !name.is_empty() {
+            call.name = name.to_string();
+        }
     }
     if let Some(args) = function
         .and_then(|f| f.get("arguments"))

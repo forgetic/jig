@@ -230,10 +230,10 @@ async fn read_request(_cx: &Cx, stream: &mut TcpStream) -> io::Result<Request> {
 
     let mut content_length = 0usize;
     for line in lines {
-        if let Some((name, value)) = line.split_once(':')
-            && name.trim().eq_ignore_ascii_case("content-length")
-        {
-            content_length = value.trim().parse().unwrap_or(0);
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse().unwrap_or(0);
+            }
         }
     }
 

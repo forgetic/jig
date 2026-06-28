@@ -18,7 +18,7 @@ jig-server = { path = "crates/jig-server" }
 jig-record = { path = "crates/jig-record" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-skein = { git = "http://127.0.0.1:3000/ai/skein.git", rev = "5cd8c4d88a41720afa8f509279bde53b16bf38d0" }
+skein = { git = "https://git.ekanayaka.io/ai/skein.git", rev = "50c7719" }
 
 [package]
 name = "jig"

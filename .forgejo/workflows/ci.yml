@@ -1,5 +1,8 @@
 name: ci
 
+env:
+  KACHE_CONFIG: "/etc/kache/config.toml"
+
 on:
   pull_request:
     branches:

@@ -373,6 +373,17 @@ had that mio lacks, is not needed. It would have tested at the wrong level.
   request) are newtypes allocated the same way by whichever step starts the
   operation.
 
+*Implementation notes (wave 2):*
+
+- **`sys::Ids`** counts up from 1 over the lower half of the id space;
+  signals count down from the top. Planners that share a reactor must not
+  hand out the same id, so a planner that owns its allocator takes a
+  disjoint range from `Ids::split`. The recorder's server and client
+  planners are the case in point.
+- **`http1::server::Server::new(ids, config)`** takes its allocator and
+  draws the listener's id first. The embedder adopts the listener under
+  `server.listener()`. A `ReqId` is its connection's `SockId` value.
+
 ### 4.4 Time
 
 - `Time(u64)` is monotonic nanoseconds since the loop started. It is `Copy`,
@@ -843,6 +854,43 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
   window of 1. The pilot doesn't need a decoded-body mode (the recorder wants
   raw bytes). The chunked decoder exists as a tested pure function for
   temper's model client.
+
+*Implementation notes (wave 2):*
+
+- **`tcp::Conn`.**
+  - `inbound` and `outbound` are public fields, so an upper stage can borrow
+    one while it borrows the other.
+  - `set_read_limit(n)` is the only read control, and zero stops reading.
+    A read never asks for more than the limit leaves room for, so the server
+    reads a body exactly.
+  - `unsent()` counts the write in flight.
+  - It arms only when no read or write is in flight. A pending arm can't be
+    widened: there is no re-arm action. So a need that arises while an arm
+    is pending waits for that arm's readiness. The server never hits this,
+    because it stops reading before it writes.
+  - On an error it stops all I/O, and the upper stage closes it.
+  - It also connects (`Conn::connect`), for the client planner.
+- **`tcp::Listener`.**
+  - It has one accept in flight at a time.
+  - Every accept error other than `WouldBlock` backs off for 10 ms.
+  - Its timer is a plain field, not a `Deadlines` heap: it has only one. The
+    server needs no heap either, since shutdown's grace ends at the same
+    instant for every connection.
+- **`http1::server`.**
+  - The vocabulary: `ServerEvent::{Request, Gone, Flushed, Signal}` out and
+    `ServerCmd::{Respond, RawStart, RawBytes, RawEnd, Shutdown}` in.
+  - `Server` implements `IoStep` directly. Its inherent `reap`, `command`
+    and `plan` serve adapters that translate to a core's own types.
+  - `Gone` is also emitted when the grace period cuts a response.
+  - Nothing is read after the request. A client that disconnects while the
+    core decides is noticed only when the response is written.
+  - The planner adds no headers to the core's responses, so
+    `Connection: close` is the core's to send. jig's responses already
+    include it.
+  - Refusals carry a `text/plain` body equal to the reason phrase.
+  - A socket accepted during shutdown is closed at once.
+  - Every reap and every step sweeps all connections through one `match` on
+    the connection's state. There is no tracking of which ones changed.
 
 ### 5.6 jig-server
 

@@ -15,8 +15,8 @@ on:
 # Builds are cached transparently by the kache daemon (rustc-wrapper in
 # ~/.cargo/config.toml on the host runner), so a clean checkout still gets warm
 # builds for everything that emits real artifacts (rlibs and test executables).
-# skein is a git dependency (pinned by rev), so Cargo fetches it itself — no
-# sibling checkout, working-directory trick, or path-dependency layout needed.
+# Every dependency is a workspace crate or comes from crates.io, so a plain
+# checkout builds: no sibling checkout or path-dependency layout is needed.
 jobs:
   validate:
     runs-on: host

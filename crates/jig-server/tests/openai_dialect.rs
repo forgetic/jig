@@ -3,7 +3,7 @@
 //! This is the M1 acceptance test: a plain `#[test]` with no async runtime of
 //! its own that starts a `FakeLlm`, hits its `base_url()`
 //! with a blocking HTTP client, asserts the streamed reply parses and ends in
-//! `[DONE]`, then lets `Drop` tear the runtime thread down. It demonstrates
+//! `[DONE]`, then lets `Drop` stop and join the loop thread. It demonstrates
 //! that the entire in-process lifecycle is start → blocking HTTP → drop.
 
 use jig_core::{Reply, Script, StopReason, Turn, Usage};

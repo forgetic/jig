@@ -928,6 +928,30 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
   rule closure. `requests()` clones the log. `Drop` raises the signal and
   joins.
 
+*As built (wave 3):*
+
+- **The parts are public,** so an embedder can build its own loop:
+  - `io::ServerIo` translates between the planner's vocabulary and the
+    core's. It drops `Gone`, `Flushed` and foreign signals: the core never
+    relays, and an undecided request is released by its decision (whose
+    response the server ignores).
+  - `host::FakeLlmHost` appends to a `RequestLog`
+    (`Arc<Mutex<Vec<RecordedRequest>>>`) and calls the rule in the same
+    round. A `Decide` with no rule gets a `500` (`no_rule`), not a panic on
+    the loop thread.
+
+  `io` holds the adapter, not a planner config: `FakeLlm` uses the planner's
+  default `Config`.
+- **All setup happens on the caller's thread,** not only the bind. `Reactor`
+  is `Send`, so `start` builds it, adopts the listener and creates the stop
+  signal before moving them to the loop thread. Startup errors return from
+  `start` with no channel. The thread (`jig-fakellm`) only runs `run`, and
+  prints a loop error with `eprintln!`.
+- **`requests()` is in script order,** which is the order requests
+  completed, not the order clients connected.
+- **`jig-server` declares `rust-version = "1.85"`,** like `steploop`, and
+  depends only on `jig-core` and `steploop`.
+
 ### 5.7 jig-record
 
 - **Recorder core (pure).** It receives:

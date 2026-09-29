@@ -4,11 +4,15 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Embeddable fake-LLM service API (single-threaded skein runtime on its own thread)"
+# temper embeds this crate; clippy's `incompatible_msrv` holds us to its MSRV.
+rust-version = "1.85"
+description = "Embeddable fake-LLM service API: a pure provider core, served over loopback by a steploop loop on its own thread"
 
 [dependencies]
 jig-core.workspace = true
-jig-runtime.workspace = true
-serde_json.workspace = true
-skein.workspace = true
 steploop.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+# Test clients with a small receive window, set before connecting.
+socket2 = "0.6"

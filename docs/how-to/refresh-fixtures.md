@@ -116,7 +116,8 @@ You no longer drive the client by hand: `xtask record` runs the right harness
 for each cell automatically (see the dispatch list above). Under the hood each
 harness stands up the passthrough recorder on a loopback `base_url`
 (`http://127.0.0.1:PORT`), drives its client through it against the real backend,
-forwards one exchange, captures it, and exits. A complete chat-completions
+records every routable exchange the client makes (the recorder in pump mode),
+keeps the one that matches the scenario, and exits. A complete chat-completions
 capture ends in the `[DONE]` SSE terminator; an Anthropic capture in
 `message_stop`; a Codex capture in `response.completed`.
 

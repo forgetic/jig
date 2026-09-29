@@ -26,7 +26,8 @@ pub struct Route {
 
 impl Route {
     /// Resolve a request path to its [`Route`], or `None` for an unknown path
-    /// (which the proxy rejects rather than forwarding blindly).
+    /// (which the recorder answers with a `204` preflight reply rather than
+    /// forwarding blindly).
     ///
     /// The default upstream host is the canonical provider for the dialect;
     /// callers targeting an OpenAI-compatible backend (DeepSeek, a gateway, …)

@@ -8,3 +8,6 @@ load only the context relevant to their task.
 - [Repository layout](docs/explanation/repository-layout.md)
 - [Record and conform: why jig's fixtures come from real traffic](docs/explanation/record-and-conform.md)
 - [How to refresh the recorded fixtures](docs/how-to/refresh-fixtures.md)
+- [The sans-IO shell: design and rationale](docs/explanation/sans-io-shell.md)
+  (the no-await loop, `steploop`, decisions and their reasoning)
+- [Pilot brief for the sans-IO shell](docs/plans/sans-io-pilot-brief.md)

@@ -1,9 +1,9 @@
 [workspace]
-members = ["crates/steploop", "crates/jig-core", "crates/jig-runtime", "crates/jig-server", "crates/jig-record", "crates/xtask"]
+members = ["crates/steploop", "crates/jig-core", "crates/jig-server", "crates/jig-record", "crates/xtask"]
 # The root manifest is also the `jig` [package], so without this a bare
 # `cargo test` / `cargo nextest run` from the root would select only the
 # root binary (which has no tests). Default to the whole workspace.
-default-members = [".", "crates/steploop", "crates/jig-core", "crates/jig-runtime", "crates/jig-server", "crates/jig-record", "crates/xtask"]
+default-members = [".", "crates/steploop", "crates/jig-core", "crates/jig-server", "crates/jig-record", "crates/xtask"]
 resolver = "3"
 
 [workspace.package]
@@ -14,12 +14,10 @@ repository = "http://localhost:3000/ai/jig"
 [workspace.dependencies]
 steploop = { path = "crates/steploop" }
 jig-core = { path = "crates/jig-core" }
-jig-runtime = { path = "crates/jig-runtime" }
 jig-server = { path = "crates/jig-server" }
 jig-record = { path = "crates/jig-record" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-skein = { git = "https://git.ekanayaka.io/ai/skein.git", rev = "50c7719" }
 
 [package]
 name = "jig"

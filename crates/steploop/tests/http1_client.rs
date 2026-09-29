@@ -628,22 +628,160 @@ fn a_reset_mid_body_fails_the_fetch() {
 }
 
 #[test]
-fn a_write_error_fails_the_fetch() {
+fn a_write_error_fails_the_fetch_once_the_peer_ends_without_a_head() {
     let mut t = T::new();
     t.step([fetch_to(F, target(Some(addr(1))))]);
     t.reap([connected(C, Ok(Progress::Done))]);
     t.actions();
     let pipe = err(ErrorKind::BrokenPipe);
     let out = t.reap([
-        Event::Wrote {
-            sock: C,
-            data: request(),
-            result: Err(pipe),
-        },
+        write_failed(C, &request()),
         read_err(C, ErrorKind::WouldBlock),
     ]);
+    assert_eq!(out, [], "a response may still come");
+    let arm = Action::Arm {
+        sock: C,
+        interest: Interest::READ,
+    };
+    assert_eq!(t.actions(), [arm], "reads go on, writes don't");
+    t.reap([ready(C)]);
+    assert_eq!(t.actions(), [read_act(C, MAX_HEAD)]);
+    let partial = b"HTTP/1.1 413 Pay";
+    assert_eq!(t.reap([read(C, partial)]), []);
+    assert_eq!(t.actions(), [read_act(C, MAX_HEAD - partial.len())]);
+    // Not `Protocol`: the write error is why no head came.
+    let out = t.reap([read(C, b"")]);
     assert_eq!(out, [failed(F, ClientError::Io(pipe))]);
     assert_eq!(t.actions(), [close_act(C)]);
+}
+
+#[test]
+fn a_read_error_after_a_write_error_fails_with_the_read_error() {
+    let mut t = uploading();
+    let out = t.reap([
+        write_failed(C, &LONG_REQUEST[10..]),
+        read_err(C, ErrorKind::ConnectionReset),
+    ]);
+    let reset = err(ErrorKind::ConnectionReset);
+    assert_eq!(out, [failed(F, ClientError::Io(reset))]);
+    assert_eq!(t.actions(), [close_act(C)]);
+}
+
+// ---------------------------------------------------------------------------
+// Early responses: the upstream answers and closes mid-upload
+// ---------------------------------------------------------------------------
+
+const EARLY_HEAD: &[u8] =
+    b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 9\r\nConnection: close\r\n\r\n";
+const EARLY_BODY: &[u8] = b"too large";
+/// A request long enough to be written in two parts.
+const LONG_REQUEST: &[u8] = b"POST /v1/messages HTTP/1.1\r\nHost: up.example\r\nConnection: close\r\nContent-Length: 20\r\n\r\n01234567890123456789";
+
+fn write_failed(sock: SockId, data: &[u8]) -> Event {
+    Event::Wrote {
+        sock,
+        data: data.to_vec(),
+        result: Err(err(ErrorKind::BrokenPipe)),
+    }
+}
+
+fn early_response() -> Event {
+    read(C, &[EARLY_HEAD, EARLY_BODY].concat())
+}
+
+fn early_head() -> ClientEvent {
+    ClientEvent::Head {
+        fetch: F,
+        status: 413,
+        headers: vec![
+            ("Content-Length".into(), "9".into()),
+            ("Connection".into(), "close".into()),
+        ],
+        raw: EARLY_HEAD.to_vec(),
+    }
+}
+
+/// `LONG_REQUEST` fetched from `addr(1)`: its first write was short, and
+/// the rest is in flight with the first read.
+fn uploading() -> T {
+    let mut t = T::new();
+    let (head, body) = LONG_REQUEST.split_at(LONG_REQUEST.len() - 20);
+    t.step([ClientCmd::Fetch {
+        fetch: F,
+        target: target(Some(addr(1))),
+        head: head.to_vec(),
+        body: body.to_vec(),
+    }]);
+    t.reap([connected(C, Ok(Progress::Done))]);
+    assert_eq!(
+        t.actions(),
+        [write_act(C, LONG_REQUEST), read_act(C, MAX_HEAD)]
+    );
+    t.reap([Event::Wrote {
+        sock: C,
+        data: LONG_REQUEST.to_vec(),
+        result: Ok(10),
+    }]);
+    assert_eq!(t.actions(), [write_act(C, &LONG_REQUEST[10..])]);
+    t
+}
+
+/// Ack the early body, read EOF, and close.
+fn finish_early(t: &mut T) {
+    let (out, actions) = t.step([ack(F)]);
+    assert_eq!(out, []);
+    assert_eq!(
+        actions,
+        [read_act(C, READ_CHUNK)],
+        "no write after the error"
+    );
+    assert_eq!(t.reap([read(C, b"")]), [ClientEvent::End { fetch: F }]);
+    assert_eq!(t.actions(), [close_act(C)]);
+    t.reap([closed(C)]);
+    assert!(t.c.idle());
+}
+
+#[test]
+fn an_early_response_after_the_write_error_is_read() {
+    let mut t = uploading();
+    let out = t.reap([
+        write_failed(C, &LONG_REQUEST[10..]),
+        read_err(C, ErrorKind::WouldBlock),
+    ]);
+    assert_eq!(out, []);
+    let arm = Action::Arm {
+        sock: C,
+        interest: Interest::READ,
+    };
+    assert_eq!(t.actions(), [arm]);
+    t.reap([ready(C)]);
+    assert_eq!(t.actions(), [read_act(C, MAX_HEAD)]);
+    assert_eq!(
+        t.reap([early_response()]),
+        [early_head(), body(F, EARLY_BODY)]
+    );
+    finish_early(&mut t);
+}
+
+#[test]
+fn an_early_response_with_the_write_error_is_read() {
+    // The write fails in the batch whose read carries the whole response.
+    let mut t = uploading();
+    let out = t.reap([write_failed(C, &LONG_REQUEST[10..]), early_response()]);
+    assert_eq!(out, [early_head(), body(F, EARLY_BODY)]);
+    finish_early(&mut t);
+}
+
+#[test]
+fn an_early_response_before_the_write_error_is_read() {
+    let mut t = uploading();
+    assert_eq!(
+        t.reap([early_response()]),
+        [early_head(), body(F, EARLY_BODY)]
+    );
+    assert_eq!(t.actions(), [], "the upload is in flight, the body owed");
+    assert_eq!(t.reap([write_failed(C, &LONG_REQUEST[10..])]), []);
+    finish_early(&mut t);
 }
 
 // ---------------------------------------------------------------------------

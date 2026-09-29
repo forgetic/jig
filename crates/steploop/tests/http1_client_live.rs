@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -265,6 +265,49 @@ fn a_refused_connection_fails_the_fetch() {
         panic!("{events:?}");
     };
     assert_eq!(e.kind, io::ErrorKind::ConnectionRefused);
+}
+
+#[test]
+fn an_early_response_arrives_though_the_upload_fails() {
+    const TOO_LARGE: &[u8] = b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 17\r\nConnection: close\r\n\r\nrequest too large";
+    let (listener, addr) = listen();
+    let upstream = thread::spawn(move || {
+        let mut s = accept(&listener);
+        let mut got = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = s.read(&mut buf).unwrap();
+            assert!(n > 0, "the head ended early");
+            got.extend_from_slice(&buf[..n]);
+        }
+        s.write_all(TOO_LARGE).unwrap();
+        // FIN first, so the client reads the response and then EOF. The
+        // close that follows resets, since the upload was never read, and
+        // the client's next write fails.
+        s.shutdown(Shutdown::Write).unwrap();
+    });
+    let cmd = ClientCmd::Fetch {
+        fetch: F,
+        target: Target {
+            host: "localhost".into(),
+            port: addr.port(),
+            tls: false,
+            addr: Some(addr),
+        },
+        head: format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {BIG}\r\n\r\n"
+        )
+        .into_bytes(),
+        body: vec![b'x'; BIG],
+    };
+    let events = fetch(Client::new(Ids::new()), cmd, NoHost);
+    upstream.join().unwrap();
+    let (head, body, _) = split(&events);
+    assert!(
+        matches!(head, ClientEvent::Head { status: 413, .. }),
+        "{head:?}"
+    );
+    assert_eq!(body, b"request too large");
 }
 
 // ---------------------------------------------------------------------------

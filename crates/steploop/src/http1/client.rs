@@ -33,6 +33,14 @@
 //! decoder is done; either way `End` comes without waiting for the peer to
 //! close. Reusing the connection for another request would come after that.
 //!
+//! # Early responses
+//!
+//! An upstream may answer before it has read the whole request (a 413, 401
+//! or 429) and close, so the rest of the upload fails with `EPIPE` or a
+//! reset. That write error stops only the writing (see [`crate::tcp`]): the
+//! response is read as usual, and the fetch fails with the write error only
+//! if the peer ends before a head arrives.
+//!
 //! # Credit
 //!
 //! Backpressure across connections is credit from the core (§5.5): at most
@@ -157,7 +165,9 @@ pub enum ClientError {
     /// stream), or TLS was asked for without a config. The text is
     /// [`crate::tls::TlsError`]'s where the stage found the problem.
     Tls(String),
-    /// Reading or writing the connection failed (a reset, say).
+    /// Reading the connection failed (a reset, say), or writing it did and
+    /// the peer then closed without a response head. A write error after
+    /// the head changes nothing: the body is read to EOF as usual.
     Io(IoError),
     /// The response head was malformed or too large, or the peer closed
     /// before it ended.
@@ -555,8 +565,13 @@ fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientE
                     });
                     next(State::Body { pipe, owed: false }, fetch, shared, out)
                 }
+                // A write error counts only once no head can come: a peer that
+                // stopped taking the request may have answered it first.
                 Ok(None) if pipe.ended() => {
-                    let error = ClientError::Protocol(EOF_IN_HEAD);
+                    let error = match pipe.tcp.error() {
+                        Some(e) => ClientError::Io(e),
+                        None => ClientError::Protocol(EOF_IN_HEAD),
+                    };
                     shared.end(fetch, pipe, Err(error), out)
                 }
                 Ok(None) => {
@@ -740,9 +755,10 @@ impl Pipe {
     }
 
     /// Move bytes between the socket's buffers and the plaintext ones, and
-    /// report a failure of either.
+    /// report a failure of either. A write error alone is no failure here:
+    /// the response may still arrive (see `crate::tcp`).
     fn flow(&mut self) -> Result<(), ClientError> {
-        if let Some(e) = self.tcp.error() {
+        if let Some(e) = self.tcp.read_error() {
             return Err(ClientError::Io(e));
         }
         match &mut self.link {

@@ -66,10 +66,11 @@ fn run_serve(script_path: Option<String>) -> io::Result<()> {
 
 /// Record mode: run one passthrough capture.
 ///
-/// Stands up a single-threaded skein runtime (same shape as the server), prints
-/// the loopback `base_url` for the official client to target, and writes one
-/// redacted recording. Recording is manual — it needs a live API key on the
-/// client side and network — so this path is never exercised by `cargo test`.
+/// Starts the recorder on its own loop thread (the same shape as the server),
+/// prints the loopback `base_url` for the official client to target, and
+/// writes one redacted recording. Recording is manual — it needs a live API
+/// key on the client side and network — so this path is never exercised by
+/// `cargo test`.
 fn run_record(args: Vec<String>) -> io::Result<()> {
     let opts = RecordOpts::parse(args)?;
 
@@ -81,9 +82,7 @@ fn run_record(args: Vec<String>) -> io::Result<()> {
         captured: opts.captured,
         recorder_sha: opts.recorder_sha,
     };
-    // The recorder owns the skein runtime so this binary stays runtime-free,
-    // mirroring how `jig-server` hides its runtime behind `FakeLlm`.
-    let path = jig_record::record_once_blocking(
+    let path = jig_record::record_once(
         &opts.fixtures_root,
         &provenance,
         opts.upstream_host.as_deref(),

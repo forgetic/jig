@@ -19,7 +19,11 @@ official client ──HTTP──▶ jig record (127.0.0.1:0) ──HTTPS──�
   forwards over **HTTPS** to that dialect's real upstream.
 - **Streams the response back unbuffered**: every byte read from the upstream is
   written to the client *and* appended to the capture before the next read, so
-  SSE timing and framing are preserved (no re-chunking, no buffering).
+  SSE timing and framing are preserved (no re-chunking, no buffering). The
+  capture keeps the upstream's chunk framing.
+- **Serves connections concurrently** on one no-await loop thread (steploop),
+  so a client's connectivity preflight (`HEAD /`, answered `204`) or its idle
+  pooled connections never hold up the request that matters.
 - **Redacts at capture time**: `authorization`, `x-api-key`, OAuth account
   headers, cookies, … → the stable placeholder `REDACTED`. Nothing secret is
   ever written under `fixtures/`.
@@ -44,8 +48,11 @@ SDK-under-test `subject` recordings with no change.
 ## Recording is manual
 
 A real capture needs a live API key and network, so it is **not** part of
-`cargo test` — the default suite stays green and network-free, covering the
-redactor, the fixture writer, routing, and request assembly with unit tests.
+`cargo test` — the default suite stays green and network-free. It covers the
+redactor, the fixture writer and routing with unit tests, the relay core with
+scripted events, and the whole recorder against local upstreams: a TLS one
+with its own CA, and a jig `FakeLlm` whose recording is parsed and derived
+back to the reply it was scripted with.
 
 To record against a real backend:
 
@@ -74,3 +81,19 @@ optional.
 
 The scenario matrix to capture first (per #18): single text turn; single
 tool-call turn; tool-result → final.
+
+## From Rust
+
+`jig record` is `record_once`. For clients that make several requests, the
+capture examples run a `Recorder` in pump mode and pick an exchange:
+
+```rust
+let recorder = Recorder::start(RecorderConfig { mode: Mode::Pump, ..RecorderConfig::default() })?;
+// ... point the client at recorder.base_url() and let it run ...
+let exchanges = recorder.stop(); // relays still in flight get a grace to finish
+```
+
+In once mode, `next_capture(timeout)` returns the first routable exchange, or
+fails once the recorder has stopped without one (the exchange failed; stderr
+says why). `RecorderConfig::upstream` and `roots` point the upstream leg at a
+local server and its CA, for tests.

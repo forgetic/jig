@@ -1,32 +1,18 @@
-//! The passthrough proxy: the one async, network-touching part of the recorder.
+//! The exchange as the recorder sees it, and the one rewrite it makes on the
+//! way upstream.
 //!
-//! It binds `127.0.0.1:0`, accepts a single client connection, routes the
-//! request by path to a dialect + upstream ([`crate::route::Route`]), opens an
-//! **HTTPS** connection to that upstream, forwards the request verbatim, and
-//! streams the response back to the client **unbuffered** — every byte read from
-//! the upstream is written to the client *and* appended to the capture buffer
-//! before the next read, so SSE timing and framing are preserved (issue #18:
-//! "forward bytes as they arrive; don't re-chunk or buffer the SSE body").
-//!
-//! This module is exercised **manually** against a real backend (recording is
-//! manual, per the issue); the default `cargo test` suite stays network-free.
-//! The pure pieces it leans on — routing, redaction, the fixture model — are
-//! unit-tested in their own modules.
-
-use std::io;
-
-use jig_runtime::read_some;
-use skein::cx::Cx;
-use skein::io::AsyncWriteExt;
-use skein::net::{TcpListener, TcpStream};
-use skein::tls::TlsConnector;
+//! These are the pure pieces of the proxy: the request read from the client,
+//! the response captured from the upstream, and the request head forwarded
+//! upstream. The relaying itself is [`crate::relay`]'s. Keeping them apart
+//! means the capture format (which fixtures depend on) doesn't move when the
+//! I/O around it does.
 
 use crate::redact::Header;
 use crate::route::Route;
 
 /// A request read from the downstream client: method, raw target (path +
 /// optional query), headers, and the fully-read body.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientRequest {
     pub method: String,
     /// The request target as sent (may include a query string).
@@ -43,247 +29,19 @@ impl ClientRequest {
 }
 
 /// A response captured from the upstream: status code, headers, and the raw
-/// body bytes (the SSE stream) exactly as received.
-#[derive(Debug, Clone)]
+/// body bytes (the SSE stream) exactly as received, chunk framing included.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamResponse {
     pub status: u16,
     pub headers: Vec<Header>,
     pub body: Vec<u8>,
 }
 
-/// Bind the proxy listener on an ephemeral loopback port.
-///
-/// Bound separately from [`proxy_once`] so a caller can read the local address
-/// (to point a client at it) before any connection arrives — the same shape as
-/// `FakeLlm::start`. Like every socket call, it must run inside a skein task;
-/// the `Cx` parameter is that task's capability context.
-pub async fn bind(_cx: &Cx) -> io::Result<TcpListener> {
-    TcpListener::bind(("127.0.0.1", 0)).await
-}
-
-/// Accept client connections until one carries a routable request, forward that
-/// one to its upstream over HTTPS, stream the response back unbuffered, and
-/// return the captured request/response for the fixture writer.
-///
-/// Real official clients open a **connectivity preflight** before the request
-/// that matters: Claude Code, for instance, sends a `HEAD /` probe on its own
-/// connection before the first `POST /v1/messages`. Those probes do not resolve
-/// to a dialect route, so capturing the *first* connection blindly would grab the
-/// probe (and reject it as "no route for path /") instead of the real exchange.
-/// We therefore loop: a connection whose request does not resolve to a route is
-/// answered with a minimal `204` so the client proceeds, and we move on to the
-/// next connection until a routable request arrives — that one is the capture.
-///
-/// `upstream_host_override` lets the caller point OpenAI-dialect traffic at an
-/// OpenAI-compatible backend (DeepSeek, a gateway). `None` uses the dialect
-/// default.
-pub async fn proxy_once(
-    cx: &Cx,
-    listener: &TcpListener,
-    upstream_host_override: Option<&str>,
-) -> io::Result<(ClientRequest, UpstreamResponse, Route)> {
-    loop {
-        let (client, _peer) = listener.accept().await?;
-        if let Some(triple) = handle_connection(cx, client, upstream_host_override).await? {
-            return Ok(triple);
-        }
-        // A non-routable preflight was answered; wait for the next connection.
-    }
-}
-
-/// Handle one already-accepted client connection: read its request, and either
-/// forward+capture a routable request (returning the captured triple) or answer
-/// a non-routable connectivity preflight with `204` and return `None`.
-///
-/// Split out from [`proxy_once`] so a caller can accept connections
-/// **concurrently** and run one of these per connection. Real official clients
-/// pre-open a pool of connections and pick one for the request that matters; a
-/// strictly serial accept loop can block on an idle pooled socket and never
-/// reach the one carrying the `POST`. Driving this per-connection on its own
-/// task sidesteps that — each idle socket simply parks its own task.
-pub async fn handle_connection(
-    cx: &Cx,
-    mut client: TcpStream,
-    upstream_host_override: Option<&str>,
-) -> io::Result<Option<(ClientRequest, UpstreamResponse, Route)>> {
-    let request = read_client_request(cx, &mut client).await?;
-
-    let route = Route::resolve(request.path()).map(|r| match upstream_host_override {
-        Some(host) => r.with_upstream_host(host),
-        None => r,
-    });
-
-    let Some(route) = route else {
-        // A non-routable connectivity preflight (e.g. Claude Code's `HEAD /`
-        // probe). Acknowledge it so the client proceeds to its real request.
-        let _ = answer_preflight(cx, &mut client).await;
-        return Ok(None);
-    };
-
-    let response = forward(cx, &mut client, &request, &route).await?;
-    Ok(Some((request, response, route)))
-}
-
-/// Send a minimal, bodyless `204 No Content` to a preflight connection so the
-/// client treats the base URL as reachable and goes on to its real request.
-/// Best-effort: a failure here just means we drop the probe connection.
-async fn answer_preflight(_cx: &Cx, client: &mut TcpStream) -> io::Result<()> {
-    client
-        .write_all(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-        .await?;
-    client.flush().await
-}
-
-/// Read the request line, headers, and full (Content-Length) body from the
-/// client. Mirrors `jig_server`'s reader but keeps every header (the recorder
-/// needs them) instead of only Content-Length.
-async fn read_client_request(_cx: &Cx, stream: &mut TcpStream) -> io::Result<ClientRequest> {
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 1024];
-
-    let header_end = loop {
-        if let Some(pos) = find_header_end(&buf) {
-            break pos;
-        }
-        let n = read_some(stream, &mut chunk).await?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "client closed before headers completed",
-            ));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-
-    let header_text = String::from_utf8_lossy(&buf[..header_end]).into_owned();
-    let mut lines = header_text.split("\r\n");
-
-    let request_line = lines.next().unwrap_or("");
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("").to_string();
-    let target = parts.next().unwrap_or("/").to_string();
-
-    let mut headers = Vec::new();
-    let mut content_length = 0usize;
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            let name = name.trim().to_string();
-            let value = value.trim().to_string();
-            if name.eq_ignore_ascii_case("content-length") {
-                content_length = value.parse().unwrap_or(0);
-            }
-            headers.push(Header::new(name, value));
-        }
-    }
-
-    let body_start = header_end + 4;
-    let mut body = buf[body_start..].to_vec();
-    let mut remaining = content_length.saturating_sub(body.len());
-    while remaining > 0 {
-        let want = remaining.min(chunk.len());
-        let n = read_some(stream, &mut chunk[..want]).await?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-        remaining -= n;
-    }
-
-    Ok(ClientRequest {
-        method,
-        target,
-        headers,
-        body,
-    })
-}
-
-/// Open a TLS connection to the route's upstream, send the request verbatim
-/// (with the `Host` header rewritten to the upstream and `Accept-Encoding`
-/// neutralized so the captured SSE is plaintext), then pump the response back to
-/// the client unbuffered while capturing it.
-async fn forward(
-    _cx: &Cx,
-    client: &mut TcpStream,
-    request: &ClientRequest,
-    route: &Route,
-) -> io::Result<UpstreamResponse> {
-    let connector = tls_connector()?;
-    let tcp = TcpStream::connect((route.upstream_host.clone(), route.upstream_port)).await?;
-    let mut upstream = connector
-        .connect(&route.upstream_host, tcp)
-        .await
-        .map_err(io::Error::other)?;
-
-    let head = build_upstream_request_head(request, route);
-    upstream.write_all(head.as_bytes()).await?;
-    upstream.write_all(&request.body).await?;
-    upstream.flush().await?;
-
-    // Read the upstream's response head (status + headers), forwarding those
-    // bytes to the client as we go.
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let header_end = loop {
-        if let Some(pos) = find_header_end(&buf) {
-            break pos;
-        }
-        let n = read_some(&mut upstream, &mut chunk).await?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "upstream closed before response headers completed",
-            ));
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-
-    let (status, headers) = parse_response_head(&buf[..header_end]);
-
-    // Forward the response head verbatim to the client.
-    client.write_all(&buf[..header_end + 4]).await?;
-    client.flush().await?;
-
-    // Any body bytes already read past the header terminator.
-    let mut body = buf[header_end + 4..].to_vec();
-    if !body.is_empty() {
-        client.write_all(&body).await?;
-        client.flush().await?;
-    }
-
-    // Pump the rest of the body: read → write to client → append to capture,
-    // flushing each read so SSE frames reach the client as they arrive. We do
-    // not parse or de-chunk; the bytes are forwarded and captured verbatim.
-    loop {
-        let n = read_some(&mut upstream, &mut chunk).await?;
-        if n == 0 {
-            break;
-        }
-        client.write_all(&chunk[..n]).await?;
-        client.flush().await?;
-        body.extend_from_slice(&chunk[..n]);
-    }
-
-    Ok(UpstreamResponse {
-        status,
-        headers,
-        body,
-    })
-}
-
-/// Build a [`TlsConnector`] trusting the Mozilla webpki root set — the same
-/// trust anchors the old tokio-rustls + webpki-roots pair used.
-fn tls_connector() -> io::Result<TlsConnector> {
-    TlsConnector::builder()
-        .with_webpki_roots()
-        .build()
-        .map_err(io::Error::other)
-}
-
 /// Render the request head to send upstream: the original request line and
 /// headers, with `Host` pointed at the upstream and `Accept-Encoding: identity`
 /// forced so the captured SSE body is uncompressed plaintext. The body follows
 /// separately.
-fn build_upstream_request_head(request: &ClientRequest, route: &Route) -> String {
+pub(crate) fn build_upstream_request_head(request: &ClientRequest, route: &Route) -> String {
     let mut head = format!("{} {} HTTP/1.1\r\n", request.method, request.target);
     let mut saw_accept_encoding = false;
     for h in &request.headers {
@@ -304,32 +62,6 @@ fn build_upstream_request_head(request: &ClientRequest, route: &Route) -> String
     }
     head.push_str("Connection: close\r\n\r\n");
     head
-}
-
-/// Parse a response head (`status-line CRLF headers`) into a status code and
-/// header list.
-fn parse_response_head(head: &[u8]) -> (u16, Vec<Header>) {
-    let text = String::from_utf8_lossy(head);
-    let mut lines = text.split("\r\n");
-    let status_line = lines.next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-
-    let mut headers = Vec::new();
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            headers.push(Header::new(name.trim(), value.trim()));
-        }
-    }
-    (status, headers)
-}
-
-/// Find the byte index of the start of the `\r\n\r\n` header terminator.
-fn find_header_end(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
 #[cfg(test)]
@@ -387,24 +119,5 @@ mod tests {
         let head = build_upstream_request_head(&req, &route);
         assert!(head.contains("Accept-Encoding: identity\r\n"));
         assert!(head.contains("Host: api.anthropic.com\r\n"));
-    }
-
-    #[test]
-    fn parse_response_head_extracts_status_and_headers() {
-        let head = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nSet-Cookie: a=b";
-        let (status, headers) = parse_response_head(head);
-        assert_eq!(status, 200);
-        assert!(
-            headers
-                .iter()
-                .any(|h| h.name == "Content-Type" && h.value == "text/event-stream")
-        );
-        assert!(headers.iter().any(|h| h.name == "Set-Cookie"));
-    }
-
-    #[test]
-    fn find_header_end_locates_terminator() {
-        assert_eq!(find_header_end(b"abc\r\n\r\nbody"), Some(3));
-        assert_eq!(find_header_end(b"no terminator"), None);
     }
 }

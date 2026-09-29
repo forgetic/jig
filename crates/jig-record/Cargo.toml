@@ -4,16 +4,28 @@ version = "0.1.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# temper's oracle test drives the recorder; clippy's `incompatible_msrv` holds
+# us to its MSRV.
+rust-version = "1.85"
 description = "Passthrough recorder: capture real client ↔ backend interactions to redacted, client/role-tagged fixtures"
 
 [dependencies]
 jig-core.workspace = true
-jig-runtime.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# The upstream leg is HTTPS; trust the same Mozilla webpki root set the old
-# tokio-rustls + webpki-roots pair used.
-skein = { workspace = true, features = ["tls", "tls-webpki-roots"] }
+# The upstream leg is HTTPS, trusting webpki's roots unless the caller gives
+# its own. rustls is named directly only for `RootCertStore` in the config;
+# the features match steploop's so no second crypto backend is built.
+steploop = { workspace = true, features = ["tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [dev-dependencies]
 tempfile = "3"
+# The round trip: a real jig upstream, and xtask's template derivation over
+# what was recorded from it.
+jig-server.workspace = true
+xtask = { path = "../xtask" }
+# A local TLS upstream with its own CA.
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }
+# Resetting a connection (SO_LINGER 0) to cut an upstream mid-stream.
+socket2 = "0.6"

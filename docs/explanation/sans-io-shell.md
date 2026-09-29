@@ -1036,6 +1036,50 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
     writing the fixture.
   - The capture examples use pump mode.
 
+*As built (wave 3):*
+
+- **Layered like jig-server,** and every part is public:
+  - `relay::RecorderCore` is the core.
+  - `io::RecorderIo` is the §5.5 composition.
+  - `host::RecorderHost` sends captures over an `mpsc` channel and prints log
+    lines to stderr.
+  - `Recorder` is the handle. Setup happens on the caller's thread, and the
+    thread (`jig-recorder`) only runs `run`.
+- **The config.** `RecorderConfig { mode, upstream_host, upstream, roots }`,
+  where `upstream: Option<UpstreamOverride { addr, tls }>` replaces
+  `upstream_addr`. The round trip needs a plain upstream, since `FakeLlm`
+  speaks plain HTTP. TLS still names the server by the route's host, or by
+  `upstream_host`.
+- **The vocabulary is the planners' own, wrapped:**
+  - `Comp::{Server(ServerEvent), Client(ClientEvent), Stop}`. The I/O step
+    turns the stop signal into `Stop`.
+  - `IoReq::{Server(ServerCmd), Client(ClientCmd)}`.
+  - `HostReq::{Captured(Exchange), Log(String)}`.
+
+  A fetch is named after its exchange (`FetchId(req.0)`), so the core needs
+  one map. Its per-exchange state is `Fetching` or
+  `Streaming { response, owed }`.
+- **Once mode ends at the first routable exchange, however that ends.** A
+  failed fetch or a client that leaves shuts it down without a capture, as
+  the old `record_once` returned an error. `next_capture` then fails at once,
+  rather than timing out, and the log line on stderr gives the reason.
+  Preflights don't count.
+- **Stopping gives relays in flight `GRACE` (1 s).** In pump mode, the ones
+  that finish are captured, so the examples no longer sleep before `stop`.
+  Once mode captures nothing after its exchange.
+- **A failure before the head** gets an empty raw response (`RawStart`,
+  `RawEnd`). That closes the client's connection with nothing written.
+- **`record_once` is now the blocking entry point.** The async `record_once`
+  and `record_once_blocking` are both gone. It waits with `Duration::MAX`.
+- **Log lines** keep the pump's texts. A client leaving mid-relay logs
+  `connection error: the response to the client was cut short`. Once mode
+  logs too.
+- **Sizes, in code lines without comments or tests.** The core is 269 (about
+  110 of them are the vocabulary and state types), the I/O step 78, the host
+  25, the handle 81, and `proxy.rs` 41. The async recorder was 218
+  (`proxy.rs`), 119 (`pump.rs`) and 127 (`jig-runtime`). Its request and
+  response parsing now lives in steploop's codec.
+
 ### 5.8 Tap and replay
 
 `Tap<Comp>` records, per iteration, the `now`, the reactor events, and the

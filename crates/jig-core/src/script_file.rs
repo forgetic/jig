@@ -496,10 +496,12 @@ impl PhaseMatcher {
             return false;
         }
 
-        if let Some(count) = &self.prior_tool_results {
-            if !count.matches(view.prior_tool_results) {
-                return false;
-            }
+        if self
+            .prior_tool_results
+            .as_ref()
+            .is_some_and(|count| !count.matches(view.prior_tool_results))
+        {
+            return false;
         }
         if let Some(expected) = &self.model {
             let Some(actual) = view.model.as_deref() else {
@@ -509,10 +511,11 @@ impl PhaseMatcher {
                 return false;
             }
         }
-        if let Some(expected) = self.dialect {
-            if !expected.matches(view.dialect) {
-                return false;
-            }
+        if self
+            .dialect
+            .is_some_and(|expected| !expected.matches(view.dialect))
+        {
+            return false;
         }
 
         true

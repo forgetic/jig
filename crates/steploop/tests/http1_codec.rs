@@ -16,7 +16,7 @@ use std::fmt::Debug;
 use steploop::http1::codec::{
     BodyLength, ChunkError, ChunkedDecoder, Framing, HeadError, Limits, MAX_CHUNK_LINE,
     MAX_TRAILER_SECTION, Progress, RequestHead, ResponseHead, parse_request_head,
-    parse_response_head, write_request_head, write_response,
+    parse_response_head, reparse, write_request_head, write_response,
 };
 use steploop::http1::{Body, Response};
 
@@ -1874,4 +1874,33 @@ fn errors_render_for_the_planners() {
         "malformed HTTP head: invalid header name"
     );
     assert_eq!(ChunkError::SizeOverflow.to_string(), "chunk size overflows");
+}
+
+#[test]
+fn reparse_parses_only_at_a_newline_or_the_limit() {
+    let limits = Limits::default();
+    let mut calls = 0;
+    let mut scanned = 0;
+    let mut feed = |buf: &[u8], scanned: &mut usize| {
+        reparse(buf, scanned, &limits, |buf, limits| {
+            calls += 1;
+            parse_request_head(buf, limits)
+        })
+    };
+    assert_eq!(feed(b"GET / HT", &mut scanned), Ok(None));
+    assert_eq!(scanned, 8);
+    assert_eq!(feed(b"GET / HTTP/1.1\r\nHo", &mut scanned), Ok(None));
+    assert_eq!(feed(b"GET / HTTP/1.1\r\nHost: h", &mut scanned), Ok(None));
+    let whole = b"GET / HTTP/1.1\r\nHost: h\r\n\r\n";
+    assert!(matches!(feed(whole, &mut scanned), Ok(Some(_))));
+    assert_eq!(calls, 2, "one parse per newline that arrived");
+
+    // A head that reaches the limit without a newline is parsed, and fails.
+    let small = Limits {
+        max_head: 8,
+        ..Limits::default()
+    };
+    let mut scanned = 0;
+    let got = reparse(b"GET /aaaa", &mut scanned, &small, parse_request_head);
+    assert_eq!(got, Err(HeadError::HeadTooLarge));
 }

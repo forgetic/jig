@@ -79,7 +79,7 @@ use std::sync::Arc;
 use rustls_pki_types::ServerName;
 
 use super::FetchId;
-use super::codec::{self, HeadError, Limits, ResponseHead};
+use super::codec::{self, HeadError, Limits};
 use crate::run::IoStep;
 use crate::sys::{Action, Event, Ids, IoError};
 use crate::tcp::{Conn, READ_CHUNK};
@@ -560,7 +560,12 @@ fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientE
             }
             let limits = shared.limits;
             let parsed = loop {
-                match read_head(pipe.plain_in(), &mut scanned, &limits) {
+                match codec::reparse(
+                    pipe.plain_in(),
+                    &mut scanned,
+                    &limits,
+                    codec::parse_response_head,
+                ) {
                     // An interim response (100 Continue, 103 Early Hints)
                     // comes before the real one and has no body; the core
                     // relays and captures only the real one. 101 is final:
@@ -625,23 +630,6 @@ fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientE
 fn fail(fetch: FetchId, error: ClientError, out: &mut Vec<ClientEvent>) -> State {
     out.push(ClientEvent::Failed { fetch, error });
     State::Done
-}
-
-/// Parse the head if the bytes since the last look could have completed it:
-/// a head ends at a newline, or fails at the size limit.
-fn read_head(
-    plain: &[u8],
-    scanned: &mut usize,
-    limits: &Limits,
-) -> Result<Option<ResponseHead>, HeadError> {
-    let fresh = plain.get(*scanned..).unwrap_or_default();
-    let worth_parsing = fresh.contains(&b'\n') || plain.len() >= limits.max_head;
-    *scanned = plain.len();
-    if worth_parsing {
-        codec::parse_response_head(plain, limits)
-    } else {
-        Ok(None)
-    }
 }
 
 impl State {

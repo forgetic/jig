@@ -20,7 +20,7 @@ use steploop::http1::client::{Client, ClientCmd, ClientError, ClientEvent, Targe
 use steploop::http1::server::{Config, Server, ServerCmd, ServerEvent};
 use steploop::http1::{FetchId, ReqId};
 use steploop::reactor::Reactor;
-use steploop::run::{Core, Host, IoStep, NoHost, NoTap, Observe, Tap, replay, run};
+use steploop::run::{Core, Host, IoStep, NoHost, NoTap, Observe, Tap, earliest, replay, run};
 use steploop::sys::{Action, Event, Ids};
 use steploop::tcp::READ_CHUNK;
 use steploop::time::Time;
@@ -479,10 +479,7 @@ impl IoStep for Relay {
     }
 
     fn deadline(&self) -> Option<Time> {
-        match (self.server.deadline(), self.client.deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        earliest(self.server.deadline(), self.client.deadline())
     }
 
     fn idle(&self) -> bool {

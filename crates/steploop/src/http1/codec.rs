@@ -40,7 +40,8 @@
 //! whole buffer after each read, so each call costs O(buffer). A head can
 //! only complete at a newline, so a planner that reparses only when the new
 //! bytes contain `b'\n'`, or when the buffer reaches `Limits::max_head`,
-//! bounds the work to one parse per head line.
+//! bounds the work to one parse per head line. [`reparse`] does that for
+//! both planners.
 
 use std::fmt;
 
@@ -192,6 +193,22 @@ pub struct ResponseHead {
     /// that ends the head.
     pub head_len: usize,
     pub framing: Framing,
+}
+
+/// Parse a head with `parse` ([`parse_request_head`] or
+/// [`parse_response_head`]), but only if the bytes since the last look could
+/// have completed it: a head ends at a newline, or fails at the size limit.
+/// `buf[..*scanned]` was looked at before; `scanned` moves to the end.
+pub fn reparse<T>(
+    buf: &[u8],
+    scanned: &mut usize,
+    limits: &Limits,
+    parse: impl FnOnce(&[u8], &Limits) -> Result<Option<T>, HeadError>,
+) -> Result<Option<T>, HeadError> {
+    let fresh = buf.get(*scanned..).unwrap_or_default();
+    let due = fresh.contains(&b'\n') || buf.len() >= limits.max_head;
+    *scanned = buf.len();
+    if due { parse(buf, limits) } else { Ok(None) }
 }
 
 /// Parse a request head from the start of `buf`.

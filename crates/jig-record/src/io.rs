@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use steploop::http1::client::{Client, ClientEvent};
 use steploop::http1::server::{Config, Server, ServerEvent};
-use steploop::run::IoStep;
+use steploop::run::{IoStep, earliest};
 use steploop::sys::{Action, Event, Ids, SignalId, SockId};
 use steploop::time::Time;
 
@@ -95,10 +95,7 @@ impl IoStep for RecorderIo {
     }
 
     fn deadline(&self) -> Option<Time> {
-        match (self.server.deadline(), self.client.deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        earliest(self.server.deadline(), self.client.deadline())
     }
 
     fn idle(&self) -> bool {

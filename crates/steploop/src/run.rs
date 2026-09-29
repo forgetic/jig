@@ -165,7 +165,8 @@ where
     }
 }
 
-fn earliest(a: Option<Time>, b: Option<Time>) -> Option<Time> {
+/// The earlier of two optional deadlines: what a composed step reports.
+pub fn earliest(a: Option<Time>, b: Option<Time>) -> Option<Time> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),

@@ -41,6 +41,63 @@ use std::net::SocketAddr;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SockId(pub u64);
 
+/// Hands out ids for the pure side: [`SockId`]s, and the `u64`s of other
+/// operations (a `Resolve`'s `query`, say). It counts up from 1 and never
+/// reuses an id (§4.3). Signal ids count down from the top of the id space
+/// (`Reactor::signal`), so the two never meet.
+///
+/// Planners that share a reactor must never hand out the same id. Either one
+/// allocator is lent to each in turn (`&mut Ids`), or a planner that owns its
+/// allocator gets a disjoint range from [`Ids::split`]. The first range holds
+/// 2^63 ids and a split halves what is left, so running out is not a case to
+/// handle: 2^60 ids last 36 years at a billion a second.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ids {
+    next: u64,
+    /// One past the last id of this allocator's range.
+    end: u64,
+}
+
+impl Default for Ids {
+    fn default() -> Self {
+        Ids::new()
+    }
+}
+
+impl Ids {
+    /// Ids from 1 up to 2^63: the lower half of the space, below the signals.
+    pub fn new() -> Ids {
+        Ids {
+            next: 1,
+            end: 1 << 63,
+        }
+    }
+
+    /// A fresh id.
+    pub fn next_id(&mut self) -> u64 {
+        let id = self.next;
+        self.next += 1;
+        id
+    }
+
+    /// A fresh socket id.
+    pub fn next_sock(&mut self) -> SockId {
+        SockId(self.next_id())
+    }
+
+    /// Give the upper half of the ids left to a new allocator, for a planner
+    /// that allocates on its own (a server and a client in one I/O step, say).
+    pub fn split(&mut self) -> Ids {
+        let mid = self.next + (self.end - self.next) / 2;
+        let upper = Ids {
+            next: mid,
+            end: self.end,
+        };
+        self.end = mid;
+        upper
+    }
+}
+
 /// Names one cross-thread signal. Allocated by the reactor
 /// (`Reactor::signal`), since signals are created by the embedder at setup
 /// time rather than planned by the pure side.
@@ -167,6 +224,23 @@ pub enum Event {
     Signal { signal: SignalId },
 }
 
+impl Event {
+    /// The socket this event belongs to, for routing it to the planner that
+    /// owns that socket: the listener's for `Accepted`, none for `Resolved`
+    /// and `Signal`.
+    pub fn sock(&self) -> Option<SockId> {
+        match self {
+            Event::Accepted { listener, .. } => Some(*listener),
+            Event::Connected { sock, .. }
+            | Event::Read { sock, .. }
+            | Event::Wrote { sock, .. }
+            | Event::Ready { sock, .. }
+            | Event::Closed { sock, .. } => Some(*sock),
+            Event::Resolved { .. } | Event::Signal { .. } => None,
+        }
+    }
+}
+
 /// An `io::Error` reduced to comparable, cloneable data. `WouldBlock` is just
 /// a kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -236,6 +310,49 @@ mod tests {
         assert_eq!(ioe.os, None);
         assert_eq!(ioe.to_string(), io::ErrorKind::WouldBlock.to_string());
         assert!(!IoError::from(io::ErrorKind::NotFound).is_would_block());
+    }
+
+    #[test]
+    fn ids_count_up_from_one_and_split_into_disjoint_ranges() {
+        let mut ids = Ids::new();
+        assert_eq!(ids.next_sock(), SockId(1));
+        assert_eq!(ids.next_id(), 2);
+        let mut upper = ids.split();
+        let mut lower_rest = ids.clone();
+        let a: Vec<u64> = (0..3).map(|_| ids.next_id()).collect();
+        let b: Vec<u64> = (0..3).map(|_| upper.next_id()).collect();
+        assert_eq!(a, [3, 4, 5]);
+        assert!(b[0] > a[2] && b[0] < 1 << 63, "{b:?}");
+        // The lower half ends where the upper one starts.
+        assert_eq!(lower_rest.end, upper.next - 3);
+        let deeper = lower_rest.split();
+        assert!(deeper.next > 3 && deeper.end == b[0]);
+        // Signals count down from usize::MAX - 1, far above every range.
+        assert!(upper.end <= usize::MAX as u64 / 2 + 1);
+    }
+
+    #[test]
+    fn events_name_their_socket() {
+        let s = SockId(7);
+        let ok = Ok(());
+        assert_eq!(
+            Event::Closed {
+                sock: s,
+                result: ok
+            }
+            .sock(),
+            Some(s)
+        );
+        let accepted = Event::Accepted {
+            listener: s,
+            new: SockId(8),
+            result: Err(io::ErrorKind::WouldBlock.into()),
+        };
+        assert_eq!(accepted.sock(), Some(s), "routed to the listener");
+        let signal = Event::Signal {
+            signal: SignalId(9),
+        };
+        assert_eq!(signal.sock(), None);
     }
 
     #[test]

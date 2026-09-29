@@ -11,6 +11,9 @@ load only the context relevant to their task.
 - [The sans-IO shell: design and rationale](docs/explanation/sans-io-shell.md)
   (the no-await loop, `steploop`, decisions and their reasoning)
 - [Pilot brief for the sans-IO shell](docs/plans/sans-io-pilot-brief.md)
+- Reference: [the fake LLM server](docs/reference/server.md),
+  [the script file format](docs/reference/script-file.md),
+  [the recorder](docs/reference/recorder.md)
 
 ## Checking changes locally
 

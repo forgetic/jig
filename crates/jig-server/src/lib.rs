@@ -6,6 +6,10 @@
 //! its executor: a *synchronous* test can [`FakeLlm::start`], make blocking
 //! HTTP calls against [`FakeLlm::base_url`], and let [`Drop`] tear the thread
 //! down — no async runtime of its own (see bootstrap.md "Public API").
+//!
+//! [`provider`] is the same service with the I/O taken out: a pure step
+//! function from request messages to responses, and [`serve_request`] drives it
+//! in process.
 
 use std::io;
 use std::net::SocketAddr;
@@ -15,7 +19,10 @@ use std::thread::JoinHandle;
 use jig_core::{RecordedRequest, Script};
 use skein::sync::Notify;
 
+pub mod provider;
 mod server;
+
+pub use provider::{Provider, ProviderConfig, serve_request};
 
 use server::RequestLog;
 

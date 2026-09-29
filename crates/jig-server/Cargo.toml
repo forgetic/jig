@@ -11,3 +11,4 @@ jig-core.workspace = true
 jig-runtime.workspace = true
 serde_json.workspace = true
 skein.workspace = true
+steploop.workspace = true

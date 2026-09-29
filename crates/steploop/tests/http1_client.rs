@@ -668,6 +668,67 @@ fn a_read_error_after_a_write_error_fails_with_the_read_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Interim responses
+// ---------------------------------------------------------------------------
+
+const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
+const EARLY_HINTS: &[u8] = b"HTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\n";
+
+#[test]
+fn interim_responses_are_dropped_before_the_final_head() {
+    let mut t = connected_fetch();
+    let out = t.reap([read(C, &[CONTINUE, EARLY_HINTS, RESP_HEAD, b"x"].concat())]);
+    assert_eq!(
+        out,
+        [head_event(F), body(F, b"x")],
+        "raw holds the final head"
+    );
+    finish(&mut t);
+}
+
+#[test]
+fn an_interim_response_alone_waits_for_the_final_one() {
+    let mut t = connected_fetch();
+    assert_eq!(t.reap([read(C, EARLY_HINTS)]), []);
+    assert_eq!(
+        t.actions(),
+        [read_act(C, MAX_HEAD)],
+        "nothing of it is kept"
+    );
+    // The final head arrives split, after a partial one.
+    assert_eq!(t.reap([read(C, &RESP_HEAD[..10])]), []);
+    t.actions();
+    assert_eq!(t.reap([read(C, &RESP_HEAD[10..])]), [head_event(F)]);
+    assert_eq!(t.actions(), [read_act(C, READ_CHUNK)]);
+    assert_eq!(t.reap([read(C, b"")]), [ClientEvent::End { fetch: F }]);
+}
+
+#[test]
+fn eof_after_an_interim_response_fails_the_fetch() {
+    let mut t = connected_fetch();
+    assert_eq!(t.reap([read(C, CONTINUE)]), []);
+    t.actions();
+    let out = t.reap([read(C, b"")]);
+    assert_eq!(out, [failed(F, ClientError::Protocol(EOF_IN_HEAD))]);
+}
+
+#[test]
+fn switching_protocols_is_a_final_head() {
+    let mut t = connected_fetch();
+    let upgrade = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n";
+    let out = t.reap([read(C, upgrade)]);
+    let head = ClientEvent::Head {
+        fetch: F,
+        status: 101,
+        headers: vec![("Upgrade".into(), "websocket".into())],
+        raw: upgrade.to_vec(),
+    };
+    assert_eq!(out, [head]);
+    assert_eq!(t.actions(), [read_act(C, READ_CHUNK)]);
+    assert_eq!(t.reap([read(C, b"")]), [ClientEvent::End { fetch: F }]);
+}
+
+// ---------------------------------------------------------------------------
 // Early responses: the upstream answers and closes mid-upload
 // ---------------------------------------------------------------------------
 

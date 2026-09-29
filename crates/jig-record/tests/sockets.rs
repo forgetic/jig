@@ -99,11 +99,11 @@ fn relays_the_upstream_bytes_and_captures_them_exactly() {
     let got = exchange(addr_of(&rec.base_url()), &post(OPENAI, body));
     assert_eq!(got, [SSE_HEAD.to_vec(), chunks.concat()].concat());
 
+    // The client's own `Connection` header is its hop's, not ours.
     let forwarded = format!(
         "POST /chat/completions HTTP/1.1\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
-         Connection: close\r\n\
          Host: api.openai.com\r\n\
          Accept-Encoding: identity\r\n\
          Connection: close\r\n\

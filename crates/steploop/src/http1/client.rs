@@ -33,6 +33,13 @@
 //! decoder is done; either way `End` comes without waiting for the peer to
 //! close. Reusing the connection for another request would come after that.
 //!
+//! # Interim responses
+//!
+//! A `1xx` response other than `101` (`100 Continue`, `103 Early Hints`) is
+//! dropped where it stands: the core gets the `Head` of the final response
+//! that follows it. The request goes out whole, head and body at once, so a
+//! `100 Continue` releases nothing.
+//!
 //! # Early responses
 //!
 //! An upstream may answer before it has read the whole request (a 413, 401
@@ -552,8 +559,21 @@ fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientE
                 return shared.end(fetch, pipe, Err(error), out);
             }
             let limits = shared.limits;
+            let parsed = loop {
+                match read_head(pipe.plain_in(), &mut scanned, &limits) {
+                    // An interim response (100 Continue, 103 Early Hints)
+                    // comes before the real one and has no body; the core
+                    // relays and captures only the real one. 101 is final:
+                    // the connection is the upgraded protocol's from here.
+                    Ok(Some(head)) if (100..200).contains(&head.status) && head.status != 101 => {
+                        pipe.plain_in().drain(..head.head_len);
+                        scanned = 0;
+                    }
+                    other => break other,
+                }
+            };
             let plain = pipe.plain_in();
-            match read_head(plain, &mut scanned, &limits) {
+            match parsed {
                 Ok(Some(head)) => {
                     let body = plain.split_off(head.head_len);
                     let raw = mem::replace(plain, body);

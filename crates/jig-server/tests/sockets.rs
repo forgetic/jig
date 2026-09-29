@@ -4,9 +4,11 @@
 //! `docs/explanation/sans-io-shell.md` §4.12, §5.8, §6 and §7). The other
 //! files here are the oracle for everything that stayed the same.
 //!
-//! Clients are blocking std sockets with timeouts. No test sleeps: waiting is
-//! a blocking read or a join, and "the loop has read this" is established by
-//! an exchange the loop can only finish after reading it.
+//! Clients are blocking std sockets with timeouts. Waiting is a blocking
+//! read or a join, and "the loop has read this" is established by an
+//! exchange the loop can only finish after reading it. The one test that
+//! sleeps watches the loop through a stretch with nothing to do, counting
+//! its iterations: no other check notices a loop that spins.
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -23,7 +25,7 @@ use jig_server::provider::{Comp, HostReq};
 use jig_server::{FakeLlm, FakeLlmHost, Provider, ProviderConfig, RequestLog, ServerIo};
 use steploop::http1::server::{Config, Server};
 use steploop::reactor::Reactor;
-use steploop::run::{IoStep, NoHost, Observe, Tap, replay, run};
+use steploop::run::{Count, IoStep, NoHost, Observe, Tap, replay, run};
 use steploop::sys::{Action, Event, Ids};
 use steploop::time::Time;
 
@@ -449,6 +451,54 @@ fn stop_ends_the_loop_though_a_decision_never_comes() {
     result.unwrap();
     assert!(started.elapsed() >= grace(), "the request had its grace");
     assert_closed_without_response(&mut client);
+}
+
+/// The loop `FakeLlm` runs, built by hand with a `Count`: with idle clients
+/// connected and nothing to answer, it sleeps.
+#[test]
+fn an_idle_loop_sleeps() {
+    const IDLE: Duration = Duration::from_millis(500);
+    // A few to finish what came before; a spinning loop takes thousands a
+    // millisecond.
+    const IDLE_ITERATIONS: u64 = 20;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (plan, rule) = echo_or_big().split();
+    let server = Server::new(Ids::new(), Config::default());
+    let mut reactor = Reactor::new().unwrap();
+    reactor.adopt_listener(server.listener(), listener).unwrap();
+    let (stop_id, stop) = reactor.signal().unwrap();
+    let mut host = FakeLlmHost::new(RequestLog::default(), rule);
+    let mut io = ServerIo::new(server, stop_id);
+    let mut provider = Provider::new(plan);
+    let count = Count::new();
+    let mut counting = count.clone();
+    let looped = thread::spawn(move || {
+        run(
+            &mut provider,
+            &mut io,
+            &mut host,
+            &mut reactor,
+            &mut counting,
+        )
+    });
+
+    let mut partial = connect(addr);
+    let request = chat(OPENAI, "never finished");
+    partial.write_all(&request[..request.len() - 5]).unwrap();
+    let _silent = connect(addr);
+    // Accepted in order, so by this reply the idle ones are in and armed.
+    assert_bytes(
+        &exchange(addr, &chat(OPENAI, "witness")),
+        &openai("witness"),
+    );
+
+    let before = count.iterations();
+    thread::sleep(IDLE);
+    let idle = count.iterations() - before;
+    assert!(idle <= IDLE_ITERATIONS, "{idle} iterations while idle");
+    stop.raise().unwrap();
+    looped.join().unwrap().unwrap();
 }
 
 // -------------------------------------------------------------------- replay

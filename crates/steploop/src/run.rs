@@ -8,9 +8,12 @@
 //! [`run`] is the loop; [`Tap`] records what the pure steps saw during a run
 //! and [`replay`] feeds the same inputs to fresh steps, so any real run
 //! (including a failing one) can be reproduced deterministically without a
-//! reactor (§5.8).
+//! reactor (§5.8). [`Count`] only counts iterations, so a test can tell a
+//! loop that sleeps when it has nothing to do from one that spins.
 
 use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use std::time::Instant;
 
@@ -189,6 +192,34 @@ pub struct NoTap;
 
 impl<Comp, HostReq> Observe<Comp, HostReq> for NoTap {
     fn polled(&mut self, _now: Time, _events: &[Event]) {}
+    fn host_reqs(&mut self, _reqs: &[HostReq]) {}
+    fn host_answers(&mut self, _answers: &[Comp]) {}
+    fn actions(&mut self, _actions: &[Action]) {}
+}
+
+/// Counts loop iterations and records nothing else. A loop with nothing to
+/// do blocks in `poll`, so over an idle stretch the count should barely
+/// move; one that spins climbs by the thousand every millisecond, which no
+/// other check notices. Clones share the count, so a test keeps one and
+/// reads it from another thread while `run` holds the other.
+#[derive(Clone, Debug, Default)]
+pub struct Count(Arc<AtomicU64>);
+
+impl Count {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// How many times `run` has returned from `poll` so far.
+    pub fn iterations(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl<Comp, HostReq> Observe<Comp, HostReq> for Count {
+    fn polled(&mut self, _now: Time, _events: &[Event]) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
     fn host_reqs(&mut self, _reqs: &[HostReq]) {}
     fn host_answers(&mut self, _answers: &[Comp]) {}
     fn actions(&mut self, _actions: &[Action]) {}

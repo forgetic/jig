@@ -4,6 +4,6 @@
   "dialect": "anthropic",
   "scenario": "thinking-text",
   "model": "claude-sonnet-4-5",
-  "captured": "2026-06-07",
-  "recorder_sha": "de747d3"
+  "captured": "2026-09-29",
+  "recorder_sha": "0d7f3d9"
 }

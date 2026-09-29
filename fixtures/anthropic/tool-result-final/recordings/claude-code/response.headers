@@ -3,7 +3,7 @@
   "headers": [
     {
       "name": "Date",
-      "value": "Sun, 07 Jun 2026 00:20:05 GMT"
+      "value": "Tue, 29 Sep 2026 15:14:46 GMT"
     },
     {
       "name": "Content-Type",
@@ -22,68 +22,60 @@
       "value": "no-cache"
     },
     {
-      "name": "anthropic-ratelimit-unified-status",
-      "value": "allowed"
-    },
-    {
       "name": "anthropic-ratelimit-unified-5h-status",
       "value": "allowed"
-    },
-    {
-      "name": "anthropic-ratelimit-unified-5h-reset",
-      "value": "1780800000"
-    },
-    {
-      "name": "anthropic-ratelimit-unified-5h-utilization",
-      "value": "0.16"
-    },
-    {
-      "name": "anthropic-ratelimit-unified-7d-status",
-      "value": "allowed"
-    },
-    {
-      "name": "anthropic-ratelimit-unified-7d-reset",
-      "value": "1781240400"
-    },
-    {
-      "name": "anthropic-ratelimit-unified-7d-utilization",
-      "value": "0.43"
-    },
-    {
-      "name": "anthropic-ratelimit-unified-7d_sonnet-status",
-      "value": "allowed"
-    },
-    {
-      "name": "anthropic-ratelimit-unified-7d_sonnet-reset",
-      "value": "1781240400"
-    },
-    {
-      "name": "anthropic-ratelimit-unified-7d_sonnet-utilization",
-      "value": "0.0"
     },
     {
       "name": "anthropic-ratelimit-unified-representative-claim",
       "value": "five_hour"
     },
     {
-      "name": "anthropic-ratelimit-unified-fallback-percentage",
-      "value": "0.5"
+      "name": "anthropic-ratelimit-unified-overage-status",
+      "value": "rejected"
     },
     {
       "name": "anthropic-ratelimit-unified-reset",
-      "value": "1780800000"
+      "value": "1790703600"
+    },
+    {
+      "name": "anthropic-ratelimit-unified-5h-utilization",
+      "value": "0.4"
+    },
+    {
+      "name": "anthropic-ratelimit-unified-7d-reset",
+      "value": "1790917200"
+    },
+    {
+      "name": "anthropic-ratelimit-unified-5h-reset",
+      "value": "1790703600"
+    },
+    {
+      "name": "anthropic-ratelimit-unified-7d-status",
+      "value": "allowed"
+    },
+    {
+      "name": "anthropic-ratelimit-unified-fallback-percentage",
+      "value": "0.5"
     },
     {
       "name": "anthropic-ratelimit-unified-overage-disabled-reason",
       "value": "org_level_disabled"
     },
     {
-      "name": "anthropic-ratelimit-unified-overage-status",
-      "value": "rejected"
+      "name": "anthropic-ratelimit-unified-7d-utilization",
+      "value": "0.11"
+    },
+    {
+      "name": "anthropic-ratelimit-unified-status",
+      "value": "allowed"
+    },
+    {
+      "name": "Server",
+      "value": "cloudflare"
     },
     {
       "name": "request-id",
-      "value": "req_011Cbnwaejzf3ZwNeRZd4LGT"
+      "value": "req_011CfXx27JBorD2XzMZpaxwA"
     },
     {
       "name": "strict-transport-security",
@@ -94,28 +86,24 @@
       "value": "ba3bbd42-dcf5-4bc7-b856-83edb6cd9c46"
     },
     {
+      "name": "anthropic-workspace-id",
+      "value": "wrkspc_01CGoE186xhSwvas2hryQRne"
+    },
+    {
       "name": "traceresponse",
-      "value": "00-6e4be81bdce01e2cf5f311970ebc194d-c1675992a38952e6-01"
-    },
-    {
-      "name": "Server",
-      "value": "cloudflare"
-    },
-    {
-      "name": "Content-Security-Policy",
-      "value": "default-src 'none'; frame-ancestors 'none'"
+      "value": "00-6a8cf2843467e3e45cbf0d05c0196e3b-0705e43d5243f8f0-01"
     },
     {
       "name": "vary",
       "value": "Accept-Encoding"
     },
     {
-      "name": "set-cookie",
-      "value": "REDACTED"
-    },
-    {
       "name": "X-Robots-Tag",
       "value": "none"
+    },
+    {
+      "name": "Content-Security-Policy",
+      "value": "default-src 'none'; frame-ancestors 'none'"
     },
     {
       "name": "cf-cache-status",
@@ -123,7 +111,7 @@
     },
     {
       "name": "CF-RAY",
-      "value": "a07b7d15f9f6cfdc-MAD"
+      "value": "a42bf0772edbc6df-MAD"
     }
   ]
 }

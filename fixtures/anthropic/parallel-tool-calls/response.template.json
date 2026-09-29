@@ -13,10 +13,6 @@
       "value": "<MASKED>"
     },
     {
-      "name": "set-cookie",
-      "value": "<MASKED>"
-    },
-    {
       "name": "cf-cache-status",
       "value": "<MASKED>"
     },
@@ -36,7 +32,7 @@
         "ToolCall": {
           "args": {
             "command": "echo hello",
-            "description": "Print hello"
+            "description": "Echo hello"
           },
           "id": "<MASKED>",
           "name": "Bash"
@@ -46,7 +42,7 @@
         "ToolCall": {
           "args": {
             "command": "echo world",
-            "description": "Print world"
+            "description": "Echo world"
           },
           "id": "<MASKED>",
           "name": "Bash"

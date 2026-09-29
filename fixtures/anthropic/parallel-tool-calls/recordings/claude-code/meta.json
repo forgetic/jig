@@ -4,6 +4,6 @@
   "dialect": "anthropic",
   "scenario": "parallel-tool-calls",
   "model": "claude-sonnet-4-5",
-  "captured": "2026-06-07",
-  "recorder_sha": "b2c8cb9"
+  "captured": "2026-09-29",
+  "recorder_sha": "0d7f3d9"
 }

@@ -13,10 +13,6 @@
       "value": "<MASKED>"
     },
     {
-      "name": "set-cookie",
-      "value": "<MASKED>"
-    },
-    {
       "name": "cf-cache-status",
       "value": "<MASKED>"
     },
@@ -36,7 +32,7 @@
         "ToolCall": {
           "args": {
             "content": "bar",
-            "file_path": "/tmp/claude-1000/jig-capture-tool-call/greeting.txt"
+            "file_path": "/tmp/jig-capture-tool-call/greeting.txt"
           },
           "id": "<MASKED>",
           "name": "Write"

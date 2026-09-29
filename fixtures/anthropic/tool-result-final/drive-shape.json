@@ -2,12 +2,12 @@
   "reply": {
     "turns": [
       {
-        "Text": "Created greeting.txt with the text \"bar\"."
+        "Text": "File created with the content \"bar\"."
       }
     ],
     "usage": {
-      "prompt_tokens": 5,
-      "completion_tokens": 13
+      "prompt_tokens": 8,
+      "completion_tokens": 36
     },
     "stop": "Stop"
   }

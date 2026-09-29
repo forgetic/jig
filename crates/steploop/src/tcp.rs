@@ -11,10 +11,10 @@
 //!
 //! - **One arm per socket.** The `Conn` arms only when no read or write is in
 //!   flight, so every direction's need is known, and merges them into one
-//!   `Arm`. A pending arm can't be widened (there is no re-arm action), so a
-//!   need that arises while one is pending waits for its readiness. An upper
-//!   stage that stops reading before it starts writing, as a server does,
-//!   never meets this.
+//!   `Arm`. A need that arises while an arm is pending widens it with another
+//!   `Arm`, which the reactor merges into the pending one (§5.4): a client
+//!   waiting for its response while its request body blocks must hear of
+//!   writability, or it waits for a server that waits for the body.
 //! - **Backpressure.** It reads only while `inbound` is below the limit the
 //!   upper stage sets, and never more than that limit leaves room for, so
 //!   an upper stage that doesn't consume stops the reads.
@@ -81,7 +81,8 @@ struct Flight {
     /// writes are never planned).
     write: usize,
     op: Option<Op>,
-    armed: bool,
+    /// The pending arm's interest, as last widened.
+    armed: Option<Interest>,
 }
 
 /// A synchronous action other than a read or write.
@@ -220,8 +221,8 @@ impl Conn {
                     Err(e) => self.fail(e),
                 }
             }
-            Event::Ready { result, .. } if self.flight.armed => {
-                self.flight.armed = false;
+            Event::Ready { result, .. } if self.flight.armed.is_some() => {
+                self.flight.armed = None;
                 match result {
                     // Readiness may report more than was asked (a hang-up
                     // sets both); the next syscall tells the truth.
@@ -271,12 +272,12 @@ impl Conn {
                 if !self.blocked.write {
                     actions.push(Action::FinishConnect { sock });
                     self.flight.op = Some(Op::FinishConnect);
-                } else if !self.flight.armed {
+                } else if self.flight.armed.is_none() {
                     actions.push(Action::Arm {
                         sock,
                         interest: Interest::WRITE,
                     });
-                    self.flight.armed = true;
+                    self.flight.armed = Some(Interest::WRITE);
                 }
             }
             Life::Closing if !self.busy() => {
@@ -303,14 +304,18 @@ impl Conn {
             });
             self.flight.read = true;
         }
-        if !self.busy() && !self.flight.armed {
-            let interest = Interest {
+        if !self.busy() {
+            let need = Interest {
                 read: self.blocked.read && room > 0,
                 write: self.blocked.write && !self.outbound.is_empty(),
             };
-            if !interest.is_empty() {
+            // Arm, or widen the pending arm if the need outgrew it. The
+            // `Arm` states the whole interest; the reactor merges it.
+            let pending = self.flight.armed.unwrap_or_default();
+            let interest = pending.merge(need);
+            if interest != pending {
                 actions.push(Action::Arm { sock, interest });
-                self.flight.armed = true;
+                self.flight.armed = Some(interest);
             }
         }
     }

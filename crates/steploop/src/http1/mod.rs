@@ -13,6 +13,11 @@ pub mod server;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReqId(pub u64);
 
+/// One upstream exchange on the client side (one request per connection).
+/// Allocated by the core that starts the fetch; never reused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FetchId(pub u64);
+
 /// A parsed request: head fields as received (header names keep their case,
 /// values are trimmed of surrounding whitespace) and the complete body.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -753,7 +753,10 @@ pub struct IoError { pub kind: io::ErrorKind, pub os: Option<i32> } // Clone, Eq
    `WouldBlock` is an ordinary `Err` result.
 2. **Arms.** An `Arm` completes with one `Ready`, or with the `Closed` of its
    socket if that comes first. At most one arm is pending per socket; the TCP
-   stage merges read and write interest before arming.
+   stage merges read and write interest before arming. An `Arm` while one is
+   pending **widens** it to the union of both interests and has no event of
+   its own: the pending arm still completes exactly once. One that adds
+   nothing is a no-op.
 3. **Unknown ids.** An action on an unknown `SockId` completes with
    `IoError { kind: NotFound }`. It never panics.
 4. **Buffers.** `Write`'s buffer always comes back in `Wrote`, with the count
@@ -769,10 +772,22 @@ it later (for example with a resolver thread) changes only `perform`.
 full contract.
 
 - **`Ready` and `Closed` carry a `result`.** Items 2 and 3 need an error
-  completion for `Arm` and `Close`. A rejected arm (a second one while one is
-  pending, an empty interest, or an unknown id) completes at once with
-  `Ready { result: Err(..) }`, and the pending arm is left in place. `Closed`
-  completes a pending arm whatever its result.
+  completion for `Arm` and `Close`. A rejected arm (an empty interest with no
+  arm pending, or an unknown id) completes at once with
+  `Ready { result: Err(..) }`. `Closed` completes a pending arm whatever its
+  result.
+
+*Implementation note (wave 2, widening):* wave 1 rejected a second arm while
+one was pending, and `tcp::Conn` could not widen its interest. That deadlocks
+a client whose request body blocks while a read arm waits for the response:
+it never hears the socket drain, and the server waits for the rest of the
+body. TLS wants reads during writes, so this is not far-fetched. Now the
+reactor `modify`s the socket with the union, and `Conn` sends a widening
+`Arm` (stating the whole interest) when its needs outgrow the pending one. An
+empty `Arm` under a pending one is a no-op too, so a planner never sees a
+`Ready` that isn't its arm's completion. A failed widening completes the
+pending arm at once with the error. `tests/tcp_live.rs` is the regression
+test.
 - **Wrong resource kinds.** Reading a listener, say, gives `InvalidInput`.
   Naming a new socket with an id in use gives `AlreadyExists`.
 - **The shapes.** `Interest { read, write }` has `merge`, and an empty one is
@@ -864,10 +879,9 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
     A read never asks for more than the limit leaves room for, so the server
     reads a body exactly.
   - `unsent()` counts the write in flight.
-  - It arms only when no read or write is in flight. A pending arm can't be
-    widened: there is no re-arm action. So a need that arises while an arm
-    is pending waits for that arm's readiness. The server never hits this,
-    because it stops reading before it writes.
+  - It arms only when no read or write is in flight, and widens a pending
+    arm when a need arises under it (§5.4). The server never needed this,
+    because it stops reading before it writes; the client does.
   - On an error it stops all I/O, and the upper stage closes it.
   - It also connects (`Conn::connect`), for the client planner.
 - **`tcp::Listener`.**
@@ -891,6 +905,37 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
   - A socket accepted during shutdown is closed at once.
   - Every reap and every step sweeps all connections through one `match` on
     the connection's state. There is no tracking of which ones changed.
+- **`http1::client`.**
+  - The vocabulary: `ClientCmd::{Fetch, Ack, Cancel}` in and
+    `ClientEvent::{Head, Body, End, Failed}` out. `Fetch` carries a `FetchId`
+    the core allocates and a `Target { host, port, tls, addr }`; `addr` is
+    §5.7's `upstream_addr` hook, so it skips `Resolve`, and TLS still names
+    the server by `host`. `ClientError` has a variant per kind: resolve,
+    connect (the last address's error), TLS (the stage's text), I/O, protocol
+    (a `HeadError`) and cancelled.
+  - Five states: `Resolving`, `Connecting`, `Head`, `Body` and `Done`, where
+    the C recorder had about twenty phases. Sockets a fetch drops (a failed
+    attempt's, a finished fetch's) move to a retired list until their
+    `Closed`, so a state holds only its current socket.
+  - The body is read until EOF, and the head's framing is not used. The
+    module doc says how a framing-aware mode would be added for temper.
+  - `End` or `Failed` may follow a `Body` before its `Ack`. `Cancel` reports
+    `Failed(Cancelled)` at once. A TLS failure gives the alert rustls queued
+    one write before the socket closes.
+  - `command` plans a fetch's `Resolve`, since it needs no socket. A `Fetch`
+    reusing a live id is ignored. Without `with_tls(config)`, or without the
+    `tls` feature, a TLS fetch fails with `ClientError::Tls` at once.
+  - Events are routed by scanning the fetches, with no index: jig has a
+    handful.
+  - **Composing it with the server.** `Client::reap` takes the events it
+    owns out of the batch and leaves the rest, in order, for the server;
+    `Client::owns(&Event)` answers the same question. The recorder's `IoStep`
+    gives the client `ids.split()`, reaps with the client and then the
+    server, applies each command to its planner, plans both, and hands the
+    core the server's completions before the client's. That order makes a
+    `Flushed` cover every `RawBytes` sent before it, so acknowledging a
+    relayed `Body` on the next `Flushed` never releases credit early.
+    `tests/http1_client_live.rs` has the whole composition in 75 lines.
 
 ### 5.6 jig-server
 

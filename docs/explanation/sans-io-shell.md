@@ -905,6 +905,37 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
   - A socket accepted during shutdown is closed at once.
   - Every reap and every step sweeps all connections through one `match` on
     the connection's state. There is no tracking of which ones changed.
+- **`http1::client`.**
+  - The vocabulary: `ClientCmd::{Fetch, Ack, Cancel}` in and
+    `ClientEvent::{Head, Body, End, Failed}` out. `Fetch` carries a `FetchId`
+    the core allocates and a `Target { host, port, tls, addr }`; `addr` is
+    §5.7's `upstream_addr` hook, so it skips `Resolve`, and TLS still names
+    the server by `host`. `ClientError` has a variant per kind: resolve,
+    connect (the last address's error), TLS (the stage's text), I/O, protocol
+    (a `HeadError`) and cancelled.
+  - Five states: `Resolving`, `Connecting`, `Head`, `Body` and `Done`, where
+    the C recorder had about twenty phases. Sockets a fetch drops (a failed
+    attempt's, a finished fetch's) move to a retired list until their
+    `Closed`, so a state holds only its current socket.
+  - The body is read until EOF, and the head's framing is not used. The
+    module doc says how a framing-aware mode would be added for temper.
+  - `End` or `Failed` may follow a `Body` before its `Ack`. `Cancel` reports
+    `Failed(Cancelled)` at once. A TLS failure gives the alert rustls queued
+    one write before the socket closes.
+  - `command` plans a fetch's `Resolve`, since it needs no socket. A `Fetch`
+    reusing a live id is ignored. Without `with_tls(config)`, or without the
+    `tls` feature, a TLS fetch fails with `ClientError::Tls` at once.
+  - Events are routed by scanning the fetches, with no index: jig has a
+    handful.
+  - **Composing it with the server.** `Client::reap` takes the events it
+    owns out of the batch and leaves the rest, in order, for the server;
+    `Client::owns(&Event)` answers the same question. The recorder's `IoStep`
+    gives the client `ids.split()`, reaps with the client and then the
+    server, applies each command to its planner, plans both, and hands the
+    core the server's completions before the client's. That order makes a
+    `Flushed` cover every `RawBytes` sent before it, so acknowledging a
+    relayed `Body` on the next `Flushed` never releases credit early.
+    `tests/http1_client_live.rs` has the whole composition in 75 lines.
 
 ### 5.6 jig-server
 

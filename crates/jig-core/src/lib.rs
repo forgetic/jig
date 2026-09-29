@@ -1,11 +1,9 @@
 //! Dialect-agnostic core for `jig`.
 //!
 //! This crate is intentionally async-free: it owns the canonical [`Reply`] /
-//! [`Turn`] model, the [`Script`] that yields a [`Reply`] per request, and the
-//! per-dialect SSE renderers (just OpenAI for M1). Everything here is pure and
-//! synchronous so it unit-tests without a runtime.
-
-use std::sync::Mutex;
+//! [`Turn`] model, the [`Script`] that yields a [`ScriptAction`] per request,
+//! and the per-dialect SSE renderers. Everything here is pure and synchronous
+//! so it unit-tests without a runtime.
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +12,7 @@ pub mod parse;
 mod reference_delivery;
 pub mod render;
 pub mod request;
+mod script;
 pub mod script_file;
 
 pub use parse::{
@@ -22,6 +21,7 @@ pub use parse::{
 };
 pub use render::{render_anthropic, render_codex, render_openai};
 pub use request::{Dialect, RequestView, ViewMessage};
+pub use script::{Next, Phase, Phases, Plan, Rule, Script, Sequence};
 pub use script_file::{
     ActionObjectSpec, ActionSpec, CountSpec, DialectSpec, HttpErrorBodySpec, HttpErrorSpec,
     PhaseMatcher, PhaseSpec, RawErrorSpec, ReferenceDeliverySpec, ReplySpec, ScriptFile,
@@ -348,16 +348,6 @@ pub struct AbortStream {
     pub after_bytes: Option<usize>,
 }
 
-/// Build the best reply-shaped fallback for callers still using `next_reply` on
-/// an action script that produced a non-reply outcome.
-fn non_reply_action_fallback() -> Reply {
-    Reply {
-        turns: Vec::new(),
-        usage: Usage::default(),
-        stop: StopReason::Error,
-    }
-}
-
 /// A request recorded for later assertion.
 ///
 /// Captured per incoming request behind shared state and surfaced via
@@ -384,140 +374,9 @@ impl RecordedRequest {
     }
 }
 
-/// Decides which [`ScriptAction`] to serve for a given request.
-///
-/// The original reply-only variants and constructors remain available. The
-/// server calls [`Script::next_action`] so scripts can now return provider-shaped
-/// failures as well as normal replies, while old in-process consumers can keep
-/// using [`Script::next_reply`] when they only care about successful replies.
-pub enum Script {
-    /// Serve the same reply for every request.
-    Fixed(Reply),
-    /// Serve replies in order; once exhausted, the last reply repeats for every
-    /// further request. An empty sequence is treated as a single default
-    /// [`Reply::text`] so a misconfigured script never panics the server.
-    ///
-    /// The cursor is interior-mutable so the server can keep the script behind a
-    /// shared `Arc` and advance it per request without `&mut` access.
-    Sequence {
-        replies: Vec<Reply>,
-        cursor: Mutex<usize>,
-    },
-    /// Decide the reply from the parsed request — turn count, last message,
-    /// model, etc. The closure must be `Send + Sync` because it runs on the
-    /// dedicated runtime thread while the handle lives on the caller's thread.
-    Rule(Box<dyn Fn(&RequestView) -> Reply + Send + Sync>),
-    /// Serve the same action for every request.
-    FixedAction(ScriptAction),
-    /// Serve actions in order; once exhausted, the last action repeats for every
-    /// further request.
-    ActionSequence {
-        actions: Vec<ScriptAction>,
-        cursor: Mutex<usize>,
-    },
-    /// Decide the action from the parsed request.
-    ActionRule(Box<dyn Fn(&RequestView) -> ScriptAction + Send + Sync>),
-}
-
-impl Script {
-    /// Build a [`Script::Sequence`] from an ordered list of replies.
-    pub fn sequence(replies: Vec<Reply>) -> Self {
-        Script::Sequence {
-            replies,
-            cursor: Mutex::new(0),
-        }
-    }
-
-    /// Build a [`Script::Rule`] from a decision closure.
-    pub fn rule(f: impl Fn(&RequestView) -> Reply + Send + Sync + 'static) -> Self {
-        Script::Rule(Box::new(f))
-    }
-
-    /// Build a fixed script action.
-    pub fn fixed_action(action: impl Into<ScriptAction>) -> Self {
-        Script::FixedAction(action.into())
-    }
-
-    /// Build a sequence from an ordered list of actions.
-    pub fn action_sequence(actions: Vec<ScriptAction>) -> Self {
-        Script::ActionSequence {
-            actions,
-            cursor: Mutex::new(0),
-        }
-    }
-
-    /// Build a request-aware action rule.
-    pub fn action_rule(f: impl Fn(&RequestView) -> ScriptAction + Send + Sync + 'static) -> Self {
-        Script::ActionRule(Box::new(f))
-    }
-
-    /// Produce the action for the next request.
-    ///
-    /// `view` is the normalized projection of the request body. Reply-only
-    /// variants are lifted into [`ScriptAction::Reply`]. Sequence cursors
-    /// advance and then clamp at the final element so the last item repeats.
-    pub fn next_action(&self, view: &RequestView) -> ScriptAction {
-        match self {
-            Script::Fixed(reply) => ScriptAction::Reply(reply.clone()),
-            Script::Sequence { replies, cursor } => choose_next(replies, cursor)
-                .map(ScriptAction::Reply)
-                .unwrap_or_else(|| ScriptAction::Reply(Reply::text(""))),
-            Script::Rule(f) => ScriptAction::Reply(f(view)),
-            Script::FixedAction(action) => action.clone(),
-            Script::ActionSequence { actions, cursor } => {
-                choose_next(actions, cursor).unwrap_or_else(|| ScriptAction::Reply(Reply::text("")))
-            }
-            Script::ActionRule(f) => f(view),
-        }
-    }
-
-    /// Produce the reply for the next request.
-    ///
-    /// This is the original reply-only API. On action-aware scripts it advances
-    /// the same cursor as [`Script::next_action`]; if the selected action is not a
-    /// reply, it returns an empty error-stopped reply because HTTP errors cannot
-    /// be represented as [`Reply`].
-    pub fn next_reply(&self, view: &RequestView) -> Reply {
-        match self.next_action(view) {
-            ScriptAction::Reply(reply) => reply,
-            ScriptAction::HttpError(_)
-            | ScriptAction::StreamError(_)
-            | ScriptAction::AbortStream(_) => non_reply_action_fallback(),
-        }
-    }
-}
-
-fn choose_next<T: Clone>(items: &[T], cursor: &Mutex<usize>) -> Option<T> {
-    if items.is_empty() {
-        return None;
-    }
-
-    // Lock to read+advance the cursor. The lock is uncontended on the
-    // single-threaded runtime; recover from poisoning rather than panicking so
-    // one bad request can't wedge the server.
-    let mut idx = cursor.lock().unwrap_or_else(|p| p.into_inner());
-    let chosen = items[*idx].clone();
-    // Advance, clamping at the last index so it repeats once exhausted.
-    if *idx + 1 < items.len() {
-        *idx += 1;
-    }
-    Some(chosen)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A minimal OpenAI view with the given prior-tool-result count, for
-    /// exercising scripts without standing up a server.
-    fn view_with_turns(prior_tool_results: usize) -> RequestView {
-        RequestView::new(
-            Dialect::OpenAi,
-            Some("fake".to_string()),
-            vec![],
-            prior_tool_results,
-        )
-    }
 
     #[test]
     fn usage_total_is_the_sum() {
@@ -544,65 +403,6 @@ mod tests {
     }
 
     #[test]
-    fn fixed_script_repeats_the_same_reply() {
-        let script = Script::Fixed(Reply::text("same"));
-        let view = view_with_turns(0);
-        assert_eq!(script.next_reply(&view), script.next_reply(&view));
-        assert_eq!(script.next_reply(&view), Reply::text("same"));
-    }
-
-    #[test]
-    fn sequence_serves_in_order_then_repeats_the_last() {
-        let script = Script::sequence(vec![
-            Reply::text("first"),
-            Reply::text("second"),
-            Reply::text("third"),
-        ]);
-        let view = view_with_turns(0);
-        assert_eq!(script.next_reply(&view), Reply::text("first"));
-        assert_eq!(script.next_reply(&view), Reply::text("second"));
-        assert_eq!(script.next_reply(&view), Reply::text("third"));
-        // Exhausted: the last reply repeats from here on.
-        assert_eq!(script.next_reply(&view), Reply::text("third"));
-        assert_eq!(script.next_reply(&view), Reply::text("third"));
-    }
-
-    #[test]
-    fn empty_sequence_yields_an_empty_text_reply() {
-        let script = Script::sequence(vec![]);
-        let view = view_with_turns(0);
-        assert_eq!(script.next_reply(&view), Reply::text(""));
-    }
-
-    #[test]
-    fn action_sequence_serves_errors_and_replies_in_order() {
-        let script = Script::action_sequence(vec![
-            ScriptAction::HttpError(HttpError::provider(500, "server_error", "try again")),
-            ScriptAction::Reply(Reply::text("success")),
-        ]);
-        let view = view_with_turns(0);
-
-        match script.next_action(&view) {
-            ScriptAction::HttpError(error) => {
-                assert_eq!(error.status, 500);
-                assert_eq!(
-                    error.render_body(Dialect::OpenAi).body,
-                    r#"{"error":{"code":"server_error","message":"try again"}}"#
-                );
-            }
-            other => panic!("expected HTTP error action, got {other:?}"),
-        }
-        assert_eq!(
-            script.next_action(&view),
-            ScriptAction::Reply(Reply::text("success"))
-        );
-        assert_eq!(
-            script.next_action(&view),
-            ScriptAction::Reply(Reply::text("success"))
-        );
-    }
-
-    #[test]
     fn provider_error_body_uses_anthropic_shape_and_merges_extra() {
         let body = ErrorBody::Provider {
             dialect: None,
@@ -619,33 +419,6 @@ mod tests {
         assert_eq!(json["error"]["type"], "server_error");
         assert_eq!(json["error"]["message"], "temporary");
         assert_eq!(json["error"]["request_id"], "req_1");
-    }
-
-    #[test]
-    fn rule_script_branches_on_the_request_view() {
-        let script = Script::rule(|view| {
-            if view.prior_tool_results == 0 {
-                Reply {
-                    turns: vec![Turn::ToolCall {
-                        id: "call_1".to_string(),
-                        name: "write".to_string(),
-                        args: serde_json::json!({ "path": "x" }),
-                    }],
-                    usage: Usage::default(),
-                    stop: StopReason::ToolCalls,
-                }
-            } else {
-                Reply::text("done")
-            }
-        });
-
-        // Turn 1: no prior tool results → a tool call.
-        let first = script.next_reply(&view_with_turns(0));
-        assert_eq!(first.stop, StopReason::ToolCalls);
-
-        // Turn 2: one prior tool result → the final text.
-        let second = script.next_reply(&view_with_turns(1));
-        assert_eq!(second, Reply::text("done"));
     }
 
     #[test]

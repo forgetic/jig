@@ -510,6 +510,14 @@ We change the data flow instead:
   `action_sequence`, `fixed_action`). `next_reply` is removed. `next_action`
   becomes `&mut self` and remains a convenience for direct users; it calls
   the rule itself.
+- **As built (wave 1):** `Script::Fixed` keeps holding a `Reply`, beside
+  `FixedAction(ScriptAction)`, because the integration tests (and temper)
+  construct `Script::Fixed(reply)` and must pass unchanged. Reply and action
+  sequences share one `Sequence` variant, and reply and action rules one
+  `Rule` variant. `ReferenceDelivery` holds its `ReferenceDeliverySpec`, and
+  `Phases` holds one `Sequence` per phase. The full shape is
+  `Script::{Fixed(Reply), FixedAction(..), Sequence(..), Phases(..), ReferenceDelivery(..), Rule(..)}`,
+  with `Plan::{Fixed(ScriptAction), Sequence(..), Phases(..), ReferenceDelivery(..), External}`.
 
 ### 4.11 Static traits for the loop, and why not `dyn`
 
@@ -586,6 +594,10 @@ The dependencies added are `polling` 3, `socket2` 0.6, `httparse` 1,
 as a dev-dependency. `steploop` declares `rust-version = "1.85"` (temper's
 MSRV), so clippy's `incompatible_msrv` lint catches newer std APIs.
 
+*Implementation note (wave 1):* `steploop` also depends on `libc` 0.2, for
+`EINPROGRESS` alone: `io::ErrorKind::InProgress` is still unstable. It was
+already in the tree through `socket2`.
+
 ### 5.3 The loop driver and its traits
 
 ```rust
@@ -658,6 +670,18 @@ planner state small. There is no "buffer is in the kernel" state, unlike
 io_uring and the C port, where a SEND's buffer is pinned across iterations.
 The only asynchronous completion is `Arm` → `Ready`.
 
+*Implementation notes (wave 1):*
+
+- **The first pass polls with a zero timeout.** In the sketch the first
+  `poll` blocks before any step has run, so nothing is armed yet and nothing
+  can wake it (a listener is only armed once the I/O step plans it).
+- **The tap is a statically dispatched parameter,** `tap: &mut T` with
+  `T: Observe<C::Comp, C::HostReq>`, implemented by `Tap` and by `NoTap`.
+  An `Option<&mut Tap<..>>` would put the tap's `Clone` bounds on `run`
+  itself.
+- **`NoHost`** discards host requests. It suits cores whose `HostReq` is
+  uninhabited or ignorable.
+
 ### 5.4 The syscall vocabulary: `Action` and `Event`
 
 ```rust
@@ -679,8 +703,8 @@ pub enum Event {
     Connected { sock: SockId, result: Result<Progress, IoError> }, // Done | InProgress
     Read      { sock: SockId, result: Result<Vec<u8>, IoError> },  // Ok(empty) = EOF
     Wrote     { sock: SockId, data: Vec<u8>, result: Result<usize, IoError> }, // ...and moves back
-    Ready     { sock: SockId, readiness: Readiness },
-    Closed    { sock: SockId },
+    Ready     { sock: SockId, result: Result<Readiness, IoError> },
+    Closed    { sock: SockId, result: Result<(), IoError> },
     Resolved  { query: u64, result: Result<Vec<SocketAddr>, IoError> },
     Signal    { signal: SignalId },
 }
@@ -705,6 +729,25 @@ pub struct IoError { pub kind: io::ErrorKind, pub os: Option<i32> } // Clone, Eq
 `Resolve` lives here rather than in a separate executor because it is the one
 blocking action and deserves to be visible in the same vocabulary. Replacing
 it later (for example with a resolver thread) changes only `perform`.
+
+*Implementation notes (wave 1):* the doc comment of `steploop::sys` has the
+full contract.
+
+- **`Ready` and `Closed` carry a `result`.** Items 2 and 3 need an error
+  completion for `Arm` and `Close`. A rejected arm (a second one while one is
+  pending, an empty interest, or an unknown id) completes at once with
+  `Ready { result: Err(..) }`, and the pending arm is left in place. `Closed`
+  completes a pending arm whatever its result.
+- **Wrong resource kinds.** Reading a listener, say, gives `InvalidInput`.
+  Naming a new socket with an id in use gives `AlreadyExists`.
+- **The shapes.** `Interest { read, write }` has `merge`, and an empty one is
+  rejected. `Readiness { readable, writable }` may report more than was asked:
+  a hang-up sets both.
+- **Resource lifetime.** A failed `Connect` leaves nothing behind. A failed
+  `FinishConnect` leaves the socket for the planner to `Close`, and reports
+  the error only once.
+- **Signal ids.** They count down from the top of the id space, and a
+  signal's poller key is its id, like a socket's.
 
 ### 5.5 Planners: byte stages composed in a fixed order
 
@@ -858,6 +901,11 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
 completions the host fed back (rule decisions). Everything else the pure side
 receives is derived from those.
 
+*Implementation note (wave 1):* the type is `Tap<Comp, HostReq>`. Besides the
+inputs, it also records the outputs (host requests and actions), so that a
+test can compare them with `replay`'s. Host answers are kept per round of
+the quiescence loop, so replay feeds them back in the same round.
+
 `replay(core, io, tap)` feeds a fresh core and I/O step the same inputs and
 returns the actions and host requests. A test asserts that they equal those of
 the original run. Plain-TCP exchanges replay byte-exactly. TLS exchanges do not
@@ -912,7 +960,7 @@ M4 records what actually came up.
    instead of waiting forever for a stalled client.
 4. **Scripts.**
    - Rule closures are `FnMut + Send`.
-   - `Script::Fixed` holds a `ScriptAction` (`From<Reply>` still works).
+   - `Script::Fixed` still holds a `Reply`, as before ([§4.10](#410-scripts-become-data-rule-closures-are-answered-by-the-embedder)).
    - `next_action` takes `&mut self`.
    - `next_reply` is removed.
    - Script files and reference delivery are data variants.
@@ -924,7 +972,10 @@ M4 records what actually came up.
    dependency. jig depends on `steploop`.
 
 temper's bump then needs:
-- `Script::Fixed(reply)` → `Script::Fixed(reply.into())`, or the constructor;
+- `script.next_reply(view)` inside `Script::rule` closures (four
+  `live_manifest` fakes that wrap a file script) →
+  `Script::action_rule` with `script.next_action(view)`, which also stops
+  HTTP errors in those scripts from degrading to empty replies;
 - `jig_request_oracle.rs` switched to `Recorder`;
 - `late_stream_jig.rs` using `&mut script`;
 - the `jig-runtime` dev-dependency dropped.

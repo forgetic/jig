@@ -37,7 +37,7 @@ pub type RequestLog = Arc<Mutex<Vec<RecordedRequest>>>;
 pub async fn serve(
     cx: &Cx,
     listener: TcpListener,
-    script: Arc<Script>,
+    script: Arc<Mutex<Script>>,
     log: RequestLog,
     shutdown: Arc<Notify>,
 ) {
@@ -70,7 +70,7 @@ pub async fn serve(
 async fn handle_connection(
     cx: &Cx,
     mut stream: TcpStream,
-    script: &Script,
+    script: &Mutex<Script>,
     log: &RequestLog,
 ) -> io::Result<()> {
     let request = read_request(cx, &mut stream).await?;
@@ -92,25 +92,35 @@ async fn handle_connection(
             // Every dialect route has a projected view; default to an empty
             // OpenAI view if projection somehow yielded nothing.
             let view = view.unwrap_or_else(empty_openai_view);
-            let action = script.next_action(&view);
+            let action = next_action(script, &view);
             write_action_response(cx, &mut stream, Dialect::OpenAi, action).await
         }
         "/v1/messages" => {
             // Anthropic messages dialect. Same script seam as OpenAI — only the
             // renderer differs.
             let view = view.unwrap_or_else(empty_anthropic_view);
-            let action = script.next_action(&view);
+            let action = next_action(script, &view);
             write_action_response(cx, &mut stream, Dialect::Anthropic, action).await
         }
         "/backend-api/codex/responses" => {
             // OpenAI Codex responses dialect. Same script seam as the others —
             // only the projection and renderer differ.
             let view = view.unwrap_or_else(empty_codex_view);
-            let action = script.next_action(&view);
+            let action = next_action(script, &view);
             write_action_response(cx, &mut stream, Dialect::Codex, action).await
         }
         _ => write_not_found(cx, &mut stream).await,
     }
+}
+
+/// Take the script's next action under its lock. Transitional, like the lock
+/// itself: rule closures run while it is held, which is harmless on this
+/// single-threaded runtime. Wave 3 deletes this server.
+fn next_action(script: &Mutex<Script>, view: &RequestView) -> ScriptAction {
+    script
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .next_action(view)
 }
 
 async fn write_action_response(
@@ -229,11 +239,9 @@ async fn read_request(_cx: &Cx, stream: &mut TcpStream) -> io::Result<Request> {
     let path = raw_target.split('?').next().unwrap_or("/").to_string();
 
     let mut content_length = 0usize;
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            if name.trim().eq_ignore_ascii_case("content-length") {
-                content_length = value.trim().parse().unwrap_or(0);
-            }
+    for (name, value) in lines.filter_map(|line| line.split_once(':')) {
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            content_length = value.trim().parse().unwrap_or(0);
         }
     }
 

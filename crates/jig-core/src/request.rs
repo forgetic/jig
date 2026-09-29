@@ -317,13 +317,15 @@ pub fn parse_codex(body: &[u8]) -> RequestView {
     let mut prior_tool_results = 0usize;
 
     // Project the top-level instructions (if any) as a leading system message.
-    if let Some(instructions) = json.get("instructions").and_then(Value::as_str) {
-        if !instructions.is_empty() {
-            messages.push(ViewMessage {
-                role: "system".to_string(),
-                content: instructions.to_string(),
-            });
-        }
+    if let Some(instructions) = json
+        .get("instructions")
+        .and_then(Value::as_str)
+        .filter(|instructions| !instructions.is_empty())
+    {
+        messages.push(ViewMessage {
+            role: "system".to_string(),
+            content: instructions.to_string(),
+        });
     }
 
     if let Some(arr) = json.get("input").and_then(Value::as_array) {

@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustc -Vv && cargo -V && cargo clippy -V
       - name: Format
         run: cargo fmt --all -- --check
       - name: Build tests

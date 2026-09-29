@@ -632,7 +632,7 @@ impl ChunkedDecoder {
                 return Err(ChunkError::SizeOverflow);
             }
             return Ok(S::Size {
-                size: size << 4 | digit,
+                size: (size << 4) | digit,
             });
         }
         match (self.state, b) {

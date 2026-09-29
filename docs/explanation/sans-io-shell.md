@@ -1,7 +1,8 @@
 # The sans-IO shell: design and rationale
 
-Status: **M0 design**, 2026-09-29. It is written before any code, and a
-results section ([§11](#11-results-m4)) is added at M4. This document is the
+Status: **implemented**, 2026-09-29. Sections 1–10 are the M0 design, written
+before any code and since annotated with *as built* notes where the code
+differs. [§11](#11-results-m4) holds the results. This document is the
 reference for porting temper's shell to the same model later. It records the
 decisions and also the reasoning and alternatives behind them, so they can be
 re-examined when circumstances change.
@@ -744,7 +745,7 @@ pub enum Event {
     Signal    { signal: SignalId },
 }
 
-pub struct IoError { pub kind: io::ErrorKind, pub os: Option<i32> } // Clone, Eq; WouldBlock is a kind
+pub struct IoError { pub kind: io::ErrorKind, pub os: Option<i32>, pub message: Option<String> } // Clone, Eq; WouldBlock is a kind
 ```
 
 **The contract**, owned by `Reactor` and checked in its tests:
@@ -882,7 +883,11 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
   - It arms only when no read or write is in flight, and widens a pending
     arm when a need arises under it (§5.4). The server never needed this,
     because it stops reading before it writes; the client does.
-  - On an error it stops all I/O, and the upper stage closes it.
+  - A read error stops all I/O. A **write error stops writing only**, and
+    reads continue *(as built, wave 4: a review found that an upstream
+    answering early, e.g. a `413` sent before it has read the whole body,
+    was lost to the `EPIPE` of the next write)*. `read_error()` and
+    `error()` tell the two apart. The upper stage closes the connection.
   - It also connects (`Conn::connect`), for the client planner.
 - **`tcp::Listener`.**
   - It has one accept in flight at a time.
@@ -913,10 +918,15 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
     the server by `host`. `ClientError` has a variant per kind: resolve,
     connect (the last address's error), TLS (the stage's text), I/O, protocol
     (a `HeadError`) and cancelled.
-  - Five states: `Resolving`, `Connecting`, `Head`, `Body` and `Done`, where
-    the C recorder had about twenty phases. Sockets a fetch drops (a failed
+  - Five phases: `Resolving`, `Connecting`, `Head`, `Body` and `Done`, where
+    the C recorder had about twenty. *(As built, wave 4: a fetch is
+    `Fetch { phase, pipe: Option<Pipe> }`, which removed three accessors.)* Sockets a fetch drops (a failed
     attempt's, a finished fetch's) move to a retired list until their
     `Closed`, so a state holds only its current socket.
+  - Interim `1xx` responses (except `101`) are skipped before the final
+    head, and are neither relayed nor reported. A write error fails the
+    fetch only if the peer ends before a head arrives; after a head, the
+    body streams to EOF as usual.
   - The body is read until EOF, and the head's framing is not used. The
     module doc says how a framing-aware mode would be added for temper.
   - `End` or `Failed` may follow a `Body` before its `Ack`. `Cancel` reports
@@ -977,9 +987,10 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
 
 - **The parts are public,** so an embedder can build its own loop:
   - `io::ServerIo` translates between the planner's vocabulary and the
-    core's. It drops `Gone`, `Flushed` and foreign signals: the core never
-    relays, and an undecided request is released by its decision (whose
-    response the server ignores).
+    core's. It drops `Flushed` and foreign signals, since the core never
+    relays. *(As built, wave 4: it forwards `Gone` as `Comp::Gone`, which
+    releases an undecided request. Dropping it let a loop whose host never
+    answers `Decide` hang shutdown, as `done()` waited for the decision.)*
   - `host::FakeLlmHost` appends to a `RequestLog`
     (`Arc<Mutex<Vec<RecordedRequest>>>`) and calls the rule in the same
     round. A `Decide` with no rule gets a `500` (`no_rule`), not a panic on
@@ -1071,6 +1082,11 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
   `RawEnd`). That closes the client's connection with nothing written.
 - **`record_once` is now the blocking entry point.** The async `record_once`
   and `record_once_blocking` are both gone. It waits with `Duration::MAX`.
+- **Forwarding hygiene** *(as built, wave 4)*. The upstream head no longer
+  forwards the client's hop-by-hop `Connection`, `Keep-Alive`,
+  `Proxy-Connection` and `Expect` headers; the rest of the head is
+  unchanged. The client sent its whole body already, so `Expect:
+  100-continue` only invited an interim `100` from the upstream.
 - **Log lines** keep the pump's texts. A client leaving mid-relay logs
   `connection error: the response to the client was cut short`. Once mode
   logs too.
@@ -1097,6 +1113,12 @@ the original run. Plain-TCP exchanges replay byte-exactly. TLS exchanges do not
 ([§4.5](#45-tls-rustls-clientconnection-buffered-api-ring-provider)).
 
 This is the mechanism that makes real-I/O and chaos failures reproducible.
+
+*As built (wave 4):* `run::Count` is a second `Observe` that only counts
+iterations; its clones share the count. Live tests use it to assert that
+an idle loop, a write stalled until the shutdown grace cuts it, and a relay
+to a slow reader take a handful of iterations. A planner that spins at
+timeout zero makes them fail with 90k–250k.
 
 ### 5.9 Ownership and buffer flow
 
@@ -1231,6 +1253,13 @@ Work is done by parallel sub-agents in separate git worktrees, coordinated
 from the main session. At most three heavy builds run at once, and disk and
 memory are watched. Each milestone lands as one or more PRs on `ai/jig`.
 
+*As built:* M0–M2 landed as PRs #3–#5. After that, at the owner's request,
+Forgejo PRs and CI were not used: the forge's runner is shared with another
+agent. Each wave was merged locally once it passed `cargo nextest` (rustc
+1.95) and `~/.local/bin/jig-ci-1.85`, a local stand-in for the runner's
+rustc and clippy 1.85. Two waves were added: **H**, a hardening pass on an
+independent review, and **I**, a docs refresh.
+
 - **M0.** This document, and the brief committed alongside it.
 - **Wave 1, in parallel, starting from a crate skeleton committed first:**
   - **A. `steploop` foundation:**
@@ -1263,7 +1292,8 @@ memory are watched. Each milestone lands as one or more PRs on `ai/jig`.
 ## 10. Questions for temper, and how the pilot answers them
 
 These are the brief's six questions. The expected answers here are
-hypotheses, confirmed or revised at M4.
+hypotheses, confirmed or revised at M4. The measured answers are in
+[§11.4](#114-the-six-questions-answered).
 
 1. **Does the two-step shape stay simple as protocols stack
    (TCP → TLS → HTTP → SSE)?** Expected: yes. Each layer is a byte stage with
@@ -1287,7 +1317,305 @@ hypotheses, confirmed or revised at M4.
 
 ## 11. Results (M4)
 
-*To be written at M4.*
+### 11.1 What was built
+
+| Crate / module | Role | Code lines |
+|---|---|---:|
+| `steploop::reactor` | owned oneshot wrapper over `polling`: fd table, `perform`, `poll`, signals, `Resolve` | 305 |
+| `steploop::run` | `Core`/`IoStep`/`Host`, `run`, `Tap`, `replay`, `Count`, `NoHost` | 241 |
+| `steploop::sys` | `Action`, `Event`, `SockId`, `Ids`, `IoError` and friends | 187 |
+| `steploop::time` | `Time`, `Deadlines` | 52 |
+| `steploop::tcp` | `Conn` (byte pipe, arms, backpressure, connect), `Listener` | 362 |
+| `steploop::tls` | rustls client stage (`pump` over four buffers) | 271 |
+| `steploop::http1::codec` | httparse heads, verbatim writer, chunked encoder and decoder | 489 |
+| `steploop::http1::server` | server planner (structured and raw responses, shutdown grace) | 327 |
+| `steploop::http1::client` | client planner (resolve, connect, TLS, stream, credit) | 598 |
+| `steploop` (lib, `http1` types) | | 46 |
+| **`steploop` total** | generic, no jig types | **2,878** |
+| `jig_server::provider` | pure provider core (routing, script, rendering) | 276 |
+| `jig_server::{io, host, lib}` | adapter, host, `FakeLlm` | 166 |
+| `jig_record::relay` | pure recorder core (about 110 lines are vocabulary and state types) | 269 |
+| `jig_record::{io, host, handle, proxy, lib}` | composed I/O step, host, `Recorder`, upstream head, entry points | 302 |
+| `jig_record::{fixture, redact, route}` | pure, unchanged in substance | 242 |
+
+"Code lines" throughout this section exclude blank lines, comments, doc
+comments and in-file `#[cfg(test)]` modules. The same counter was used for
+before and after.
+
+Everything is in `main`. skein and `jig-runtime` are gone. The public API
+changes that temper's bump needs are listed in [§6](#6-behaviour-changes-relative-to-ca1edfd),
+and [§11.8](#118-open-items-and-follow-ups) has the recorder-oracle change.
+
+### 11.2 Size before and after
+
+| | Before (`ca1edfd`) | After |
+|---|---:|---:|
+| jig-server shell (`lib`, `server` → `provider`, `io`, `host`, `lib`) | 341 | 442 |
+| jig-record async part (`lib`, `proxy`, `pump` → `relay`, `io`, `host`, `handle`, `proxy`, `lib`) | 427 | 571 |
+| `jig-runtime` | 127 | 0 |
+| **jig-specific shell** | **895** | **1,013** (1.13×) |
+| generic layer written in-tree | 0 (skein, about 105k lines, linked) | 2,878 (`steploop`) |
+
+- **The per-application cost is close to async's.** The jig-specific code
+  grew 13%. The two pure cores are 545 lines, and most of the provider's 276
+  is rendering that `server.rs` already had. The glue that wires a core to a
+  loop is small: 166 lines for `FakeLlm`, 181 for the recorder
+  (`io` + `host` + `handle`). Compare the C port, where the event-driven code
+  was 4.4× the async version.
+- **The generic layer is the price of owning the protocol stack.** At 2.9k
+  lines it is close to what the C port spent on its io_uring layer and TLS
+  glue (2,958), and it replaces what skein provided from about 105k linked
+  lines.
+- **Tests grew more than code.** `steploop` has about 8.3k lines of tests for
+  2.9k of code. Scripted planner tests are verbose, and split-point loops
+  and golden bytes are cheap to add. The test count went from **256 to 520**,
+  and the workspace runs them in 6–8 s.
+
+### 11.3 Dependencies, build time and binary
+
+| | Before | After |
+|---|---:|---:|
+| crates linked into the `jig` binary (`cargo tree -e normal`) | 80 | 34 |
+| packages in `Cargo.lock` (dev-dependencies such as `rcgen` included) | 130 | 113 |
+| clean release build of `jig`, no kache, 8 jobs | 124.3 s | 46.8 s |
+| clean debug build of `jig`, no kache, 8 jobs | 57.5 s | 21.3 s |
+| stripped release binary | 3.23 MB | 2.68 MB |
+
+`steploop` with TLS depends on 19 crates, all small apart from rustls and
+ring. Without TLS it needs only `polling`, `socket2`, `httparse` and their
+system crates.
+
+### 11.4 The six questions, answered
+
+1. **Does the two-step shape stay simple as protocols stack?** Yes. Each
+   layer is a plain struct over buffers:
+   - `tcp::Conn` moves bytes to and from the socket;
+   - `tls::TlsClient::pump` moves bytes between four buffers;
+   - the codec is pure functions.
+
+   The planners compose them in a fixed order per connection kind: the
+   client's `Pipe` is a `Conn` plus a `Link`, either plain or TLS. No
+   pipeline framework was needed. Composing two planners (server and client)
+   in one `IoStep` took 75 lines in the recorder. The largest planner, the
+   client at 598 lines, is large because of what it does, not because of
+   layering: resolve, try each address in turn, TLS, write, parse the head,
+   stream with credit, and exactly one terminal event per fetch.
+2. **Where does backpressure live?**
+   - **Within a connection, in the I/O step.** `Conn`'s read limit stops
+     reading what the upper stage hasn't consumed, and `unsent()` exposes
+     the outbound queue.
+   - **Across connections, in the core, as credit.** The recorder keeps an
+     `owed` flag and sends `Ack` on the next `Flushed`, with a window of one
+     chunk. That took a few lines.
+
+   The subtlety: the credit is correct only because the recorder's `IoStep`
+   hands the core the server's events before the client's. That rule lives
+   outside the core. temper should either make such ordering part of each
+   composed `IoStep`'s documented contract, or make `Flushed` carry a byte
+   count so that credit doesn't depend on ordering.
+3. **How are per-connection states identified and reclaimed?**
+   - Ids are never-reused `u64`s from `sys::Ids`, allocated by the pure side.
+     `split()` gives composed planners disjoint ranges, and signal ids count
+     down from the top.
+   - State lives in `BTreeMap`s. A stale event is a missed lookup.
+
+   No generational slab was needed. Neither the implementers nor the
+   independent review found an id-related defect.
+4. **Is `perform` really thin?** Yes, in behaviour. `reactor.rs` is 305 code
+   lines, including `poll`, signals, `Resolve`, non-blocking connect and the
+   fd table.
+   - `perform` itself is one `match` that maps each `Action` to a syscall
+     helper of 5–20 lines, and wraps the result as its `Event`.
+   - It makes no decisions.
+   - The 250-line target was missed mostly because of rustfmt's vertical
+     struct literals.
+5. **How good is the test story?** (This replaces the simulated world;
+   [§4.2](#42-the-testing-layer-no-byte-level-simulated-world).)
+   - **Scripted planner tests** cover every split point of heads and bodies,
+     short writes, `WouldBlock`, EOF anywhere, one terminal per fetch, and
+     stale events. They are deterministic and fast, but verbose.
+   - **Real-socket tests** showed no flakes across repeated runs (10 to 300
+     runs, some under parallel load).
+   - **Replay** works byte-exactly for plain-TCP runs: the echo server, the
+     server planner, `FakeLlm` with a rule script, and the recorder relay.
+     TLS runs don't replay byte-exactly ([§4.5](#45-tls-rustls-clientconnection-buffered-api-ring-provider)).
+   - **The real bugs** did not come from tests. Four were found during
+     implementation or by the independent review:
+     - the read-while-write deadlock that needed arm widening;
+     - an early upstream response lost to a write error;
+     - a shutdown hang when a `Decide` goes unanswered;
+     - no test would have noticed the loop spinning.
+
+     Each now has a regression test that fails on the old code. `run::Count`
+     makes spinning detectable. The lesson for temper: scripted tests prove
+     the planners do what their authors thought of. A review against the
+     invariants in [§5.4](#54-the-syscall-vocabulary-action-and-event) is what
+     finds what they didn't.
+6. **skein's reactor or mio?** Neither as it stands. The owned oneshot
+   wrapper over `polling` worked, and its oneshot arm maps onto "one request,
+   one completion". The one correction was that a pending arm must be
+   widenable: a connection that waits to read while its write blocks would
+   otherwise deadlock (tokio avoids this with separate read and write
+   wakers). The recommendation to move `steploop` into skein when temper
+   adopts it stands.
+
+### 11.5 Borrow checker and type system: what actually came up
+
+Almost nothing. Across roughly 4k lines of new code, the implementers
+reported one trivial borrow error (a missing `mut`). The techniques that kept
+it that way, all from the house rules:
+
+- **Disjoint field borrows instead of `&mut self` helpers.** State is split
+  into sub-structs: the client's `Shared` holds ids and retired sockets
+  apart from its fetches, and the recorder's I/O step passes
+  `&mut self.client_out` next to `&mut self.client`. The reactor's id lookup
+  is a free function over `&mut self.entries`, so it doesn't conflict with
+  `self.poller`.
+- **Moving per-state data out for a transition.** `mem::replace(&mut state,
+  Placeholder)` followed by `next(state) -> State` moves a parsed head into
+  a request without a `Default`.
+- **Remove, process, reinsert.** The relay core takes an exchange out of its
+  map, matches on its owned stage, then puts it back. No `&mut` into the map
+  is held across helper calls.
+- **`retain`** instead of collect-then-act, where it fits.
+- **`mem::swap` of `Conn`'s buffers** into the TLS stage's `StageBufs` for
+  the duration of one `pump`, instead of a helper returning borrows from
+  two structs, which would have needed explicit lifetimes.
+
+Type-system friction was small too:
+
+- The tap became an `Observe` trait, so `run` doesn't carry `Clone` bounds.
+- `io::ErrorKind::InProgress` is unstable, so `libc::EINPROGRESS` is used.
+- `extract_if` isn't stable at 1.85.
+
+The largest practical cost was **toolchain drift**. CI runs rustc and clippy
+1.85 while the machine had 1.95, so lints diverged:
+`clippy::precedence` fires on `a << 4 | b` in 1.85, and 1.95 suggests
+let-chains that 1.85 can't compile. A local 1.85 toolchain fixed that.
+
+### 11.6 What felt costly compared with async, and what felt easier
+
+**Costly:**
+- **Bookkeeping that async hides:** in-flight, armed and blocked flags, the
+  one-arm rule, guarding against stale events, and putting back a short
+  write's remainder. The wave-1 echo planner was about 150 lines of flags
+  for about 10 lines of async. The planners and `Conn` absorb this once,
+  which is why the jig-specific glue stays small.
+- **Explicit states and vocabulary.** About 110 of the recorder core's 269
+  lines are type declarations, which rustfmt stretches vertically. "Close
+  with no response" has to be spelled out (`RawStart` + `RawEnd`), where
+  async just dropped the stream.
+- **Cancellation is explicit:** `Cancel` on `Gone`, then ignore the late
+  `Failed(Cancelled)`. Once-mode endings and stop grace had to be designed,
+  not inherited.
+- **Composition rules:** routing events to their owner, and the
+  server-before-client ordering the credit depends on.
+- **Verbose scripted tests.**
+
+**Easier:**
+- No wakers, no `Pin`, no `Send`/`'static` bounds, no `Mutex`, `Notify` or
+  `Select`, and no task per connection.
+- Errors are data, and a stale event is a missed map lookup.
+- Shutdown grace, the connection cap, `Gone` and credit each took a few
+  lines, and `Drop` is bounded.
+- Every split point is testable, replay is free, and "exactly one terminal
+  per fetch" is checkable.
+- Dependencies, build time and the binary all shrank ([§11.3](#113-dependencies-build-time-and-binary)).
+
+### 11.7 Recommendations for temper's shell track
+
+1. **Adopt `steploop` for the shell,** by depending on it or copying it.
+   Keep `Core`/`IoStep`/`Host` and `run`, one engine per thread, and all
+   syscalls behind `Action`/`Event`. Move it into skein when temper
+   converges ([§4.1](#41-the-reactor-an-owned-wrapper-over-polling)), and
+   delete skein's async layers as their users go.
+2. **Model calls: a `ModelPlanner` over `http1::client` with TLS.**
+   - Build requests with tongs' pure request builder and fold responses with
+     its incremental SSE parser. That needs the small tongs PR that makes
+     those parts public.
+   - Add a framing-aware body mode to the client: Content-Length, or chunked
+     through the existing `ChunkedDecoder`.
+   - Add connect, head and idle **timeouts as deadlines**; the client has
+     none today.
+   - Consider a credit window larger than one chunk for throughput.
+   - One request per connection is fine to start with.
+   - For DNS, resolve at startup, or use a resolver thread whose answers
+     arrive as signals plus a queue. The blocking `Resolve` in `perform` is
+     acceptable only for a manual tool like jig's recorder.
+3. **Processes: a planner over pidfds and pipes.**
+   - Add reactor resources for pipes (child stdin, stdout and stderr, set
+     non-blocking) and a pidfd (`pidfd_open`). Exit is pidfd readiness plus
+     `waitid(WNOHANG)` in `perform`.
+   - Spawning stays a small synchronous action.
+   - TERM → grace deadline → KILL is planner state plus deadlines, and
+     cgroup writes are small synchronous actions.
+   - Estimate: 150–250 reactor lines and about 300 planner lines,
+     following the `Conn` pattern.
+4. **Files:** small synchronous actions (`ReadFile`, `WriteFile`, …) with
+   results as events. Chunk large walks and greps across iterations.
+   io_uring remains a later backend behind the same vocabulary.
+5. **Testing:**
+   - Seeded fault injection at the vocabulary boundary, with
+     `ScriptedExecutor` and jig's provider core as the model responder
+     ([§8](#8-using-jig-from-temper-without-io)).
+   - Scripted tests per planner.
+   - Real-socket tests with `Count` spin checks.
+   - Tap and replay at both boundaries.
+   - No byte-level world.
+   - An independent review against the invariants for every planner. It
+     found three of the pilot's four real bugs.
+6. **Invariants to keep explicit:**
+   - one event per action, with the reactor's arm semantics including
+     widening;
+   - one terminal event per operation;
+   - a write error stops only writing;
+   - every pending decision is released on `Gone`;
+   - ordering rules in composed `IoStep`s.
+7. **Pin the CI toolchain locally.** Run clippy with the same version as CI,
+   because lints drift between versions.
+
+### 11.8 Open items and follow-ups
+
+**Client planner:**
+- no timeouts;
+- a credit window of one chunk (at most 64 KiB per round trip);
+- events routed by scanning fetches;
+- a TLS fetch whose write fails during the handshake reports the TLS error
+  rather than the write error.
+
+**TCP:**
+- Closing with unread input sends a reset: after a `413`, the client may
+  lose the response. A half-close action (`shutdown(Write)` plus a bounded
+  drain) would fix it.
+- Short writes copy the remainder (`drain`), which is quadratic for very
+  large responses to slow readers; an offset would fix it.
+- An accept error such as `NotFound` retries every 10 ms forever.
+
+**Reactor:**
+- Unix only.
+- `SignalSender::raise` relies on SIGPIPE being ignored.
+- `Tap` grows without bound; a ring buffer would suit production
+  forensics.
+
+**Determinism:** a TLS replay is not byte-exact
+([§4.5](#45-tls-rustls-clientconnection-buffered-api-ring-provider)).
+
+**jig features made easy by the provider core seeing whole messages:**
+- `StreamError`/`AbortStream` rendering;
+- request headers in `RecordedRequest`;
+- paced SSE with deadlines.
+
+The first two would let temper delete its two hand-written jig servers.
+
+**temper's bump,** beyond [§6](#6-behaviour-changes-relative-to-ca1edfd):
+- `jig_request_oracle.rs` drops `bind`/`proxy_once`/`jig_runtime`. It starts
+  `jig_record::Recorder::start(RecorderConfig { mode: Mode::Once,
+  upstream_host, ..Default::default() })`, points the provider at
+  `recorder.base_url()`, and replaces the channel with
+  `recorder.next_capture(Duration::from_secs(30))`.
+- Remove the `jig-runtime` dev-dependency.
+- `live_manifest` fakes that called `next_reply` inside a rule switch to
+  `action_rule`, and call `script.next_action(&view)` on a `&mut Script`.
 
 ## 12. Sources
 

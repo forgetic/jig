@@ -357,32 +357,7 @@ fn oneshot_one_ready_per_arm() {
     let s = SockId(2);
     let mut c = accepted(&mut r, addr, s);
 
-    assert!(
-        perform(
-            &mut r,
-            Action::Arm {
-                sock: s,
-                interest: Interest::READ
-            }
-        )
-        .is_empty()
-    );
-    // A second arm while one is pending is rejected at once; the first stays.
-    let ev = perform1(
-        &mut r,
-        Action::Arm {
-            sock: s,
-            interest: Interest::WRITE,
-        },
-    );
-    assert_eq!(
-        ev,
-        Event::Ready {
-            sock: s,
-            result: Err(err(ErrorKind::InvalidInput))
-        }
-    );
-    // So is an arm that could never complete.
+    // An arm that could never complete is rejected at once.
     let ev = perform1(
         &mut r,
         Action::Arm {
@@ -397,6 +372,22 @@ fn oneshot_one_ready_per_arm() {
             result: Err(err(ErrorKind::InvalidInput))
         }
     );
+    assert!(
+        perform(
+            &mut r,
+            Action::Arm {
+                sock: s,
+                interest: Interest::READ
+            }
+        )
+        .is_empty()
+    );
+    // Under a pending arm, one that adds nothing is a no-op (even an empty
+    // one): no event now, and still one `Ready` later.
+    for interest in [Interest::READ, Interest::default()] {
+        assert!(perform(&mut r, Action::Arm { sock: s, interest }).is_empty());
+    }
+    assert!(poll(&mut r, SHORT).is_empty());
 
     c.write_all(b"one").unwrap();
     assert_eq!(poll(&mut r, LONG), vec![ready(s, true, false)]);
@@ -433,6 +424,47 @@ fn oneshot_one_ready_per_arm() {
         .is_empty()
     );
     assert_eq!(poll(&mut r, LONG), vec![ready(s, false, true)]);
+}
+
+#[test]
+fn a_second_arm_widens_the_pending_one() {
+    let mut r = Reactor::new().unwrap();
+    let addr = listener(&mut r);
+    let s = SockId(2);
+    let mut c = accepted(&mut r, addr, s);
+    let arm = |r: &mut Reactor, interest| perform(r, Action::Arm { sock: s, interest });
+
+    // Waiting to read; nothing arrives.
+    assert!(arm(&mut r, Interest::READ).is_empty());
+    assert!(poll(&mut r, SHORT).is_empty());
+    // Widening with write interest has no event of its own; the pending arm
+    // completes once, for the writability that is already there.
+    assert!(arm(&mut r, Interest::WRITE).is_empty());
+    assert_eq!(poll(&mut r, LONG), vec![ready(s, false, true)]);
+    c.write_all(b"late").unwrap();
+    assert!(
+        poll(&mut r, SHORT).is_empty(),
+        "one Ready for the joint arm, then none until the next arm"
+    );
+
+    // Readiness for the first interest completes a widened arm just the
+    // same, and reports what is ready.
+    assert!(arm(&mut r, Interest::READ).is_empty());
+    assert!(arm(&mut r, Interest::BOTH).is_empty());
+    assert_eq!(poll(&mut r, LONG), vec![ready(s, true, true)]);
+    assert!(poll(&mut r, SHORT).is_empty());
+
+    // A Close completes a widened arm too.
+    assert!(arm(&mut r, Interest::WRITE).is_empty());
+    assert!(arm(&mut r, Interest::READ).is_empty());
+    assert_eq!(
+        perform1(&mut r, Action::Close { sock: s }),
+        Event::Closed {
+            sock: s,
+            result: Ok(())
+        }
+    );
+    assert!(poll(&mut r, SHORT).is_empty());
 }
 
 #[test]

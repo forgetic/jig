@@ -11,14 +11,20 @@
 //! **The contract** (owned by [`crate::reactor::Reactor`], checked by its
 //! tests):
 //!
-//! 1. Every action completes with exactly one event naming the action's id.
-//!    All but [`Action::Arm`] complete within the same `perform` call; a
+//! 1. Every action completes with exactly one event naming the action's id,
+//!    except an `Arm` that widens a pending one (item 2). All but
+//!    [`Action::Arm`] complete within the same `perform` call; a
 //!    `WouldBlock` is an ordinary `Err` result.
 //! 2. An `Arm` that is accepted completes later, with one [`Event::Ready`]
 //!    from `poll`, or with the [`Event::Closed`] of its socket if the socket is
-//!    closed first. At most one arm may be pending per socket: a second one is
-//!    rejected at once with `Ready { result: Err(InvalidInput) }`, leaving the
-//!    pending one in place. An arm with no interest is rejected the same way.
+//!    closed first. At most one arm is pending per socket: an `Arm` while one
+//!    is pending **widens** it to the union of both interests and has no
+//!    event of its own, so the pending arm still completes exactly once, for
+//!    whichever readiness comes first. One that adds nothing is a no-op. An
+//!    arm with no interest and none pending is rejected at once with
+//!    `Ready { result: Err(InvalidInput) }`. If widening fails, the pending
+//!    arm completes at once with the error. After any `Ready`, no arm is
+//!    pending.
 //! 3. An action naming an unknown [`SockId`] completes with a `NotFound`
 //!    error, and one naming the wrong kind of resource (reading a listener,
 //!    say) with `InvalidInput`. Nothing panics.
@@ -104,8 +110,9 @@ impl Ids {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SignalId(pub u64);
 
-/// Which readiness an [`Action::Arm`] waits for. The TCP stage merges its read
-/// and write needs into one interest, since only one arm may be pending.
+/// Which readiness an [`Action::Arm`] waits for. One arm is pending per
+/// socket, so the TCP stage merges its read and write needs into one
+/// interest, and widens a pending arm when its needs grow.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Interest {
     pub read: bool,

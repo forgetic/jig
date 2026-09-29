@@ -250,8 +250,10 @@ fn readiness_may_report_more_than_was_asked() {
     assert_eq!(plan(&mut c), [write_action(b"x"), read_action(100)]);
 }
 
+/// The client's case: waiting to read the response while the request body
+/// blocks. Without the widening `Arm`, writability would never be heard of.
 #[test]
-fn a_need_arising_under_a_pending_arm_waits_for_it() {
+fn a_need_arising_under_a_pending_arm_widens_it() {
     let mut c = open(100);
     plan(&mut c);
     c.on_event(read_err(ErrorKind::WouldBlock));
@@ -259,11 +261,34 @@ fn a_need_arising_under_a_pending_arm_waits_for_it() {
     c.send(b"late".to_vec());
     assert_eq!(plan(&mut c), [write_action(b"late")], "writes don't wait");
     c.on_event(wrote(b"late", Err(err(ErrorKind::WouldBlock))));
-    assert_eq!(plan(&mut c), [], "no second arm while one is pending");
-    c.on_event(ready(true, false));
-    assert_eq!(plan(&mut c), [read_action(100)]);
+    assert_eq!(plan(&mut c), [arm(Interest::BOTH)], "widened");
+    assert_eq!(plan(&mut c), [], "and only once");
+    // The one `Ready` completes the widened arm, whichever side it reports.
+    c.on_event(ready(false, true));
+    assert_eq!(plan(&mut c), [write_action(b"late")]);
+    c.on_event(wrote(b"late", Ok(4)));
+    assert_eq!(plan(&mut c), [arm(Interest::READ)], "read is still blocked");
+}
+
+#[test]
+fn a_need_the_pending_arm_covers_does_not_arm_again() {
+    let mut c = open(100);
+    c.send(b"x".to_vec());
+    plan(&mut c);
+    c.on_event(wrote(b"x", Err(err(ErrorKind::WouldBlock))));
     c.on_event(read_err(ErrorKind::WouldBlock));
     assert_eq!(plan(&mut c), [arm(Interest::BOTH)]);
+    c.set_read_limit(50);
+    c.send(b"y".to_vec());
+    assert_eq!(plan(&mut c), [], "both needs are covered");
+    // A need that shrank leaves the arm as it is.
+    c.set_read_limit(0);
+    assert_eq!(plan(&mut c), []);
+    c.on_event(ready(true, false));
+    c.set_read_limit(100);
+    assert_eq!(plan(&mut c), [read_action(100)]);
+    c.on_event(read_err(ErrorKind::WouldBlock));
+    assert_eq!(plan(&mut c), [arm(Interest::BOTH)], "write still blocked");
 }
 
 #[test]

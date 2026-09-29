@@ -753,7 +753,10 @@ pub struct IoError { pub kind: io::ErrorKind, pub os: Option<i32> } // Clone, Eq
    `WouldBlock` is an ordinary `Err` result.
 2. **Arms.** An `Arm` completes with one `Ready`, or with the `Closed` of its
    socket if that comes first. At most one arm is pending per socket; the TCP
-   stage merges read and write interest before arming.
+   stage merges read and write interest before arming. An `Arm` while one is
+   pending **widens** it to the union of both interests and has no event of
+   its own: the pending arm still completes exactly once. One that adds
+   nothing is a no-op.
 3. **Unknown ids.** An action on an unknown `SockId` completes with
    `IoError { kind: NotFound }`. It never panics.
 4. **Buffers.** `Write`'s buffer always comes back in `Wrote`, with the count
@@ -769,10 +772,22 @@ it later (for example with a resolver thread) changes only `perform`.
 full contract.
 
 - **`Ready` and `Closed` carry a `result`.** Items 2 and 3 need an error
-  completion for `Arm` and `Close`. A rejected arm (a second one while one is
-  pending, an empty interest, or an unknown id) completes at once with
-  `Ready { result: Err(..) }`, and the pending arm is left in place. `Closed`
-  completes a pending arm whatever its result.
+  completion for `Arm` and `Close`. A rejected arm (an empty interest with no
+  arm pending, or an unknown id) completes at once with
+  `Ready { result: Err(..) }`. `Closed` completes a pending arm whatever its
+  result.
+
+*Implementation note (wave 2, widening):* wave 1 rejected a second arm while
+one was pending, and `tcp::Conn` could not widen its interest. That deadlocks
+a client whose request body blocks while a read arm waits for the response:
+it never hears the socket drain, and the server waits for the rest of the
+body. TLS wants reads during writes, so this is not far-fetched. Now the
+reactor `modify`s the socket with the union, and `Conn` sends a widening
+`Arm` (stating the whole interest) when its needs outgrow the pending one. An
+empty `Arm` under a pending one is a no-op too, so a planner never sees a
+`Ready` that isn't its arm's completion. A failed widening completes the
+pending arm at once with the error. `tests/tcp_live.rs` is the regression
+test.
 - **Wrong resource kinds.** Reading a listener, say, gives `InvalidInput`.
   Naming a new socket with an id in use gives `AlreadyExists`.
 - **The shapes.** `Interest { read, write }` has `merge`, and an empty one is
@@ -864,10 +879,9 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
     A read never asks for more than the limit leaves room for, so the server
     reads a body exactly.
   - `unsent()` counts the write in flight.
-  - It arms only when no read or write is in flight. A pending arm can't be
-    widened: there is no re-arm action. So a need that arises while an arm
-    is pending waits for that arm's readiness. The server never hits this,
-    because it stops reading before it writes.
+  - It arms only when no read or write is in flight, and widens a pending
+    arm when a need arises under it (§5.4). The server never needed this,
+    because it stops reading before it writes; the client does.
   - On an error it stops all I/O, and the upper stage closes it.
   - It also connects (`Conn::connect`), for the client planner.
 - **`tcp::Listener`.**

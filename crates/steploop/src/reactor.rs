@@ -20,6 +20,13 @@
 //! is safe because oneshot has already disabled the fd and the next arm
 //! re-reports the (persistent) condition.
 //!
+//! An `Arm` on a socket whose arm is still pending widens it: `modify` again
+//! with the union of both interests, and the pending arm's one `Ready` covers
+//! both. Rejecting it instead would leave the planner waiting on the first
+//! arm's readiness, which may never come: a client waiting to read the
+//! response while its request body is blocked on a full socket waits for a
+//! server that is waiting for the rest of the body.
+//!
 //! Unix only: signals are `UnixStream` pairs.
 
 use std::collections::BTreeMap;
@@ -63,8 +70,9 @@ impl Resource {
 
 struct Entry {
     res: Resource,
-    /// An arm is pending: the socket's next readiness is its completion.
-    armed: bool,
+    /// The pending arm's interest, widened by any later arm: the socket's
+    /// next readiness is its completion.
+    armed: Option<Interest>,
 }
 
 /// Owns the loop's fds and the poller. See the module docs.
@@ -167,8 +175,8 @@ impl Reactor {
                         signal: SignalId(id.0),
                     });
                 }
-                _ if entry.armed => {
-                    entry.armed = false;
+                _ if entry.armed.is_some() => {
+                    entry.armed = None;
                     let readiness = Readiness {
                         readable: ev.readable,
                         writable: ev.writable,
@@ -188,7 +196,7 @@ impl Reactor {
 
     /// Drain `actions`, performing each in order, and append its event to
     /// `out`: exactly one per action, except that an accepted `Arm` completes
-    /// later (see [`crate::sys`]).
+    /// later and a widening one joins the pending arm (see [`crate::sys`]).
     pub fn perform(&mut self, actions: &mut Vec<Action>, out: &mut Vec<Event>) {
         for action in actions.drain(..) {
             out.extend(self.perform_one(action));
@@ -313,14 +321,25 @@ impl Reactor {
         retry(|| s.write(data))
     }
 
+    /// Arm, or widen the pending arm. `Ok` means no event now: the (joint)
+    /// arm completes later. `Err` completes it at once, so on a failed
+    /// widening the pending arm is over too.
     fn arm(&mut self, sock: SockId, interest: Interest) -> io::Result<()> {
         let entry = lookup(&mut self.entries, sock)?;
-        if entry.armed || interest.is_empty() {
-            return Err(io::ErrorKind::InvalidInput.into());
+        let pending = entry.armed.unwrap_or_default();
+        let wanted = pending.merge(interest);
+        if wanted == pending {
+            // Nothing new: a no-op under a pending arm, and an arm that could
+            // never complete otherwise.
+            return match entry.armed {
+                Some(_) => Ok(()),
+                None => Err(io::ErrorKind::InvalidInput.into()),
+            };
         }
-        let ev = polling::Event::new(key(sock)?, interest.read, interest.write);
+        entry.armed = None;
+        let ev = polling::Event::new(key(sock)?, wanted.read, wanted.write);
         self.poller.modify(entry.res.fd(), ev)?;
-        entry.armed = true;
+        entry.armed = Some(wanted);
         Ok(())
     }
 
@@ -349,7 +368,7 @@ impl Reactor {
         // Both go through `release`, which deletes before dropping and leaks
         // the fd if the delete fails. If `add` fails, nothing is registered.
         unsafe { self.poller.add(&res.fd(), ev)? };
-        self.entries.insert(id, Entry { res, armed: false });
+        self.entries.insert(id, Entry { res, armed: None });
         Ok(())
     }
 }

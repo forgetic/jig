@@ -179,15 +179,15 @@ impl Conn {
     /// at any error, and reading at any but a write error (see
     /// [`Conn::read_error`]); the upper stage should close it once it has
     /// what it can still read.
-    pub fn error(&self) -> Option<IoError> {
-        self.error
+    pub fn error(&self) -> Option<&IoError> {
+        self.error.as_ref()
     }
 
     /// The error that stopped reading: a read, arm or connect error. A write
     /// error alone leaves reads going, so what the peer sent before it
     /// stopped taking bytes still arrives, up to EOF.
-    pub fn read_error(&self) -> Option<IoError> {
-        self.read_error
+    pub fn read_error(&self) -> Option<&IoError> {
+        self.read_error.as_ref()
     }
 
     /// Bytes queued or being written, not yet taken by the kernel: the
@@ -368,7 +368,7 @@ impl Conn {
 
     /// An error that stops both directions.
     fn fail(&mut self, e: IoError) {
-        self.read_error.get_or_insert(e);
+        self.read_error.get_or_insert_with(|| e.clone());
         self.fail_write(e);
     }
 

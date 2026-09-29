@@ -153,8 +153,8 @@ fn a_read_error_stops_everything_until_closed() {
     plan(&mut c);
     c.send(b"queued".to_vec());
     c.on_event(read_err(ErrorKind::ConnectionReset));
-    assert_eq!(c.error(), Some(err(ErrorKind::ConnectionReset)));
-    assert_eq!(c.read_error(), Some(err(ErrorKind::ConnectionReset)));
+    assert_eq!(c.error(), Some(&err(ErrorKind::ConnectionReset)));
+    assert_eq!(c.read_error(), Some(&err(ErrorKind::ConnectionReset)));
     assert_eq!(c.unsent(), 0, "unsendable bytes are dropped");
     assert_eq!(plan(&mut c), []);
     c.close();
@@ -200,7 +200,7 @@ fn a_write_error_drops_the_bytes() {
     c.send(b"data".to_vec());
     plan(&mut c);
     c.on_event(wrote(b"data", Err(err(ErrorKind::BrokenPipe))));
-    assert_eq!(c.error(), Some(err(ErrorKind::BrokenPipe)));
+    assert_eq!(c.error(), Some(&err(ErrorKind::BrokenPipe)));
     assert_eq!(c.unsent(), 0);
     c.send(b"more".to_vec());
     assert_eq!(c.unsent(), 0, "sending after a failure is dropped");
@@ -215,7 +215,7 @@ fn a_write_error_stops_writing_but_not_reading() {
     // The peer answered and closed while the request was going out.
     c.on_event(wrote(b"request", Err(err(ErrorKind::BrokenPipe))));
     c.on_event(read(b"answer"));
-    assert_eq!(c.error(), Some(err(ErrorKind::BrokenPipe)));
+    assert_eq!(c.error(), Some(&err(ErrorKind::BrokenPipe)));
     assert_eq!(c.read_error(), None, "reading goes on");
     assert_eq!(c.inbound, b"answer");
     // Bytes an upper stage appends directly are dropped at the next plan.
@@ -240,8 +240,8 @@ fn a_read_error_after_a_write_error_stops_reading() {
     plan(&mut c);
     c.on_event(wrote(b"x", Err(err(ErrorKind::BrokenPipe))));
     c.on_event(read_err(ErrorKind::ConnectionReset));
-    assert_eq!(c.error(), Some(err(ErrorKind::BrokenPipe)), "the first");
-    assert_eq!(c.read_error(), Some(err(ErrorKind::ConnectionReset)));
+    assert_eq!(c.error(), Some(&err(ErrorKind::BrokenPipe)), "the first");
+    assert_eq!(c.read_error(), Some(&err(ErrorKind::ConnectionReset)));
     assert_eq!(plan(&mut c), []);
 }
 
@@ -340,7 +340,7 @@ fn a_rejected_arm_is_an_error() {
         sock: S,
         result: Err(err(ErrorKind::InvalidInput)),
     });
-    assert_eq!(c.error(), Some(err(ErrorKind::InvalidInput)));
+    assert_eq!(c.error(), Some(&err(ErrorKind::InvalidInput)));
     assert_eq!(plan(&mut c), []);
 }
 
@@ -475,7 +475,7 @@ fn a_failed_connect_leaves_nothing_to_close() {
     plan(&mut c);
     c.on_event(connected(Err(err(ErrorKind::ConnectionRefused))));
     assert!(c.is_closed());
-    assert_eq!(c.error(), Some(err(ErrorKind::ConnectionRefused)));
+    assert_eq!(c.error(), Some(&err(ErrorKind::ConnectionRefused)));
     c.close();
     assert_eq!(plan(&mut c), []);
 }
@@ -490,7 +490,7 @@ fn a_failed_finish_leaves_a_socket_to_close() {
     plan(&mut c);
     c.on_event(connected(Err(err(ErrorKind::ConnectionRefused))));
     assert!(!c.is_closed() && !c.is_open());
-    assert_eq!(c.error(), Some(err(ErrorKind::ConnectionRefused)));
+    assert_eq!(c.error(), Some(&err(ErrorKind::ConnectionRefused)));
     assert_eq!(plan(&mut c), []);
     c.close();
     assert_eq!(plan(&mut c), [Action::Close { sock: S }]);

@@ -348,7 +348,7 @@ fn a_resolve_failure_fails_the_fetch() {
     let mut t = T::new();
     t.step([fetch_to(F, target(None))]);
     let e = err(ErrorKind::Other);
-    let out = t.reap([resolved(Q, Err(e))]);
+    let out = t.reap([resolved(Q, Err(e.clone()))]);
     assert_eq!(out, [failed(F, ClientError::Resolve(Some(e)))]);
     assert_eq!(t.actions(), []);
     assert!(t.c.idle());
@@ -397,7 +397,7 @@ fn a_failed_finish_closes_its_socket_and_moves_on() {
     t.reap([ready(S1)]);
     assert_eq!(t.actions(), [Action::FinishConnect { sock: S1 }]);
     let refused = err(ErrorKind::ConnectionRefused);
-    assert_eq!(t.reap([connected(S1, Err(refused))]), []);
+    assert_eq!(t.reap([connected(S1, Err(refused.clone()))]), []);
     assert_eq!(
         t.actions(),
         [connect_act(S2, addr(2)), close_act(S1)],
@@ -421,7 +421,7 @@ fn every_address_failing_reports_the_last_error() {
     t.reap([connected(S1, Err(err(ErrorKind::ConnectionRefused)))]);
     assert_eq!(t.actions(), [connect_act(S2, addr(2))]);
     let last = err(ErrorKind::HostUnreachable);
-    let out = t.reap([connected(S2, Err(last))]);
+    let out = t.reap([connected(S2, Err(last.clone()))]);
     assert_eq!(out, [failed(F, ClientError::Connect(last))]);
     assert_eq!(t.actions(), []);
     assert!(t.c.idle());
@@ -892,7 +892,7 @@ fn several_fetches_run_side_by_side() {
     let refused = err(ErrorKind::ConnectionRefused);
     let out = t.reap([
         connected(cg, Ok(Progress::Done)),
-        connected(cf, Err(refused)),
+        connected(cf, Err(refused.clone())),
     ]);
     assert_eq!(out, [failed(F, ClientError::Connect(refused))]);
     let req = request();
@@ -953,7 +953,7 @@ fn errors_read_well() {
     }
     let reset = err(ErrorKind::ConnectionReset);
     assert!(
-        ClientError::Io(reset)
+        ClientError::Io(reset.clone())
             .to_string()
             .starts_with("the upstream connection failed: ")
     );

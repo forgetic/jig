@@ -889,6 +889,31 @@ fn resolve_localhost() {
 }
 
 #[test]
+fn a_failed_lookup_keeps_its_text() {
+    let mut r = Reactor::new().unwrap();
+    let ev = perform1(
+        &mut r,
+        Action::Resolve {
+            query: 8,
+            host: "nonexistent.invalid".to_string(),
+            port: 80,
+        },
+    );
+    let Event::Resolved {
+        query: 8,
+        result: Err(e),
+    } = ev
+    else {
+        panic!("unexpected {ev:?}");
+    };
+    // std reports getaddrinfo's own errors without an OS code, as
+    // "failed to lookup address information: ...".
+    let text = e.to_string();
+    assert!(text.contains("lookup"), "{text}");
+    assert_ne!(text, e.kind.to_string(), "more than the kind");
+}
+
+#[test]
 fn reactor_is_send() {
     fn is_send<T: Send>() {}
     is_send::<Reactor>();

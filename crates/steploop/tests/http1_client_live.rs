@@ -310,6 +310,28 @@ fn an_early_response_arrives_though_the_upload_fails() {
     assert_eq!(body, b"request too large");
 }
 
+#[test]
+fn a_failed_lookup_says_why() {
+    let cmd = ClientCmd::Fetch {
+        fetch: F,
+        target: Target {
+            host: "nonexistent.invalid".into(),
+            port: 80,
+            tls: false,
+            addr: None,
+        },
+        head: b"GET / HTTP/1.1\r\nHost: nonexistent.invalid\r\n\r\n".to_vec(),
+        body: Vec::new(),
+    };
+    let events = fetch(Client::new(Ids::new()), cmd, NoHost);
+    let [ClientEvent::Failed { error, .. }] = &events[..] else {
+        panic!("{events:?}");
+    };
+    assert!(matches!(error, ClientError::Resolve(Some(_))), "{error:?}");
+    let text = error.to_string();
+    assert!(text.contains("failed to lookup address"), "{text}");
+}
+
 // ---------------------------------------------------------------------------
 // TLS
 // ---------------------------------------------------------------------------

@@ -250,11 +250,19 @@ impl Event {
 
 /// An `io::Error` reduced to comparable, cloneable data. `WouldBlock` is just
 /// a kind.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+///
+/// An OS error is kept as its number, which renders std's text. Other errors
+/// keep their text in `message`, when they have more to say than their kind:
+/// a failed name lookup is `Uncategorized`, and would otherwise read as
+/// "uncategorized error" instead of what getaddrinfo said.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IoError {
     pub kind: io::ErrorKind,
     /// The OS error number, when there was one.
     pub os: Option<i32>,
+    /// The error's text, for one without an OS number whose text is not
+    /// just its kind's.
+    pub message: Option<String>,
 }
 
 impl IoError {
@@ -265,15 +273,27 @@ impl IoError {
 
 impl From<io::ErrorKind> for IoError {
     fn from(kind: io::ErrorKind) -> IoError {
-        IoError { kind, os: None }
+        IoError {
+            kind,
+            os: None,
+            message: None,
+        }
     }
 }
 
 impl From<&io::Error> for IoError {
     fn from(e: &io::Error) -> IoError {
+        let os = e.raw_os_error();
+        // An error made from a bare kind renders as the kind; keeping that
+        // text would only make it unequal to `IoError::from(kind)`.
+        let message = match os {
+            Some(_) => None,
+            None => Some(e.to_string()).filter(|text| *text != e.kind().to_string()),
+        };
         IoError {
             kind: e.kind(),
-            os: e.raw_os_error(),
+            os,
+            message,
         }
     }
 }
@@ -286,11 +306,12 @@ impl From<io::Error> for IoError {
 
 impl fmt::Display for IoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.os {
+        match (self.os, &self.message) {
             // std renders the OS message and number, e.g. "Connection
             // refused (os error 111)".
-            Some(code) => io::Error::from_raw_os_error(code).fmt(f),
-            None => self.kind.fmt(f),
+            (Some(code), _) => io::Error::from_raw_os_error(code).fmt(f),
+            (None, Some(message)) => f.write_str(message),
+            (None, None) => self.kind.fmt(f),
         }
     }
 }
@@ -317,6 +338,22 @@ mod tests {
         assert_eq!(ioe.os, None);
         assert_eq!(ioe.to_string(), io::ErrorKind::WouldBlock.to_string());
         assert!(!IoError::from(io::ErrorKind::NotFound).is_would_block());
+        // An io::Error made from a bare kind has nothing more to keep.
+        let bare = io::Error::from(io::ErrorKind::NotFound);
+        assert_eq!(IoError::from(&bare), IoError::from(io::ErrorKind::NotFound));
+    }
+
+    #[test]
+    fn io_error_keeps_the_text_of_an_error_without_an_os_code() {
+        let e = io::Error::other("failed to lookup address information: Name or service not known");
+        let ioe = IoError::from(&e);
+        assert_eq!((ioe.kind, ioe.os), (io::ErrorKind::Other, None));
+        assert_eq!(ioe.to_string(), e.to_string());
+        assert_eq!(ioe.clone(), ioe, "still Clone and Eq");
+        assert_eq!(
+            IoError::from(&io::Error::from_raw_os_error(111)).message,
+            None
+        );
     }
 
     #[test]

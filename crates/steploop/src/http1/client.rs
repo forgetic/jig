@@ -530,7 +530,7 @@ fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientE
                 pipe.send(request);
                 return next(State::Head { pipe, scanned: 0 }, fetch, shared, out);
             }
-            let Some(error) = pipe.tcp.error() else {
+            let Some(error) = pipe.tcp.error().cloned() else {
                 return State::Connecting {
                     pipe,
                     rest,
@@ -569,7 +569,7 @@ fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientE
                 // stopped taking the request may have answered it first.
                 Ok(None) if pipe.ended() => {
                     let error = match pipe.tcp.error() {
-                        Some(e) => ClientError::Io(e),
+                        Some(e) => ClientError::Io(e.clone()),
                         None => ClientError::Protocol(EOF_IN_HEAD),
                     };
                     shared.end(fetch, pipe, Err(error), out)
@@ -759,7 +759,7 @@ impl Pipe {
     /// the response may still arrive (see `crate::tcp`).
     fn flow(&mut self) -> Result<(), ClientError> {
         if let Some(e) = self.tcp.read_error() {
-            return Err(ClientError::Io(e));
+            return Err(ClientError::Io(e.clone()));
         }
         match &mut self.link {
             Link::Plain => Ok(()),

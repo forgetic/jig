@@ -1,0 +1,21 @@
+[package]
+name = "steploop"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version = "1.85"
+description = "A no-await, single-threaded event loop for sans-IO step functions: an owned oneshot reactor, syscall records, and pure TCP/TLS/HTTP-1 planners"
+
+[features]
+default = []
+# The rustls client stage (`steploop::tls`).
+tls = ["dep:rustls", "dep:rustls-pki-types", "dep:webpki-roots"]
+
+[dependencies]
+polling = "3.11"
+socket2 = { version = "0.6", features = ["all"] }
+httparse = "1.10"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+rustls-pki-types = { version = "1", optional = true }
+webpki-roots = { version = "1", optional = true }

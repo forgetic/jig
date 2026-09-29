@@ -8,11 +8,12 @@
 //! author by hand). Changing an internal type's derive must not silently reshape
 //! the file format.
 //!
-//! The file schema supports two simple data-driven scripts — [`Script::Fixed`]
-//! and [`Script::Sequence`] for reply-only data — plus action-aware fixed and
-//! sequence forms for provider failures. It also supports a phase-aware script
-//! that lowers to a data-driven subset of [`Script::action_rule`]. A small
-//! specialized `reference_delivery` built-in is used by Temper's operator demo.
+//! The file schema supports fixed and sequence scripts ([`Script::Fixed`],
+//! [`Script::FixedAction`] and [`Script::Sequence`]), whose actions may be
+//! replies or provider failures. It also supports a phase-aware script that
+//! lowers to [`Script::Phases`], plain data with one cursor per phase. A small
+//! specialized `reference_delivery` built-in ([`Script::ReferenceDelivery`]) is
+//! used by Temper's operator demo.
 //! A phase script inspects each [`RequestView`](crate::RequestView), picks the
 //! first matching phase, and advances that phase's own sequence cursor. This
 //! lets one file model a multi-step workflow (for example architect triage and
@@ -118,13 +119,11 @@
 //!
 //! A `<stop>` is one of `"stop"`, `"tool_calls"`, or `"error"`.
 
-use std::sync::Mutex;
-
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Dialect, ErrorBody, HttpError, Reply, RequestView, Script, ScriptAction, StopReason, Turn,
-    Usage,
+    Dialect, ErrorBody, HttpError, Phase, Phases, Reply, RequestView, Script, ScriptAction,
+    Sequence, StopReason, Turn, Usage,
 };
 
 /// A parsed script file.
@@ -139,11 +138,11 @@ pub enum ScriptFile {
     /// [`Script::Fixed`] for source compatibility; other actions become
     /// [`Script::FixedAction`](crate::Script::FixedAction).
     Fixed(ActionSpec),
-    /// Serve actions in order, repeating the last once exhausted. A reply-only
-    /// sequence becomes [`Script::Sequence`].
+    /// Serve actions in order, repeating the last once exhausted. Becomes
+    /// [`Script::Sequence`].
     Sequence(Vec<ActionSpec>),
     /// Select a named phase from the request and advance that phase's own
-    /// action sequence cursor — becomes a data-driven action rule.
+    /// action sequence cursor. Becomes [`Script::Phases`].
     Phases(Vec<PhaseSpec>),
     /// Built-in behavior for Temper's reference-delivery example.
     ReferenceDelivery(ReferenceDeliverySpec),
@@ -399,11 +398,11 @@ impl ScriptFile {
     pub fn into_script(self) -> Script {
         match self {
             ScriptFile::Fixed(action) => fixed_action_into_script(action),
-            ScriptFile::Sequence(actions) => sequence_actions_into_script(actions),
-            ScriptFile::Phases(phases) => phases_into_script(phases),
-            ScriptFile::ReferenceDelivery(spec) => {
-                crate::reference_delivery::script(spec.greeting_file)
+            ScriptFile::Sequence(actions) => {
+                Script::action_sequence(actions.into_iter().map(ActionSpec::into_action).collect())
             }
+            ScriptFile::Phases(phases) => phases_into_script(phases),
+            ScriptFile::ReferenceDelivery(spec) => Script::ReferenceDelivery(spec),
         }
     }
 }
@@ -415,65 +414,26 @@ fn fixed_action_into_script(action: ActionSpec) -> Script {
     }
 }
 
-fn sequence_actions_into_script(actions: Vec<ActionSpec>) -> Script {
-    let actions: Vec<ScriptAction> = actions.into_iter().map(ActionSpec::into_action).collect();
-
-    if actions
-        .iter()
-        .all(|action| matches!(action, ScriptAction::Reply(_)))
-    {
-        let replies = actions
-            .into_iter()
-            .map(|action| match action {
-                ScriptAction::Reply(reply) => reply,
-                _ => unreachable!("checked above that every action is a reply"),
-            })
-            .collect();
-        Script::sequence(replies)
-    } else {
-        Script::action_sequence(actions)
-    }
-}
-
-/// Lower a phase file script into an action-rule closure with one sequence
-/// cursor per phase. Keeping the cursors independent is what prevents an extra
-/// tool turn in one phase from consuming another phase's reply/action.
+/// Lower a phase file script into [`Script::Phases`] with one sequence cursor
+/// per phase. Keeping the cursors independent is what prevents an extra tool
+/// turn in one phase from consuming another phase's reply/action.
 fn phases_into_script(phases: Vec<PhaseSpec>) -> Script {
-    struct CompiledPhase {
-        when: PhaseMatcher,
-        actions: Vec<ScriptAction>,
-    }
-
-    let phases: Vec<CompiledPhase> = phases
-        .into_iter()
-        .map(|phase| CompiledPhase {
-            when: phase.when,
-            actions: phase
-                .sequence
-                .into_iter()
-                .map(ActionSpec::into_action)
-                .collect(),
-        })
-        .collect();
-    let cursors = Mutex::new(vec![0usize; phases.len()]);
-
-    Script::action_rule(move |view| {
-        let Some(phase_index) = phases.iter().position(|phase| phase.when.matches(view)) else {
-            return ScriptAction::Reply(Reply::text(""));
-        };
-        let phase = &phases[phase_index];
-        if phase.actions.is_empty() {
-            return ScriptAction::Reply(Reply::text(""));
-        }
-
-        let mut cursors = cursors.lock().unwrap_or_else(|p| p.into_inner());
-        let cursor = &mut cursors[phase_index];
-        let chosen = phase.actions[*cursor].clone();
-        if *cursor + 1 < phase.actions.len() {
-            *cursor += 1;
-        }
-        chosen
-    })
+    Script::Phases(Phases(
+        phases
+            .into_iter()
+            .map(|phase| Phase {
+                name: phase.name,
+                when: phase.when,
+                sequence: Sequence::new(
+                    phase
+                        .sequence
+                        .into_iter()
+                        .map(ActionSpec::into_action)
+                        .collect(),
+                ),
+            })
+            .collect(),
+    ))
 }
 
 impl PhaseMatcher {
@@ -738,6 +698,10 @@ mod tests {
         RequestView::new(Dialect::OpenAi, None, vec![], count)
     }
 
+    fn text(content: &str) -> ScriptAction {
+        ScriptAction::Reply(Reply::text(content))
+    }
+
     #[test]
     fn fixed_text_shorthand_round_trips_into_a_text_reply() {
         let file = ScriptFile::from_json_str(r#"{ "fixed": { "text": "hello" } }"#).unwrap();
@@ -758,14 +722,14 @@ mod tests {
     #[test]
     fn sequence_of_text_shorthands_loads_in_order() {
         let json = r#"{ "sequence": [ { "text": "first" }, { "text": "second" } ] }"#;
-        let script = ScriptFile::from_json_str(json).unwrap().into_script();
+        let mut script = ScriptFile::from_json_str(json).unwrap().into_script();
 
         // Drive the sequence through a throwaway view to confirm order + the
         // "last repeats once exhausted" behaviour from M2.
         let view = RequestView::new(Dialect::OpenAi, None, vec![], 0);
-        assert_eq!(script.next_reply(&view), Reply::text("first"));
-        assert_eq!(script.next_reply(&view), Reply::text("second"));
-        assert_eq!(script.next_reply(&view), Reply::text("second"));
+        assert_eq!(script.next_action(&view), text("first"));
+        assert_eq!(script.next_action(&view), text("second"));
+        assert_eq!(script.next_action(&view), text("second"));
     }
 
     #[test]
@@ -793,7 +757,7 @@ mod tests {
               ]
             }
         "#;
-        let script = ScriptFile::from_json_str(json).unwrap().into_script();
+        let mut script = ScriptFile::from_json_str(json).unwrap().into_script();
         let view = RequestView::new(Dialect::Codex, None, vec![], 0);
 
         match script.next_action(&view) {
@@ -847,23 +811,17 @@ mod tests {
               ]
             }
         "#;
-        let script = ScriptFile::from_json_str(json).unwrap().into_script();
+        let mut script = ScriptFile::from_json_str(json).unwrap().into_script();
         let architect = view_with_message("ROLE: architect (triage_workspace capability)");
         let engineer = view_with_message("ROLE: engineer (coding_workspace capability)");
 
-        assert_eq!(
-            script.next_reply(&architect),
-            Reply::text("architect first")
-        );
-        assert_eq!(script.next_reply(&engineer), Reply::text("engineer first"));
+        assert_eq!(script.next_action(&architect), text("architect first"));
+        assert_eq!(script.next_action(&engineer), text("engineer first"));
         // Returning to the architect phase uses the architect cursor, not the
         // global position that the engineer request advanced.
-        assert_eq!(
-            script.next_reply(&architect),
-            Reply::text("architect final")
-        );
-        assert_eq!(script.next_reply(&engineer), Reply::text("engineer final"));
-        assert_eq!(script.next_reply(&engineer), Reply::text("engineer final"));
+        assert_eq!(script.next_action(&architect), text("architect final"));
+        assert_eq!(script.next_action(&engineer), text("engineer final"));
+        assert_eq!(script.next_action(&engineer), text("engineer final"));
     }
 
     #[test]
@@ -883,19 +841,19 @@ mod tests {
               ]
             }
         "#;
-        let script = ScriptFile::from_json_str(json).unwrap().into_script();
+        let mut script = ScriptFile::from_json_str(json).unwrap().into_script();
 
         assert_eq!(
-            script.next_reply(&view_with_tool_results(0)),
-            Reply::text("before tool")
+            script.next_action(&view_with_tool_results(0)),
+            text("before tool")
         );
         assert_eq!(
-            script.next_reply(&view_with_tool_results(1)),
-            Reply::text("after tool")
+            script.next_action(&view_with_tool_results(1)),
+            text("after tool")
         );
         assert_eq!(
-            script.next_reply(&view_with_tool_results(3)),
-            Reply::text("after tool")
+            script.next_action(&view_with_tool_results(3)),
+            text("after tool")
         );
     }
 
@@ -964,6 +922,26 @@ mod tests {
         // silently succeed.
         let err = ScriptFile::from_json_str(r#"{ "rule": {} }"#).unwrap_err();
         assert!(matches!(err, ScriptFileError::Parse(_)));
+    }
+
+    #[test]
+    fn every_file_script_splits_into_data_with_no_rule() {
+        // The binary serves only file scripts, so its provider core never has
+        // to ask the host for a decision.
+        for json in [
+            r#"{ "fixed": { "text": "a" } }"#,
+            r#"{ "fixed": { "http_error": { "status": 500, "code": "c", "message": "m" } } }"#,
+            r#"{ "sequence": [ { "text": "a" } ] }"#,
+            r#"{ "phases": [ { "name": "all", "sequence": [ { "text": "a" } ] } ] }"#,
+            r#"{ "reference_delivery": {} }"#,
+        ] {
+            let (plan, rule) = ScriptFile::from_json_str(json)
+                .unwrap()
+                .into_script()
+                .split();
+            assert!(rule.is_none(), "{json} yielded a rule");
+            assert_ne!(plan, crate::Plan::External, "{json} is not data");
+        }
     }
 
     #[test]

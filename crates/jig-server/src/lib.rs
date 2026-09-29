@@ -46,7 +46,11 @@ impl FakeLlm {
         let server_shutdown = Arc::clone(&shutdown);
         // The runtime thread sends back the bound address (or a bind error).
         let (addr_tx, addr_rx) = std::sync::mpsc::channel::<io::Result<SocketAddr>>();
-        let script = Arc::new(script);
+        // Transitional: scripts now advance through `&mut self`, and this
+        // async server shares one across its task, so it sits behind a lock
+        // until wave 3 replaces the server with the provider core (which owns
+        // its `Plan` outright).
+        let script = Arc::new(Mutex::new(script));
 
         // The request log is shared with the runtime thread (which appends) and
         // kept on the handle (read by `requests()`).

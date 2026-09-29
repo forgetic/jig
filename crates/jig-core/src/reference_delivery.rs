@@ -3,18 +3,22 @@
 //! The public script-file format covers fixed, sequence, and phase fixtures. The
 //! reference-delivery demo also needs a small amount of request-derived data: the
 //! configured target repositories, checkout directory, and role. Keeping that
-//! rule here lets the demo use the vanilla `jig` binary without carrying a
-//! Temper-side helper process.
+//! logic here lets the demo use the vanilla `jig` binary without carrying a
+//! Temper-side helper process. It is a pure function of the request and the
+//! options, so the script carries it as data ([`crate::Script::ReferenceDelivery`])
+//! rather than as a closure.
 
 use std::collections::BTreeSet;
 
 use serde_json::json;
 
-use crate::{Reply, RequestView, Script, StopReason, Turn, Usage};
+use crate::{ReferenceDeliverySpec, Reply, RequestView, StopReason, Turn, Usage};
 
-/// Build the reference-delivery scripted rule.
-pub(crate) fn script(greeting_file: String) -> Script {
-    Script::rule(move |view| reference_delivery_reply(view, &greeting_file))
+impl ReferenceDeliverySpec {
+    /// The reply the reference-delivery built-in serves for `view`.
+    pub fn reply(&self, view: &RequestView) -> Reply {
+        reference_delivery_reply(view, &self.greeting_file)
+    }
 }
 
 fn reference_delivery_reply(view: &RequestView, greeting_file: &str) -> Reply {

@@ -409,6 +409,30 @@ had that mio lacks, is not needed. It would have tested at the wrong level.
   temper's replay matters at the vocabulary boundary, where this does not
   apply.
 
+*Implementation notes (wave 2):* the doc comment of `steploop::tls` has the
+details.
+
+- **The shape.** §5.5's `ClientStage` is called `tls::TlsClient`. Its
+  `pump(&mut StageBufs) -> Result<TlsStatus, TlsError>` works over four owned
+  `Vec`s (`cipher_in`, `cipher_out`, `plain_in`, `plain_out`), and
+  `peer_eof` and `close` feed it the two events that come without bytes.
+  `client_config(roots)` returns a `Result`, because rustls's builder is
+  fallible, although `ring` always supports the default versions.
+- **Resumption is off.** rustls keeps its session cache in the shared
+  `ClientConfig`, behind a mutex, so one connection's handshake would depend
+  on another's. skein built a fresh config per connection, so it never
+  resumed either.
+- **End of stream.** close_notify ends the stream, and any bytes after it are
+  dropped. A bare FIN after the handshake also ends it, as the C port and
+  `Connection: close` clients do, but only at a record boundary: the stage
+  tracks record headers itself because rustls keeps quiet about a partial
+  record. A FIN during the handshake or partway through a record is an error.
+- **Backpressure.** rustls gets more ciphertext only once `plain_in` has taken
+  all it decrypted, and plaintext is encrypted only while `cipher_out` is
+  under the limit (64 KiB by default, as in rustls). Plaintext written during
+  the handshake waits in `plain_out`, not inside rustls, and `close` queues
+  close_notify behind whatever `plain_out` holds.
+
 ### 4.6 HTTP codec: `httparse` plus our own framing
 
 - **Heads** (the server's request heads and the client's response heads) are

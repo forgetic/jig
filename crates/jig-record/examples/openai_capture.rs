@@ -24,7 +24,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use jig_record::fixture::Recording;
-use jig_record::{CapturePump, Provenance, Role, build_recording};
+use jig_record::{Mode, Provenance, Recorder, RecorderConfig, Role, build_recording};
 
 #[derive(Debug)]
 struct Args {
@@ -196,9 +196,9 @@ fn scenario_body(scenario: &str, model: &str) -> serde_json::Value {
 
 /// Issue one plain-HTTP `POST /chat/completions` at the recorder's loopback
 /// `base_url`, draining the response so the full exchange round-trips through
-/// the proxy. The recorder forwards it to the real upstream over HTTPS. The
-/// pump accepts on its own runtime thread, so a plain blocking `std::net`
-/// client suffices here.
+/// the proxy. The recorder forwards it to the real upstream over HTTPS. It
+/// runs on its own loop thread, so a plain blocking `std::net` client
+/// suffices here.
 fn drive_request(authority: &str, bearer: &str, body: &[u8]) -> std::io::Result<()> {
     use std::io::{Read, Write};
 
@@ -234,11 +234,16 @@ fn main() {
     let bearer = resolve_bearer(upstream.as_deref());
     let body = serde_json::to_vec(&scenario_body(&args.scenario, &model)).expect("serialize body");
 
-    // Accept connections on the pump's runtime thread while we drive the
+    // Accept connections on the recorder's loop thread while we drive the
     // request from this one. The recorder answers any non-routable preflight
     // with 204; the chat-completions POST is the capture.
-    let pump = CapturePump::start(upstream.clone()).expect("start capture pump");
-    let base_url = pump.base_url();
+    let recorder = Recorder::start(RecorderConfig {
+        mode: Mode::Pump,
+        upstream_host: upstream.clone(),
+        ..RecorderConfig::default()
+    })
+    .expect("start the recorder");
+    let base_url = recorder.base_url();
     let authority = base_url.strip_prefix("http://").unwrap().to_string();
     eprintln!("recorder listening at {base_url}");
 
@@ -253,9 +258,9 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Give the pump a beat to commit the exchange, then collect it.
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let exchanges = pump.stop();
+    // The response was read to EOF, which the recorder sends only after the
+    // capture is taken, so it is there to collect.
+    let exchanges = recorder.stop();
     let Some((request, response, route)) = exchanges.into_iter().next() else {
         eprintln!("ERROR: no routable exchange captured");
         std::process::exit(1);

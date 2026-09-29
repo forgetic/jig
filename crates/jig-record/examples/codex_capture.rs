@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use jig_record::fixture::Recording;
-use jig_record::{CapturePump, Provenance, Role, build_recording};
+use jig_record::{Mode, Provenance, Recorder, RecorderConfig, Role, build_recording};
 
 #[derive(Debug)]
 struct Args {
@@ -106,11 +106,15 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
 
-    // Capture every routable exchange while `codex` runs, accepting
-    // connections concurrently on the pump's own runtime thread (see
-    // `jig_record::pump` for why concurrency matters here).
-    let pump = CapturePump::start(None).expect("start capture pump");
-    let base_url = format!("{}{}", pump.base_url(), args.base_path);
+    // Capture every routable exchange while `codex` runs. The recorder
+    // serves connections concurrently on its own loop thread, so an idle
+    // pooled connection never holds up the one carrying the request.
+    let recorder = Recorder::start(RecorderConfig {
+        mode: Mode::Pump,
+        ..RecorderConfig::default()
+    })
+    .expect("start the recorder");
+    let base_url = format!("{}{}", recorder.base_url(), args.base_path);
     eprintln!("recorder listening; provider base_url = {base_url}");
 
     // Drive the Codex CLI through the recorder against the real backend.
@@ -157,9 +161,8 @@ fn main() {
     let status = cmd.status().expect("spawn codex");
     eprintln!("codex exited: {status}");
 
-    // Give the pump a beat to record the final exchange, then stop it.
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let exchanges = pump.stop();
+    // Stopping lets a relay still in flight finish, and captures it.
+    let exchanges = recorder.stop();
     eprintln!("total routable exchanges captured: {}", exchanges.len());
     if exchanges.is_empty() {
         eprintln!("ERROR: no routable exchanges captured");

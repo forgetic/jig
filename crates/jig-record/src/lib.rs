@@ -9,40 +9,52 @@
 //!
 //! # Shape
 //!
-//! Mirrors `jig-server`: a single-threaded skein runtime owned by the blocking
-//! entry point, so a synchronous caller can drive it. The pieces are split so
-//! the network-free parts are unit-testable on their own:
+//! Layered like `jig-server` (design `docs/explanation/sans-io-shell.md` §5.1
+//! and §5.7), so each part is tested on its own and an embedder can take only
+//! what it needs:
 //!
-//! - [`redact`] — pure secret redaction over captured headers.
-//! - [`fixture`] — the on-disk [`fixture::Recording`] model and writer.
-//! - [`route`] — path → dialect → upstream, mirroring the server's route table.
-//! - [`proxy`] — the one async, network-touching part: forward + stream-capture.
-//! - [`pump`] — the concurrent capture pump for multi-connection clients: the
-//!   recorder on its own runtime thread while the caller drives the client.
+//! - [`redact`], [`fixture`], [`route`] and [`proxy`]: pure data. Redaction,
+//!   the on-disk [`fixture::Recording`], path → dialect → upstream, and the
+//!   request and response as captured.
+//! - [`relay`], the pure core: client requests in; upstream fetches, relayed
+//!   bytes and captures out.
+//! - [`io`], its I/O step: steploop's HTTP/1 server and client planners on one
+//!   reactor. Pure as well.
+//! - [`host`], its embedder: captures to a channel, log lines to stderr.
+//! - [`Recorder`], the three on one OS thread, which a synchronous caller
+//!   drives: `base_url`, `next_capture`, `stop`.
 //!
 //! # Usage (manual)
 //!
 //! Recording against a real backend is manual — it needs a live API key and
-//! network — so it is not part of `cargo test`. The [`record_once`] entry point
-//! drives one capture; the binary's `record` subcommand wires it to provenance
-//! (capture date, recorder git sha, client label/role) and a `fixtures/` root.
+//! network — so it is not part of `cargo test`; the tests stand local
+//! upstreams in for the real ones. [`record_once`] drives one capture; the
+//! binary's `record` subcommand wires it to provenance (capture date,
+//! recorder git sha, client label/role) and a `fixtures/` root. The capture
+//! examples run a [`Recorder`] in [`Mode::Pump`] while they drive a client.
 
-use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub mod fixture;
+mod handle;
+pub mod host;
+pub mod io;
 pub mod proxy;
-pub mod pump;
 pub mod redact;
+pub mod relay;
 pub mod route;
 
 pub use fixture::{
     CapturedRequest, CapturedResponse, Meta, Recording, Role, body_as_json, redacted_request,
     redacted_response, sse_ends_in_done,
 };
-pub use proxy::{ClientRequest, UpstreamResponse, bind, handle_connection, proxy_once};
-pub use pump::{CapturePump, Exchange};
+pub use handle::{Recorder, RecorderConfig};
+pub use host::RecorderHost;
+pub use io::RecorderIo;
+pub use proxy::{ClientRequest, UpstreamResponse};
 pub use redact::{Header, REDACTED, redact_headers};
+pub use relay::{Exchange, Mode, RecorderCore, UpstreamOverride};
 pub use route::{Route, dialect_slug};
 
 /// Caller-supplied provenance for a recording's `meta.json`.
@@ -109,56 +121,32 @@ pub fn build_recording(
 
 /// One end-to-end capture, returning the path the recording was written to.
 ///
-/// Binds the proxy, prints the loopback `base_url` to `out` so the caller can
-/// point a client at it, accepts exactly one request, forwards it to the
-/// upstream over HTTPS while streaming the response back, then redacts, builds,
-/// and writes the recording under `fixtures_root`.
+/// Starts a [`Recorder`] in [`Mode::Once`], prints its loopback `base_url` to
+/// `out` so the caller can point a client at it, and waits for the first
+/// routable exchange: preflights are answered with `204` and don't count.
+/// That exchange is forwarded upstream over HTTPS while its response streams
+/// back, then redacted, built and written under `fixtures_root`. If it fails,
+/// so does this, and the recorder's log on stderr says why.
 ///
-/// This is the async, network-touching entry point — driven manually against a
-/// real backend, never from `cargo test`. Like every socket-touching future it
-/// must run inside a skein task; `cx` is that task's capability context.
-pub async fn record_once(
-    cx: &skein::cx::Cx,
+/// Driven manually against a real backend, never from `cargo test`.
+pub fn record_once(
     fixtures_root: &Path,
     provenance: &Provenance,
     upstream_host_override: Option<&str>,
-    mut out: impl io::Write,
-) -> io::Result<PathBuf> {
-    let listener = bind(cx).await?;
-    let addr = listener.local_addr()?;
-    writeln!(out, "http://{addr}")?;
+    mut out: impl std::io::Write,
+) -> std::io::Result<PathBuf> {
+    let recorder = Recorder::start(RecorderConfig {
+        mode: Mode::Once,
+        upstream_host: upstream_host_override.map(str::to_string),
+        ..RecorderConfig::default()
+    })?;
+    writeln!(out, "{}", recorder.base_url())?;
     out.flush()?;
 
-    let (request, response, route) = proxy_once(cx, &listener, upstream_host_override).await?;
+    // However long the operator takes to drive the client.
+    let (request, response, route) = recorder.next_capture(Duration::MAX)?;
     let recording = build_recording(&request, &response, &route, provenance);
     recording.write(fixtures_root)
-}
-
-/// Blocking wrapper around [`record_once`] for synchronous callers (the binary).
-///
-/// Owns the single-threaded skein runtime so the `jig` binary stays
-/// runtime-free — the same division of labor as `jig-server`, which hides its
-/// runtime behind `FakeLlm`. The spawned task needs `'static` captures, so the
-/// borrowed parameters are cloned into it.
-pub fn record_once_blocking(
-    fixtures_root: &Path,
-    provenance: &Provenance,
-    upstream_host_override: Option<&str>,
-    out: impl io::Write + Send + 'static,
-) -> io::Result<PathBuf> {
-    let fixtures_root = fixtures_root.to_path_buf();
-    let provenance = provenance.clone();
-    let upstream_host_override = upstream_host_override.map(str::to_string);
-    jig_runtime::block_on(move |cx| async move {
-        record_once(
-            &cx,
-            &fixtures_root,
-            &provenance,
-            upstream_host_override.as_deref(),
-            out,
-        )
-        .await
-    })
 }
 
 #[cfg(test)]

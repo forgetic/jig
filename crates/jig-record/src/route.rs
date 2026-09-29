@@ -1,8 +1,8 @@
 //! Path → dialect → upstream routing for the recorder.
 //!
-//! The recorder reuses the *same* route table as the server (see
-//! `jig_server`'s `dialect_for_path` and bootstrap.md "Why this shape"): the
-//! integration seam is the path a client is pointed at. Each dialect knows the
+//! The recorder reuses the *same* route table as the server
+//! ([`Dialect::for_path`], and bootstrap.md "Why this shape"): the integration
+//! seam is the path a client is pointed at. Each dialect knows the
 //! real upstream host it forwards to, so the recorder can establish the HTTPS
 //! leg without the caller having to spell out the destination.
 
@@ -50,15 +50,10 @@ impl Route {
 }
 
 /// Map a request path to the wire dialect it serves, or `None` for unknown
-/// paths. This mirrors `jig_server`'s route table exactly — the route table is
-/// the single source of dialect truth.
+/// paths: [`Dialect::for_path`], the table `jig_server` serves from, so the
+/// route table stays the single source of dialect truth.
 pub fn dialect_for_path(path: &str) -> Option<Dialect> {
-    match path {
-        "/chat/completions" => Some(Dialect::OpenAi),
-        "/v1/messages" => Some(Dialect::Anthropic),
-        "/backend-api/codex/responses" => Some(Dialect::Codex),
-        _ => None,
-    }
+    Dialect::for_path(path)
 }
 
 /// The canonical upstream host for a dialect.

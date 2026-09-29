@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use jig_record::fixture::Recording;
-use jig_record::{CapturePump, Provenance, Role, build_recording};
+use jig_record::{Mode, Provenance, Recorder, RecorderConfig, Role, build_recording};
 
 #[derive(Debug)]
 struct Args {
@@ -96,11 +96,15 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
 
-    // Capture every routable exchange while `claude` runs, accepting
-    // connections concurrently on the pump's own runtime thread (see
-    // `jig_record::pump` for why concurrency matters here).
-    let pump = CapturePump::start(None).expect("start capture pump");
-    let base_url = pump.base_url();
+    // Capture every routable exchange while `claude` runs. The recorder
+    // serves connections concurrently on its own loop thread, so the pool of
+    // connections `claude` opens never holds up the one carrying the `POST`.
+    let recorder = Recorder::start(RecorderConfig {
+        mode: Mode::Pump,
+        ..RecorderConfig::default()
+    })
+    .expect("start the recorder");
+    let base_url = recorder.base_url();
     eprintln!("recorder listening at {base_url}");
 
     // Drive the claude CLI through the recorder against the real backend.
@@ -158,9 +162,8 @@ fn main() {
     let status = child.wait().expect("wait claude");
     eprintln!("claude exited: {status}");
 
-    // Give the pump a beat to record the final exchange, then stop it.
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let exchanges = pump.stop();
+    // Stopping lets a relay still in flight finish, and captures it.
+    let exchanges = recorder.stop();
     eprintln!("total routable exchanges captured: {}", exchanges.len());
     if exchanges.is_empty() {
         eprintln!("ERROR: no routable exchanges captured");

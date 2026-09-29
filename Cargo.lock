@@ -373,11 +373,15 @@ name = "jig-record"
 version = "0.1.0"
 dependencies = [
  "jig-core",
- "jig-runtime",
+ "jig-server",
+ "rcgen",
+ "rustls",
  "serde",
  "serde_json",
- "skein",
+ "socket2",
+ "steploop",
  "tempfile",
+ "xtask",
 ]
 
 [[package]]
@@ -733,15 +737,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
-]
-
-[[package]]
 name = "rustls-pki-types"
 version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -870,11 +865,7 @@ dependencies = [
  "parking_lot",
  "pin-project",
  "polling",
- "ring",
  "rmp-serde",
- "rustls",
- "rustls-pemfile",
- "rustls-pki-types",
  "serde",
  "serde_json",
  "sha1",
@@ -887,7 +878,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "visibility",
- "webpki-roots",
 ]
 
 [[package]]

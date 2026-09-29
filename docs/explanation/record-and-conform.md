@@ -99,8 +99,9 @@ recorder (online, as `subject` recordings).
 For the subject leg jig provides the building blocks; the SDK's repo owns the
 harness and the committed recordings:
 
-- `jig_record::CapturePump` — the recorder on its own runtime thread, so the
-  SDK can drive a request through it synchronously;
+- `jig_record::Recorder` in `Mode::Pump` — the recorder on its own loop
+  thread, so the SDK can drive requests through it synchronously and collect
+  the exchanges with `stop()`;
 - `jig_record::build_recording` + `Recording::write` — redact and persist a
   `role: subject` recording under the SDK's own fixture tree;
 - `jig_core::conform::grammar` — reduce the subject's recorded request body to

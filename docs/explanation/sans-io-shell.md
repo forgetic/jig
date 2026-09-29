@@ -373,6 +373,17 @@ had that mio lacks, is not needed. It would have tested at the wrong level.
   request) are newtypes allocated the same way by whichever step starts the
   operation.
 
+*Implementation notes (wave 2):*
+
+- **`sys::Ids`** counts up from 1 over the lower half of the id space;
+  signals count down from the top. Planners that share a reactor must not
+  hand out the same id, so a planner that owns its allocator takes a
+  disjoint range from `Ids::split`. The recorder's server and client
+  planners are the case in point.
+- **`http1::server::Server::new(ids, config)`** takes its allocator and
+  draws the listener's id first. The embedder adopts the listener under
+  `server.listener()`. A `ReqId` is its connection's `SockId` value.
+
 ### 4.4 Time
 
 - `Time(u64)` is monotonic nanoseconds since the loop started. It is `Copy`,
@@ -408,6 +419,30 @@ had that mio lacks, is not needed. It would have tested at the wrong level.
   RNG plus custom key-exchange groups, and a `TimeProvider` fed from the loop.
   temper's replay matters at the vocabulary boundary, where this does not
   apply.
+
+*Implementation notes (wave 2):* the doc comment of `steploop::tls` has the
+details.
+
+- **The shape.** §5.5's `ClientStage` is called `tls::TlsClient`. Its
+  `pump(&mut StageBufs) -> Result<TlsStatus, TlsError>` works over four owned
+  `Vec`s (`cipher_in`, `cipher_out`, `plain_in`, `plain_out`), and
+  `peer_eof` and `close` feed it the two events that come without bytes.
+  `client_config(roots)` returns a `Result`, because rustls's builder is
+  fallible, although `ring` always supports the default versions.
+- **Resumption is off.** rustls keeps its session cache in the shared
+  `ClientConfig`, behind a mutex, so one connection's handshake would depend
+  on another's. skein built a fresh config per connection, so it never
+  resumed either.
+- **End of stream.** close_notify ends the stream, and any bytes after it are
+  dropped. A bare FIN after the handshake also ends it, as the C port and
+  `Connection: close` clients do, but only at a record boundary: the stage
+  tracks record headers itself because rustls keeps quiet about a partial
+  record. A FIN during the handshake or partway through a record is an error.
+- **Backpressure.** rustls gets more ciphertext only once `plain_in` has taken
+  all it decrypted, and plaintext is encrypted only while `cipher_out` is
+  under the limit (64 KiB by default, as in rustls). Plaintext written during
+  the handshake waits in `plain_out`, not inside rustls, and `close` queues
+  close_notify behind whatever `plain_out` holds.
 
 ### 4.6 HTTP codec: `httparse` plus our own framing
 
@@ -820,6 +855,43 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
   raw bytes). The chunked decoder exists as a tested pure function for
   temper's model client.
 
+*Implementation notes (wave 2):*
+
+- **`tcp::Conn`.**
+  - `inbound` and `outbound` are public fields, so an upper stage can borrow
+    one while it borrows the other.
+  - `set_read_limit(n)` is the only read control, and zero stops reading.
+    A read never asks for more than the limit leaves room for, so the server
+    reads a body exactly.
+  - `unsent()` counts the write in flight.
+  - It arms only when no read or write is in flight. A pending arm can't be
+    widened: there is no re-arm action. So a need that arises while an arm
+    is pending waits for that arm's readiness. The server never hits this,
+    because it stops reading before it writes.
+  - On an error it stops all I/O, and the upper stage closes it.
+  - It also connects (`Conn::connect`), for the client planner.
+- **`tcp::Listener`.**
+  - It has one accept in flight at a time.
+  - Every accept error other than `WouldBlock` backs off for 10 ms.
+  - Its timer is a plain field, not a `Deadlines` heap: it has only one. The
+    server needs no heap either, since shutdown's grace ends at the same
+    instant for every connection.
+- **`http1::server`.**
+  - The vocabulary: `ServerEvent::{Request, Gone, Flushed, Signal}` out and
+    `ServerCmd::{Respond, RawStart, RawBytes, RawEnd, Shutdown}` in.
+  - `Server` implements `IoStep` directly. Its inherent `reap`, `command`
+    and `plan` serve adapters that translate to a core's own types.
+  - `Gone` is also emitted when the grace period cuts a response.
+  - Nothing is read after the request. A client that disconnects while the
+    core decides is noticed only when the response is written.
+  - The planner adds no headers to the core's responses, so
+    `Connection: close` is the core's to send. jig's responses already
+    include it.
+  - Refusals carry a `text/plain` body equal to the reason phrase.
+  - A socket accepted during shutdown is closed at once.
+  - Every reap and every step sweeps all connections through one `match` on
+    the connection's state. There is no tracking of which ones changed.
+
 ### 5.6 jig-server
 
 - **Provider core (L1, pure):**
@@ -855,6 +927,30 @@ socket ◀─Write── tcp.outbound ◀─ [tls: writer → write_tls]        
   The host appends records to the shared log and answers `Decide` with the
   rule closure. `requests()` clones the log. `Drop` raises the signal and
   joins.
+
+*As built (wave 3):*
+
+- **The parts are public,** so an embedder can build its own loop:
+  - `io::ServerIo` translates between the planner's vocabulary and the
+    core's. It drops `Gone`, `Flushed` and foreign signals: the core never
+    relays, and an undecided request is released by its decision (whose
+    response the server ignores).
+  - `host::FakeLlmHost` appends to a `RequestLog`
+    (`Arc<Mutex<Vec<RecordedRequest>>>`) and calls the rule in the same
+    round. A `Decide` with no rule gets a `500` (`no_rule`), not a panic on
+    the loop thread.
+
+  `io` holds the adapter, not a planner config: `FakeLlm` uses the planner's
+  default `Config`.
+- **All setup happens on the caller's thread,** not only the bind. `Reactor`
+  is `Send`, so `start` builds it, adopts the listener and creates the stop
+  signal before moving them to the loop thread. Startup errors return from
+  `start` with no channel. The thread (`jig-fakellm`) only runs `run`, and
+  prints a loop error with `eprintln!`.
+- **`requests()` is in script order,** which is the order requests
+  completed, not the order clients connected.
+- **`jig-server` declares `rust-version = "1.85"`,** like `steploop`, and
+  depends only on `jig-core` and `steploop`.
 
 ### 5.7 jig-record
 

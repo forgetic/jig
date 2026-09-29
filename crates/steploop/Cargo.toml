@@ -19,6 +19,11 @@ socket2 = { version = "0.6", features = ["all"] }
 # the tree through socket2.
 libc = "0.2"
 httparse = "1.10"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 rustls-pki-types = { version = "1", optional = true }
 webpki-roots = { version = "1", optional = true }
+
+[dev-dependencies]
+# Test PKI for the TLS stage's in-memory handshakes; `ring` matches the stage's
+# provider, so no second crypto backend is built.
+rcgen = { version = "0.14", default-features = false, features = ["ring"] }

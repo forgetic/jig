@@ -1,114 +1,90 @@
 //! The embeddable `jig` service API.
 //!
-//! [`FakeLlm`] spawns one dedicated OS thread that hosts a **single-threaded**
-//! skein runtime and serves a [`Script`] over HTTP until the handle is
-//! dropped. Because the runtime lives on its own thread, callers never share
-//! its executor: a *synchronous* test can [`FakeLlm::start`], make blocking
-//! HTTP calls against [`FakeLlm::base_url`], and let [`Drop`] tear the thread
-//! down — no async runtime of its own (see bootstrap.md "Public API").
+//! jig is split so that each user takes only the layers it needs (design
+//! `docs/explanation/sans-io-shell.md` §5.1 and §5.6):
 //!
-//! [`provider`] is the same service with the I/O taken out: a pure step
-//! function from request messages to responses, and [`serve_request`] drives it
-//! in process.
+//! - [`provider`], the pure core: HTTP request messages in; responses, request
+//!   records and rule decisions out. [`serve_request`] drives it in process,
+//!   with no I/O at all (§8).
+//! - [`ServerIo`], its I/O step: steploop's HTTP/1 server planner, translated
+//!   to the core's vocabulary. Pure as well.
+//! - [`FakeLlmHost`], its embedder: it keeps the [`RequestLog`] and answers
+//!   rule decisions with the script's closure.
+//! - [`FakeLlm`], the three on one OS thread, driven by [`steploop::run::run`]
+//!   over a loopback listener.
+//!
+//! Each is public, so an embedder can build its own loop from the parts
+//! [`FakeLlm`] uses.
 
-use std::io;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::net::{SocketAddr, TcpListener};
+use std::sync::{Arc, PoisonError};
 use std::thread::JoinHandle;
 
 use jig_core::{RecordedRequest, Script};
-use skein::sync::Notify;
+use steploop::http1::server::{Config, Server};
+use steploop::reactor::{Reactor, SignalSender};
+use steploop::run::{NoTap, run};
+use steploop::sys::Ids;
 
+pub mod host;
+pub mod io;
 pub mod provider;
-mod server;
 
+pub use host::{FakeLlmHost, RequestLog};
+pub use io::ServerIo;
 pub use provider::{Provider, ProviderConfig, serve_request};
-
-use server::RequestLog;
 
 /// A running fake LLM provider.
 ///
-/// Holds the runtime thread's join handle, the bound address (for
-/// [`base_url`](FakeLlm::base_url)), and the shutdown signal. Dropping it
-/// signals shutdown and joins the thread.
+/// Its loop runs on a thread of its own, so a *synchronous* test can
+/// [`start`](FakeLlm::start) one, make blocking HTTP calls against
+/// [`base_url`](FakeLlm::base_url), and let [`Drop`] stop it, with no runtime
+/// of its own. Connections are served concurrently: an idle or slow client
+/// doesn't hold up the others.
 pub struct FakeLlm {
     addr: SocketAddr,
-    /// Shared with the serve loop; `notify_one` is synchronous and stores the
-    /// notification if the loop is not waiting yet, so a `Drop` racing the
-    /// accept loop never loses the signal.
-    shutdown: Arc<Notify>,
+    /// Raised by `Drop`; the loop turns it into [`provider::Comp::Stop`].
+    stop: SignalSender,
     thread: Option<JoinHandle<()>>,
-    /// Shared with the runtime thread, which appends one entry per request.
+    /// Appended to by the loop thread's host.
     log: RequestLog,
 }
 
 impl FakeLlm {
-    /// Spawn a dedicated OS thread hosting a single-threaded skein runtime
-    /// that serves `script` until this handle is dropped.
+    /// Serve `script` on a loopback port until this handle is dropped.
     ///
-    /// The listener is bound on the runtime thread *before* this returns, so
-    /// [`base_url`](FakeLlm::base_url) is valid the instant `start` yields.
-    pub fn start(script: Script) -> io::Result<FakeLlm> {
-        let shutdown = Arc::new(Notify::new());
-        let server_shutdown = Arc::clone(&shutdown);
-        // The runtime thread sends back the bound address (or a bind error).
-        let (addr_tx, addr_rx) = std::sync::mpsc::channel::<io::Result<SocketAddr>>();
-        // Transitional: scripts now advance through `&mut self`, and this
-        // async server shares one across its task, so it sits behind a lock
-        // until wave 3 replaces the server with the provider core (which owns
-        // its `Plan` outright).
-        let script = Arc::new(Mutex::new(script));
+    /// Everything that can fail is set up here, on the caller's thread, before
+    /// the loop thread starts, so errors come back from `start` and
+    /// [`base_url`](FakeLlm::base_url) is valid as soon as it returns: the
+    /// listener is bound, and connections wait in its backlog until the loop
+    /// accepts them.
+    pub fn start(script: Script) -> std::io::Result<FakeLlm> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let addr = listener.local_addr()?;
+        let (plan, rule) = script.split();
 
-        // The request log is shared with the runtime thread (which appends) and
-        // kept on the handle (read by `requests()`).
-        let log: RequestLog = Arc::new(Mutex::new(Vec::new()));
-        let server_log = Arc::clone(&log);
+        let server = Server::new(Ids::new(), Config::default());
+        let mut reactor = Reactor::new()?;
+        reactor.adopt_listener(server.listener(), listener)?;
+        let (stop_id, stop) = reactor.signal()?;
 
+        let log = RequestLog::default();
+        let mut host = FakeLlmHost::new(Arc::clone(&log), rule);
+        let mut io = ServerIo::new(server, stop_id);
+        let mut provider = Provider::new(plan);
         let thread = std::thread::Builder::new()
-            .name("jig-runtime".to_string())
+            .name("jig-fakellm".to_string())
             .spawn(move || {
-                // Sockets need a task's capability context, so the whole serve
-                // future runs as a spawned task with its `Cx` handed in
-                // explicitly (skein has no ambient context).
-                jig_runtime::block_on(move |cx| async move {
-                    // Bind first; report the result back to `start`.
-                    let listener = match skein::net::TcpListener::bind(("127.0.0.1", 0)).await {
-                        Ok(listener) => listener,
-                        Err(err) => {
-                            let _ = addr_tx.send(Err(err));
-                            return;
-                        }
-                    };
-                    match listener.local_addr() {
-                        Ok(addr) => {
-                            if addr_tx.send(Ok(addr)).is_err() {
-                                // Caller gave up before we bound; nothing to serve.
-                                return;
-                            }
-                        }
-                        Err(err) => {
-                            let _ = addr_tx.send(Err(err));
-                            return;
-                        }
-                    }
-
-                    server::serve(&cx, listener, script, server_log, server_shutdown).await;
-                });
+                // Only `Drop` waits for this thread, and it can't return an
+                // error, so stderr is the one place left to report it.
+                if let Err(err) = run(&mut provider, &mut io, &mut host, &mut reactor, &mut NoTap) {
+                    eprintln!("jig: the FakeLlm loop failed: {err}");
+                }
             })?;
-
-        // Wait for the bind result. If the thread died before sending, surface
-        // a clean error instead of hanging.
-        let addr = match addr_rx.recv() {
-            Ok(result) => result?,
-            Err(_) => {
-                let _ = thread.join();
-                return Err(io::Error::other("jig runtime thread exited before binding"));
-            }
-        };
 
         Ok(FakeLlm {
             addr,
-            shutdown,
+            stop,
             thread: Some(thread),
             log,
         })
@@ -119,22 +95,27 @@ impl FakeLlm {
         format!("http://{}", self.addr)
     }
 
-    /// A snapshot of every request the server has handled, in arrival order.
+    /// A snapshot of every request handled so far, in the order the script
+    /// saw them (with concurrent clients, the order their requests completed).
     ///
-    /// Returns a clone so the caller can assert at leisure without holding the
-    /// lock. Safe to call from the caller's thread while the runtime thread
-    /// keeps serving — the log is shared behind a `Mutex`.
+    /// Returns a clone, so the caller can assert at leisure while the loop
+    /// keeps serving.
     pub fn requests(&self) -> Vec<RecordedRequest> {
-        self.log.lock().unwrap_or_else(|p| p.into_inner()).clone()
+        self.log
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 }
 
 impl Drop for FakeLlm {
+    /// Stop the loop and wait for it, so the port is released on return.
+    /// Responses still being written get the shutdown grace
+    /// ([`ProviderConfig::grace`], 1 s) and are then cut, so a client that
+    /// stops reading can't hold this up for longer.
     fn drop(&mut self) {
-        // Signal shutdown; the accept loop selects on this and returns.
-        self.shutdown.notify_one();
-        // Join the runtime thread so the port is released by the time `drop`
-        // returns.
+        // A failed raise means the loop has already ended.
+        let _ = self.stop.raise();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

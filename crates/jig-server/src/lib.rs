@@ -6,6 +6,10 @@
 //! its executor: a *synchronous* test can [`FakeLlm::start`], make blocking
 //! HTTP calls against [`FakeLlm::base_url`], and let [`Drop`] tear the thread
 //! down — no async runtime of its own (see bootstrap.md "Public API").
+//!
+//! [`provider`] is the same service with the I/O taken out: a pure step
+//! function from request messages to responses, and [`serve_request`] drives it
+//! in process.
 
 use std::io;
 use std::net::SocketAddr;
@@ -15,7 +19,10 @@ use std::thread::JoinHandle;
 use jig_core::{RecordedRequest, Script};
 use skein::sync::Notify;
 
+pub mod provider;
 mod server;
+
+pub use provider::{Provider, ProviderConfig, serve_request};
 
 use server::RequestLog;
 
@@ -46,7 +53,11 @@ impl FakeLlm {
         let server_shutdown = Arc::clone(&shutdown);
         // The runtime thread sends back the bound address (or a bind error).
         let (addr_tx, addr_rx) = std::sync::mpsc::channel::<io::Result<SocketAddr>>();
-        let script = Arc::new(script);
+        // Transitional: scripts now advance through `&mut self`, and this
+        // async server shares one across its task, so it sits behind a lock
+        // until wave 3 replaces the server with the provider core (which owns
+        // its `Plan` outright).
+        let script = Arc::new(Mutex::new(script));
 
         // The request log is shared with the runtime thread (which appends) and
         // kept on the handle (read by `requests()`).

@@ -208,10 +208,11 @@ pub fn parse_anthropic_sse(bytes: &[u8]) -> Result<Reply, ParseError> {
                 {
                     stop_reason = Some(map_stop_reason(reason)?);
                 }
-                if let Some(usage) = data.get("usage") {
-                    if let Some(out) = u32_field(usage, "output_tokens") {
-                        output_tokens = out;
-                    }
+                if let Some(out) = data
+                    .get("usage")
+                    .and_then(|usage| u32_field(usage, "output_tokens"))
+                {
+                    output_tokens = out;
                 }
             }
             // `content_block_stop`, `message_stop`, `ping`, and anything else

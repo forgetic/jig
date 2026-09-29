@@ -316,6 +316,7 @@ dependencies = [
  "jig-runtime",
  "serde_json",
  "skein",
+ "steploop",
 ]
 
 [[package]]

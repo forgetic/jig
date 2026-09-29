@@ -156,10 +156,11 @@ pub fn parse_codex_sse(bytes: &[u8]) -> Result<Reply, ParseError> {
                     .get("output_index")
                     .and_then(Value::as_u64)
                     .unwrap_or(0);
-                if let Some(call) = call_at_mut(&mut calls, output_index) {
-                    if let Some(delta) = data.get("delta").and_then(Value::as_str) {
-                        call.partial_args.push_str(delta);
-                    }
+                if let (Some(call), Some(delta)) = (
+                    call_at_mut(&mut calls, output_index),
+                    data.get("delta").and_then(Value::as_str),
+                ) {
+                    call.partial_args.push_str(delta);
                 }
             }
             "response.output_item.done" => {
@@ -169,14 +170,12 @@ pub fn parse_codex_sse(bytes: &[u8]) -> Result<Reply, ParseError> {
                     .unwrap_or(0);
                 // A done item carries the full, final arguments string; prefer it
                 // over the accumulated deltas when present.
-                if let Some(args) = data
+                let args = data
                     .get("item")
                     .and_then(|i| i.get("arguments"))
-                    .and_then(Value::as_str)
-                {
-                    if let Some(call) = call_at_mut(&mut calls, output_index) {
-                        call.final_args = Some(args.to_string());
-                    }
+                    .and_then(Value::as_str);
+                if let (Some(args), Some(call)) = (args, call_at_mut(&mut calls, output_index)) {
+                    call.final_args = Some(args.to_string());
                 }
             }
             "response.completed" => {

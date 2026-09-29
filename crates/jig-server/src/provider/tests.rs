@@ -564,6 +564,25 @@ fn done_waits_for_undecided_requests() {
 }
 
 #[test]
+fn a_gone_request_is_owed_no_decision() {
+    let (plan, _rule) = Script::rule(|_| Reply::text("ok")).split();
+    let mut provider = Provider::new(plan);
+    step(&mut provider, vec![arrive(3, chat("hi")), Comp::Stop]);
+    assert!(!provider.done());
+
+    // The host never answered, and the grace ran out.
+    let gone = Comp::Gone { req: ReqId(3) };
+    assert_eq!(step(&mut provider, vec![gone.clone()]), (vec![], vec![]));
+    assert!(provider.done(), "nothing is owed any more");
+    // A late decision, or a second Gone, finds nothing.
+    let late = Comp::Decision {
+        req: ReqId(3),
+        action: ScriptAction::Reply(Reply::text("late")),
+    };
+    assert_eq!(step(&mut provider, vec![late, gone]), (vec![], vec![]));
+}
+
+#[test]
 fn requests_after_stop_are_still_answered() {
     let mut provider = provider_for(Script::Fixed(Reply::text("ok")));
     step(&mut provider, vec![Comp::Stop]);

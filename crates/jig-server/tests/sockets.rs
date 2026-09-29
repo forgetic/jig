@@ -10,7 +10,7 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,8 +23,9 @@ use jig_server::provider::{Comp, HostReq};
 use jig_server::{FakeLlm, FakeLlmHost, Provider, ProviderConfig, RequestLog, ServerIo};
 use steploop::http1::server::{Config, Server};
 use steploop::reactor::Reactor;
-use steploop::run::{IoStep, Tap, replay, run};
-use steploop::sys::Ids;
+use steploop::run::{IoStep, NoHost, Observe, Tap, replay, run};
+use steploop::sys::{Action, Event, Ids};
+use steploop::time::Time;
 
 const OPENAI: &str = "/chat/completions";
 const ANTHROPIC: &str = "/v1/messages";
@@ -395,6 +396,59 @@ fn a_rule_sees_each_view_and_keeps_its_state() {
         &exchange(addr, &chat(ANTHROPIC, "two")),
         &sse(Dialect::Anthropic, &text("OpenAi:one,Anthropic:two")),
     );
+}
+
+/// Says when the core has asked for a decision.
+struct OnDecide(Option<mpsc::Sender<()>>);
+
+impl Observe<Comp, HostReq> for OnDecide {
+    fn polled(&mut self, _now: Time, _events: &[Event]) {}
+
+    fn host_reqs(&mut self, reqs: &[HostReq]) {
+        if reqs.iter().any(|r| matches!(r, HostReq::Decide { .. })) {
+            if let Some(tx) = self.0.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    fn host_answers(&mut self, _answers: &[Comp]) {}
+
+    fn actions(&mut self, _actions: &[Action]) {}
+}
+
+/// A host that never answers `Decide` must not keep the loop from
+/// stopping: the undecided request gets the grace, then it is gone.
+#[test]
+fn stop_ends_the_loop_though_a_decision_never_comes() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (plan, _rule) = echo_or_big().split();
+    let server = Server::new(Ids::new(), Config::default());
+    let mut reactor = Reactor::new().unwrap();
+    reactor.adopt_listener(server.listener(), listener).unwrap();
+    let (stop_id, stop) = reactor.signal().unwrap();
+    let mut io = ServerIo::new(server, stop_id);
+    let mut provider = Provider::new(plan);
+    let (asked_tx, asked) = mpsc::channel();
+    let (done_tx, done) = mpsc::channel();
+    thread::spawn(move || {
+        let mut tap = OnDecide(Some(asked_tx));
+        let result = run(&mut provider, &mut io, &mut NoHost, &mut reactor, &mut tap);
+        let _ = done_tx.send(result.map_err(|e| e.to_string()));
+    });
+
+    let mut client = connect(addr);
+    client.write_all(&chat(OPENAI, "anyone?")).unwrap();
+    asked.recv_timeout(TIMEOUT).expect("the core asks");
+    let started = Instant::now();
+    stop.raise().unwrap();
+    let result = done
+        .recv_timeout(grace() + MARGIN)
+        .expect("the loop ends after the grace");
+    result.unwrap();
+    assert!(started.elapsed() >= grace(), "the request had its grace");
+    assert_closed_without_response(&mut client);
 }
 
 // -------------------------------------------------------------------- replay

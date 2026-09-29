@@ -510,6 +510,14 @@ We change the data flow instead:
   `action_sequence`, `fixed_action`). `next_reply` is removed. `next_action`
   becomes `&mut self` and remains a convenience for direct users; it calls
   the rule itself.
+- **As built (wave 1):** `Script::Fixed` keeps holding a `Reply`, beside
+  `FixedAction(ScriptAction)`, because the integration tests (and temper)
+  construct `Script::Fixed(reply)` and must pass unchanged. Reply and action
+  sequences share one `Sequence` variant, and reply and action rules one
+  `Rule` variant. `ReferenceDelivery` holds its `ReferenceDeliverySpec`, and
+  `Phases` holds one `Sequence` per phase. The full shape is
+  `Script::{Fixed(Reply), FixedAction(..), Sequence(..), Phases(..), ReferenceDelivery(..), Rule(..)}`,
+  with `Plan::{Fixed(ScriptAction), Sequence(..), Phases(..), ReferenceDelivery(..), External}`.
 
 ### 4.11 Static traits for the loop, and why not `dyn`
 
@@ -912,7 +920,7 @@ M4 records what actually came up.
    instead of waiting forever for a stalled client.
 4. **Scripts.**
    - Rule closures are `FnMut + Send`.
-   - `Script::Fixed` holds a `ScriptAction` (`From<Reply>` still works).
+   - `Script::Fixed` still holds a `Reply`, as before ([§4.10](#410-scripts-become-data-rule-closures-are-answered-by-the-embedder)).
    - `next_action` takes `&mut self`.
    - `next_reply` is removed.
    - Script files and reference delivery are data variants.
@@ -924,7 +932,10 @@ M4 records what actually came up.
    dependency. jig depends on `steploop`.
 
 temper's bump then needs:
-- `Script::Fixed(reply)` → `Script::Fixed(reply.into())`, or the constructor;
+- `script.next_reply(view)` inside `Script::rule` closures (four
+  `live_manifest` fakes that wrap a file script) →
+  `Script::action_rule` with `script.next_action(view)`, which also stops
+  HTTP errors in those scripts from degrading to empty replies;
 - `jig_request_oracle.rs` switched to `Recorder`;
 - `late_stream_jig.rs` using `&mut script`;
 - the `jig-runtime` dev-dependency dropped.

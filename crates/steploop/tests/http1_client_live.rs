@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::convert::Infallible;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -20,7 +20,7 @@ use steploop::http1::client::{Client, ClientCmd, ClientError, ClientEvent, Targe
 use steploop::http1::server::{Config, Server, ServerCmd, ServerEvent};
 use steploop::http1::{FetchId, ReqId};
 use steploop::reactor::Reactor;
-use steploop::run::{Core, Host, IoStep, NoHost, NoTap, Observe, Tap, replay, run};
+use steploop::run::{Core, Host, IoStep, NoHost, NoTap, Observe, Tap, earliest, replay, run};
 use steploop::sys::{Action, Event, Ids};
 use steploop::tcp::READ_CHUNK;
 use steploop::time::Time;
@@ -267,6 +267,71 @@ fn a_refused_connection_fails_the_fetch() {
     assert_eq!(e.kind, io::ErrorKind::ConnectionRefused);
 }
 
+#[test]
+fn an_early_response_arrives_though_the_upload_fails() {
+    const TOO_LARGE: &[u8] = b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 17\r\nConnection: close\r\n\r\nrequest too large";
+    let (listener, addr) = listen();
+    let upstream = thread::spawn(move || {
+        let mut s = accept(&listener);
+        let mut got = Vec::new();
+        let mut buf = [0u8; 1024];
+        while !got.windows(4).any(|w| w == b"\r\n\r\n") {
+            let n = s.read(&mut buf).unwrap();
+            assert!(n > 0, "the head ended early");
+            got.extend_from_slice(&buf[..n]);
+        }
+        s.write_all(TOO_LARGE).unwrap();
+        // FIN first, so the client reads the response and then EOF. The
+        // close that follows resets, since the upload was never read, and
+        // the client's next write fails.
+        s.shutdown(Shutdown::Write).unwrap();
+    });
+    let cmd = ClientCmd::Fetch {
+        fetch: F,
+        target: Target {
+            host: "localhost".into(),
+            port: addr.port(),
+            tls: false,
+            addr: Some(addr),
+        },
+        head: format!(
+            "POST /v1/messages HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {BIG}\r\n\r\n"
+        )
+        .into_bytes(),
+        body: vec![b'x'; BIG],
+    };
+    let events = fetch(Client::new(Ids::new()), cmd, NoHost);
+    upstream.join().unwrap();
+    let (head, body, _) = split(&events);
+    assert!(
+        matches!(head, ClientEvent::Head { status: 413, .. }),
+        "{head:?}"
+    );
+    assert_eq!(body, b"request too large");
+}
+
+#[test]
+fn a_failed_lookup_says_why() {
+    let cmd = ClientCmd::Fetch {
+        fetch: F,
+        target: Target {
+            host: "nonexistent.invalid".into(),
+            port: 80,
+            tls: false,
+            addr: None,
+        },
+        head: b"GET / HTTP/1.1\r\nHost: nonexistent.invalid\r\n\r\n".to_vec(),
+        body: Vec::new(),
+    };
+    let events = fetch(Client::new(Ids::new()), cmd, NoHost);
+    let [ClientEvent::Failed { error, .. }] = &events[..] else {
+        panic!("{events:?}");
+    };
+    assert!(matches!(error, ClientError::Resolve(Some(_))), "{error:?}");
+    let text = error.to_string();
+    assert!(text.contains("failed to lookup address"), "{text}");
+}
+
 // ---------------------------------------------------------------------------
 // TLS
 // ---------------------------------------------------------------------------
@@ -414,10 +479,7 @@ impl IoStep for Relay {
     }
 
     fn deadline(&self) -> Option<Time> {
-        match (self.server.deadline(), self.client.deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        earliest(self.server.deadline(), self.client.deadline())
     }
 
     fn idle(&self) -> bool {

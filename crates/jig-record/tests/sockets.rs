@@ -5,21 +5,29 @@
 //! exchanges at once. The scripted tests in `src/relay/tests.rs` cover the
 //! core's logic; these check it against the kernel and rustls.
 //!
-//! Upstreams and clients are blocking std sockets on their own threads. No
-//! test sleeps: waiting is a blocking read, a channel or a join.
+//! Upstreams and clients are blocking std sockets on their own threads.
+//! Waiting is a blocking read, a channel or a join, except in the one test
+//! that sleeps through a stalled relay, counting the loop's iterations: no
+//! other check notices a loop that spins.
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use jig_record::relay::{Comp, HostReq};
 use jig_record::{
-    ClientRequest, Header, Mode, Recorder, RecorderConfig, Route, UpstreamOverride,
-    UpstreamResponse,
+    ClientRequest, Header, Mode, Recorder, RecorderConfig, RecorderCore, RecorderHost, RecorderIo,
+    Route, UpstreamOverride, UpstreamResponse,
 };
 use rustls::ServerConfig;
+use steploop::reactor::Reactor;
+use steploop::run::{Count, Observe, run};
+use steploop::sys::{Action, Event, Ids};
+use steploop::time::Time;
+use steploop::tls::client_config;
 
 mod support;
 use support::*;
@@ -91,11 +99,11 @@ fn relays_the_upstream_bytes_and_captures_them_exactly() {
     let got = exchange(addr_of(&rec.base_url()), &post(OPENAI, body));
     assert_eq!(got, [SSE_HEAD.to_vec(), chunks.concat()].concat());
 
+    // The client's own `Connection` header is its hop's, not ours.
     let forwarded = format!(
         "POST /chat/completions HTTP/1.1\r\n\
          Content-Type: application/json\r\n\
          Content-Length: {}\r\n\
-         Connection: close\r\n\
          Host: api.openai.com\r\n\
          Accept-Encoding: identity\r\n\
          Connection: close\r\n\
@@ -335,4 +343,122 @@ fn pump_mode_captures_every_exchange_concurrent_ones_included() {
         .map(|(r, ..)| String::from_utf8_lossy(&r.body).into_owned())
         .collect();
     assert_eq!(last, [r#"{"s":0}"#, r#"{"s":1}"#]);
+}
+
+// ------------------------------------------------------------------ stalls
+
+/// Counts the loop's iterations, and says when the relay's first write to
+/// its client has blocked.
+struct Stall {
+    count: Count,
+    blocked: Option<mpsc::Sender<()>>,
+}
+
+impl Observe<Comp, HostReq> for Stall {
+    fn polled(&mut self, now: Time, events: &[Event]) {
+        Observe::<Comp, HostReq>::polled(&mut self.count, now, events);
+        // The server's sockets have the ids below the client's half.
+        let upstream_ids = Ids::new().split().next_id();
+        let blocked = events.iter().any(|e| {
+            matches!(e, Event::Wrote { sock, result: Err(e), .. }
+                if e.is_would_block() && sock.0 < upstream_ids)
+        });
+        if blocked {
+            if let Some(tx) = self.blocked.take() {
+                let _ = tx.send(());
+            }
+        }
+    }
+
+    fn host_reqs(&mut self, _reqs: &[HostReq]) {}
+
+    fn host_answers(&mut self, _answers: &[Comp]) {}
+
+    fn actions(&mut self, _actions: &[Action]) {}
+}
+
+/// A client with a small receive window (set before connecting, so the
+/// window stays small).
+fn connect_small_window(addr: SocketAddr) -> TcpStream {
+    let s = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    s.set_recv_buffer_size(4096).unwrap();
+    s.connect(&addr.into()).unwrap();
+    let s: TcpStream = s.into();
+    s.set_read_timeout(Some(TIMEOUT)).unwrap();
+    s
+}
+
+/// The recorder's loop, built by hand from its public parts: while a slow
+/// reader holds the relay up, the loop sleeps, and the relay then finishes.
+#[test]
+fn a_relay_held_up_by_a_slow_reader_sleeps() {
+    /// Four times the most a loopback send buffer holds, so the relay's
+    /// writes to a reader that doesn't read are sure to block.
+    const BIG: usize = 16 << 20;
+    const IDLE: Duration = Duration::from_millis(500);
+    // A few to finish what came before; a spinning loop takes thousands a
+    // millisecond.
+    const IDLE_ITERATIONS: u64 = 20;
+    let pki = pki("stall CA");
+    let (up_listener, up_addr) = listen();
+    let config = server_config(&pki);
+    let event = "data: 0123456789abcdef\n\n".repeat(2_000);
+    let body: Vec<u8> = (0..BIG / event.len())
+        .map(|_| chunk(&event))
+        .chain([b"0\r\n\r\n".to_vec()])
+        .collect::<Vec<_>>()
+        .concat();
+    let sent = body.clone();
+    let upstream = thread::spawn(move || {
+        let mut tls = accept_tls(&up_listener, &config);
+        read_request(&mut tls);
+        tls.write_all(SSE_HEAD).unwrap();
+        tls.write_all(&sent).unwrap();
+        close(tls);
+    });
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut reactor = Reactor::new().unwrap();
+    // Kept to the end: dropping the last sender raises the signal.
+    let (stop_id, _stop) = reactor.signal().unwrap();
+    let tls = client_config(Some(pki.roots.clone())).unwrap();
+    let mut io = RecorderIo::new(tls, stop_id);
+    reactor.adopt_listener(io.listener(), listener).unwrap();
+    let (captures_tx, captures) = mpsc::channel();
+    let mut host = RecorderHost::new(captures_tx);
+    let upstream_override = UpstreamOverride {
+        addr: up_addr,
+        tls: true,
+    };
+    let mut core = RecorderCore::new(Mode::Once, None, Some(upstream_override));
+    let count = Count::new();
+    let (blocked_tx, blocked) = mpsc::channel();
+    let mut stall = Stall {
+        count: count.clone(),
+        blocked: Some(blocked_tx),
+    };
+    let looped =
+        thread::spawn(move || run(&mut core, &mut io, &mut host, &mut reactor, &mut stall));
+
+    let mut slow = connect_small_window(addr);
+    slow.write_all(&post(OPENAI, "{}")).unwrap();
+    blocked
+        .recv_timeout(TIMEOUT)
+        .expect("the relay's writes block");
+    let before = count.iterations();
+    thread::sleep(IDLE);
+    let stalled = count.iterations() - before;
+    assert!(
+        stalled <= IDLE_ITERATIONS,
+        "{stalled} iterations while stalled"
+    );
+
+    let mut got = Vec::new();
+    slow.read_to_end(&mut got).unwrap();
+    assert!(got == [SSE_HEAD, &body].concat(), "relayed whole");
+    upstream.join().unwrap();
+    let (_, response, _) = captures.recv_timeout(TIMEOUT).expect("a capture");
+    assert!(response.body == body, "captured whole");
+    looped.join().unwrap().unwrap();
 }

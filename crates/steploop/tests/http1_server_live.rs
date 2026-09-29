@@ -4,8 +4,10 @@
 //! exchange. Scripted tests (`http1_server.rs`) cover the planner's logic;
 //! these check it against real kernel semantics (§4.2).
 //!
-//! Clients are blocking std sockets with timeouts on their own threads. No
-//! test sleeps: waiting is a blocking read or a join.
+//! Clients are blocking std sockets with timeouts on their own threads.
+//! Waiting is a blocking read or a join, except where a test sleeps through
+//! a stretch in which the loop should do nothing, and counts its iterations
+//! to show that it does (`Count`): no other check notices a loop that spins.
 
 use std::convert::Infallible;
 use std::io::{ErrorKind, Read, Write};
@@ -18,7 +20,7 @@ use steploop::http1::codec::write_response;
 use steploop::http1::server::{Config, Server, ServerCmd, ServerEvent};
 use steploop::http1::{Body, ReqId, Response};
 use steploop::reactor::{Reactor, SignalSender};
-use steploop::run::{Core, NoHost, Observe, Tap, replay, run};
+use steploop::run::{Core, Count, NoHost, Observe, Tap, replay, run};
 use steploop::sys::{Action, Event, Ids};
 use steploop::time::Time;
 
@@ -27,6 +29,12 @@ const GRACE: Duration = Duration::from_secs(5);
 /// Four times the most a loopback send buffer holds here (`tcp_wmem`), so a
 /// reader with a small window makes the server's writes block.
 const BIG: usize = 16 << 20;
+/// How long a test watches a loop with nothing to do.
+const IDLE: Duration = Duration::from_millis(500);
+/// The most iterations such a stretch may take: a few to finish what came
+/// before it. A spinning loop takes thousands a millisecond, and even one
+/// polling every millisecond would take hundreds.
+const IDLE_ITERATIONS: u64 = 20;
 
 /// Answers each request with `hello {target}` (or `BIG` bytes for `/big`),
 /// and shuts down on the signal.
@@ -250,6 +258,24 @@ fn idle_clients_do_not_block_others_and_are_closed_at_shutdown() {
 }
 
 #[test]
+fn an_idle_server_sleeps() {
+    let count = Count::new();
+    let server = start(GRACE, count.clone());
+    assert_eq!(exchange(server.addr, "/warm"), expected("/warm"));
+    let mut partial = connect(server.addr);
+    partial.write_all(b"GET /never HT").unwrap();
+    let _silent = connect(server.addr);
+    // Accepted in order, so by this reply the idle ones are in and armed.
+    assert_eq!(exchange(server.addr, "/witness"), expected("/witness"));
+
+    let before = count.iterations();
+    thread::sleep(IDLE);
+    let idle = count.iterations() - before;
+    assert!(idle <= IDLE_ITERATIONS, "{idle} iterations while idle");
+    server.stop();
+}
+
+#[test]
 fn a_slow_reader_does_not_block_others() {
     let server = start(GRACE, Counts::default());
     let mut slow = connect_small_window(server.addr);
@@ -276,15 +302,22 @@ fn a_slow_reader_does_not_block_others() {
 #[test]
 fn shutdown_cuts_a_stalled_response_at_its_grace() {
     let grace = Duration::from_millis(200);
-    let server = start(grace, Counts::default());
+    let server = start(grace, Count::new());
     let mut stalled = connect_small_window(server.addr);
     send_get(&mut stalled, "/big");
     let mut first = [0u8; 1];
     stalled.read_exact(&mut first).unwrap();
+    // The stalled write, then the grace, both with nothing to do.
+    thread::sleep(IDLE);
     let started = Instant::now();
-    let (core, _) = server.stop();
+    let (core, count) = server.stop();
     assert!(started.elapsed() >= grace, "the response had its grace");
     assert_eq!(core.gone.len(), 1, "and the core heard it was cut");
+    let iterations = count.iterations();
+    assert!(
+        iterations <= 2 * IDLE_ITERATIONS,
+        "{iterations} iterations for one stalled exchange"
+    );
     let mut rest = Vec::new();
     let _ = stalled.read_to_end(&mut rest);
     assert!(1 + rest.len() < expected("/big").len(), "cut short");

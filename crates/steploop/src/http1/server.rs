@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use super::codec::{self, HeadError, Limits, RequestHead};
 use super::{Body, ReqId, Request, Response};
-use crate::run::IoStep;
+use crate::run::{IoStep, earliest};
 use crate::sys::{Action, Event, Ids, SignalId, SockId};
 use crate::tcp::{Conn, Listener};
 use crate::time::Time;
@@ -217,10 +217,7 @@ impl Server {
             Stop::Grace(until) => Some(until),
             Stop::Running | Stop::Stopped => None,
         };
-        match (grace, self.listener.deadline()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        earliest(grace, self.listener.deadline())
     }
 
     /// The listener and every connection are closed, and nothing is in
@@ -344,7 +341,12 @@ impl Exchange {
     ) -> State {
         let tcp = &mut self.tcp;
         match state {
-            State::Head { mut scanned } => match read_head(&tcp.inbound, &mut scanned, limits) {
+            State::Head { mut scanned } => match codec::reparse(
+                &tcp.inbound,
+                &mut scanned,
+                limits,
+                codec::parse_request_head,
+            ) {
                 Ok(Some(head)) => self.next(State::Body { head }, req, limits, out),
                 // Nothing to answer: the client never sent a request.
                 Ok(None) if tcp.eof() => {
@@ -410,23 +412,6 @@ impl Exchange {
     fn close(&mut self) {
         self.state = State::Closing;
         self.tcp.close();
-    }
-}
-
-/// Parse the head if the bytes since the last look could have completed it:
-/// a head ends at a newline, or fails at the size limit.
-fn read_head(
-    inbound: &[u8],
-    scanned: &mut usize,
-    limits: &Limits,
-) -> Result<Option<RequestHead>, HeadError> {
-    let fresh = inbound.get(*scanned..).unwrap_or_default();
-    let worth_parsing = fresh.contains(&b'\n') || inbound.len() >= limits.max_head;
-    *scanned = inbound.len();
-    if worth_parsing {
-        codec::parse_request_head(inbound, limits)
-    } else {
-        Ok(None)
     }
 }
 

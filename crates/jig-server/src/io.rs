@@ -40,13 +40,11 @@ impl ServerIo {
             match event {
                 ServerEvent::Request { req, request } => comps.push(Comp::Request { req, request }),
                 ServerEvent::Signal { id } if id == self.stop => comps.push(Comp::Stop),
-                // The core never relays, so flushes mean nothing to it, and it
-                // keeps no state an early end could free: an undecided
-                // request is let go when its decision arrives, and the
-                // server ignores the response that follows.
-                ServerEvent::Signal { .. }
-                | ServerEvent::Gone { .. }
-                | ServerEvent::Flushed { .. } => {}
+                // An undecided request's decision may never come, and the
+                // core must not wait for it past the exchange's end.
+                ServerEvent::Gone { req } => comps.push(Comp::Gone { req }),
+                // The core never relays, so flushes mean nothing to it.
+                ServerEvent::Signal { .. } | ServerEvent::Flushed { .. } => {}
             }
         }
     }
@@ -85,5 +83,70 @@ impl IoStep for ServerIo {
 
     fn idle(&self) -> bool {
         self.server.idle()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use steploop::http1::ReqId;
+    use steploop::http1::server::Config;
+    use steploop::sys::{Ids, SockId};
+
+    use super::*;
+
+    const STOP: SignalId = SignalId(u64::MAX - 1);
+
+    fn step(io: &mut ServerIo, now: Time, reqs: Vec<IoReq>) -> (Vec<Comp>, Vec<Action>) {
+        let (mut reqs, mut comps, mut actions) = (reqs, Vec::new(), Vec::new());
+        io.step(now, &mut reqs, &mut comps, &mut actions);
+        (comps, actions)
+    }
+
+    fn reap(io: &mut ServerIo, events: Vec<Event>) -> Vec<Comp> {
+        let (mut events, mut comps) = (events, Vec::new());
+        io.reap(Time::ZERO, &mut events, &mut comps);
+        comps
+    }
+
+    #[test]
+    fn an_exchange_cut_at_the_grace_reaches_the_core_as_gone() {
+        let mut io = ServerIo::new(Server::new(Ids::new(), Config::default()), STOP);
+        let (listener, conn) = (SockId(1), SockId(2));
+        step(&mut io, Time::ZERO, vec![]);
+        let peer = "127.0.0.1:4000".parse().unwrap();
+        let accepted = Event::Accepted {
+            listener,
+            new: conn,
+            result: Ok(peer),
+        };
+        assert_eq!(reap(&mut io, vec![accepted]), []);
+        step(&mut io, Time::ZERO, vec![]);
+        let request = Event::Read {
+            sock: conn,
+            result: Ok(b"GET /x HTTP/1.1\r\n\r\n".to_vec()),
+        };
+        let comps = reap(&mut io, vec![request]);
+        assert!(matches!(&comps[..], [Comp::Request { .. }]), "{comps:?}");
+
+        // No response comes (a decision nobody answers), and the grace ends.
+        let grace = Duration::from_secs(1);
+        let (comps, _) = step(&mut io, Time::ZERO, vec![IoReq::Shutdown { grace }]);
+        assert_eq!(comps, []);
+        let (comps, actions) = step(&mut io, Time::ZERO.after(grace), vec![]);
+        assert_eq!(comps, [Comp::Gone { req: ReqId(2) }]);
+        assert!(actions.contains(&Action::Close { sock: conn }));
+    }
+
+    #[test]
+    fn only_the_stop_signal_reaches_the_core() {
+        let mut io = ServerIo::new(Server::new(Ids::new(), Config::default()), STOP);
+        let other = SignalId(u64::MAX - 2);
+        let signals = vec![
+            Event::Signal { signal: other },
+            Event::Signal { signal: STOP },
+        ];
+        assert_eq!(reap(&mut io, signals), [Comp::Stop]);
     }
 }

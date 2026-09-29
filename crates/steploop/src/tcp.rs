@@ -21,6 +21,11 @@
 //! - **Close** waits for synchronous actions still in flight (one round, since
 //!   `perform` is synchronous) but not for a pending arm, which the `Close`
 //!   completes.
+//! - **A write error stops writing only.** A peer may answer early and close
+//!   while a request is still going out (a 413 before the body is read,
+//!   say): its response and FIN are already in the socket when the next
+//!   write fails, so reads go on until EOF. Any other error stops both
+//!   directions.
 
 use std::mem;
 use std::net::SocketAddr;
@@ -55,7 +60,10 @@ pub struct Conn {
     /// Directions that hit `WouldBlock` and wait for readiness.
     blocked: Interest,
     eof: bool,
+    /// The first error of any kind. Writing stops at it.
     error: Option<IoError>,
+    /// The error that stopped reading too: any but a write error.
+    read_error: Option<IoError>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,6 +127,7 @@ impl Conn {
             blocked: Interest::default(),
             eof: false,
             error: None,
+            read_error: None,
         }
     }
 
@@ -166,10 +175,19 @@ impl Conn {
         self.eof
     }
 
-    /// The first read, write or connect error. The `Conn` stops reading and
-    /// writing; the upper stage should close it.
-    pub fn error(&self) -> Option<IoError> {
-        self.error
+    /// The first read, write, arm or connect error. The `Conn` stops writing
+    /// at any error, and reading at any but a write error (see
+    /// [`Conn::read_error`]); the upper stage should close it once it has
+    /// what it can still read.
+    pub fn error(&self) -> Option<&IoError> {
+        self.error.as_ref()
+    }
+
+    /// The error that stopped reading: a read, arm or connect error. A write
+    /// error alone leaves reads going, so what the peer sent before it
+    /// stopped taking bytes still arrives, up to EOF.
+    pub fn read_error(&self) -> Option<&IoError> {
+        self.read_error.as_ref()
     }
 
     /// Bytes queued or being written, not yet taken by the kernel: the
@@ -218,7 +236,7 @@ impl Conn {
                         self.blocked.write = true;
                         self.requeue(data, 0);
                     }
-                    Err(e) => self.fail(e),
+                    Err(e) => self.fail_write(e),
                 }
             }
             Event::Ready { result, .. } if self.flight.armed.is_some() => {
@@ -244,7 +262,7 @@ impl Conn {
                     Ok(Progress::InProgress) => self.blocked.write = true,
                     // A failed `Connect` leaves no socket to close.
                     Err(e) if op == Op::Connect => {
-                        self.error.get_or_insert(e);
+                        self.fail(e);
                         self.life = Life::Closed;
                     }
                     Err(e) => self.fail(e),
@@ -284,14 +302,18 @@ impl Conn {
                 actions.push(Action::Close { sock });
                 self.flight.op = Some(Op::Close);
             }
-            Life::Open if self.error.is_none() => self.plan_io(actions),
+            Life::Open if self.read_error.is_none() => self.plan_io(actions),
             _ => {}
         }
     }
 
     fn plan_io(&mut self, actions: &mut Vec<Action>) {
         let sock = self.sock;
-        if self.flight.write == 0 && !self.blocked.write && !self.outbound.is_empty() {
+        if self.error.is_some() {
+            // The write side failed: bytes an upper stage still appends
+            // directly (a TLS pump's) can never go out.
+            self.outbound.clear();
+        } else if self.flight.write == 0 && !self.blocked.write && !self.outbound.is_empty() {
             let data = mem::take(&mut self.outbound);
             self.flight.write = data.len();
             actions.push(Action::Write { sock, data });
@@ -344,7 +366,13 @@ impl Conn {
         }
     }
 
+    /// An error that stops both directions.
     fn fail(&mut self, e: IoError) {
+        self.read_error.get_or_insert_with(|| e.clone());
+        self.fail_write(e);
+    }
+
+    fn fail_write(&mut self, e: IoError) {
         self.error.get_or_insert(e);
         self.outbound.clear();
     }

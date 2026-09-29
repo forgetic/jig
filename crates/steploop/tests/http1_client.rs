@@ -348,7 +348,7 @@ fn a_resolve_failure_fails_the_fetch() {
     let mut t = T::new();
     t.step([fetch_to(F, target(None))]);
     let e = err(ErrorKind::Other);
-    let out = t.reap([resolved(Q, Err(e))]);
+    let out = t.reap([resolved(Q, Err(e.clone()))]);
     assert_eq!(out, [failed(F, ClientError::Resolve(Some(e)))]);
     assert_eq!(t.actions(), []);
     assert!(t.c.idle());
@@ -397,7 +397,7 @@ fn a_failed_finish_closes_its_socket_and_moves_on() {
     t.reap([ready(S1)]);
     assert_eq!(t.actions(), [Action::FinishConnect { sock: S1 }]);
     let refused = err(ErrorKind::ConnectionRefused);
-    assert_eq!(t.reap([connected(S1, Err(refused))]), []);
+    assert_eq!(t.reap([connected(S1, Err(refused.clone()))]), []);
     assert_eq!(
         t.actions(),
         [connect_act(S2, addr(2)), close_act(S1)],
@@ -421,7 +421,7 @@ fn every_address_failing_reports_the_last_error() {
     t.reap([connected(S1, Err(err(ErrorKind::ConnectionRefused)))]);
     assert_eq!(t.actions(), [connect_act(S2, addr(2))]);
     let last = err(ErrorKind::HostUnreachable);
-    let out = t.reap([connected(S2, Err(last))]);
+    let out = t.reap([connected(S2, Err(last.clone()))]);
     assert_eq!(out, [failed(F, ClientError::Connect(last))]);
     assert_eq!(t.actions(), []);
     assert!(t.c.idle());
@@ -628,22 +628,221 @@ fn a_reset_mid_body_fails_the_fetch() {
 }
 
 #[test]
-fn a_write_error_fails_the_fetch() {
+fn a_write_error_fails_the_fetch_once_the_peer_ends_without_a_head() {
     let mut t = T::new();
     t.step([fetch_to(F, target(Some(addr(1))))]);
     t.reap([connected(C, Ok(Progress::Done))]);
     t.actions();
     let pipe = err(ErrorKind::BrokenPipe);
     let out = t.reap([
-        Event::Wrote {
-            sock: C,
-            data: request(),
-            result: Err(pipe),
-        },
+        write_failed(C, &request()),
         read_err(C, ErrorKind::WouldBlock),
     ]);
+    assert_eq!(out, [], "a response may still come");
+    let arm = Action::Arm {
+        sock: C,
+        interest: Interest::READ,
+    };
+    assert_eq!(t.actions(), [arm], "reads go on, writes don't");
+    t.reap([ready(C)]);
+    assert_eq!(t.actions(), [read_act(C, MAX_HEAD)]);
+    let partial = b"HTTP/1.1 413 Pay";
+    assert_eq!(t.reap([read(C, partial)]), []);
+    assert_eq!(t.actions(), [read_act(C, MAX_HEAD - partial.len())]);
+    // Not `Protocol`: the write error is why no head came.
+    let out = t.reap([read(C, b"")]);
     assert_eq!(out, [failed(F, ClientError::Io(pipe))]);
     assert_eq!(t.actions(), [close_act(C)]);
+}
+
+#[test]
+fn a_read_error_after_a_write_error_fails_with_the_read_error() {
+    let mut t = uploading();
+    let out = t.reap([
+        write_failed(C, &LONG_REQUEST[10..]),
+        read_err(C, ErrorKind::ConnectionReset),
+    ]);
+    let reset = err(ErrorKind::ConnectionReset);
+    assert_eq!(out, [failed(F, ClientError::Io(reset))]);
+    assert_eq!(t.actions(), [close_act(C)]);
+}
+
+// ---------------------------------------------------------------------------
+// Interim responses
+// ---------------------------------------------------------------------------
+
+const CONTINUE: &[u8] = b"HTTP/1.1 100 Continue\r\n\r\n";
+const EARLY_HINTS: &[u8] = b"HTTP/1.1 103 Early Hints\r\nLink: </a.css>; rel=preload\r\n\r\n";
+
+#[test]
+fn interim_responses_are_dropped_before_the_final_head() {
+    let mut t = connected_fetch();
+    let out = t.reap([read(C, &[CONTINUE, EARLY_HINTS, RESP_HEAD, b"x"].concat())]);
+    assert_eq!(
+        out,
+        [head_event(F), body(F, b"x")],
+        "raw holds the final head"
+    );
+    finish(&mut t);
+}
+
+#[test]
+fn an_interim_response_alone_waits_for_the_final_one() {
+    let mut t = connected_fetch();
+    assert_eq!(t.reap([read(C, EARLY_HINTS)]), []);
+    assert_eq!(
+        t.actions(),
+        [read_act(C, MAX_HEAD)],
+        "nothing of it is kept"
+    );
+    // The final head arrives split, after a partial one.
+    assert_eq!(t.reap([read(C, &RESP_HEAD[..10])]), []);
+    t.actions();
+    assert_eq!(t.reap([read(C, &RESP_HEAD[10..])]), [head_event(F)]);
+    assert_eq!(t.actions(), [read_act(C, READ_CHUNK)]);
+    assert_eq!(t.reap([read(C, b"")]), [ClientEvent::End { fetch: F }]);
+}
+
+#[test]
+fn eof_after_an_interim_response_fails_the_fetch() {
+    let mut t = connected_fetch();
+    assert_eq!(t.reap([read(C, CONTINUE)]), []);
+    t.actions();
+    let out = t.reap([read(C, b"")]);
+    assert_eq!(out, [failed(F, ClientError::Protocol(EOF_IN_HEAD))]);
+}
+
+#[test]
+fn switching_protocols_is_a_final_head() {
+    let mut t = connected_fetch();
+    let upgrade = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\r\n";
+    let out = t.reap([read(C, upgrade)]);
+    let head = ClientEvent::Head {
+        fetch: F,
+        status: 101,
+        headers: vec![("Upgrade".into(), "websocket".into())],
+        raw: upgrade.to_vec(),
+    };
+    assert_eq!(out, [head]);
+    assert_eq!(t.actions(), [read_act(C, READ_CHUNK)]);
+    assert_eq!(t.reap([read(C, b"")]), [ClientEvent::End { fetch: F }]);
+}
+
+// ---------------------------------------------------------------------------
+// Early responses: the upstream answers and closes mid-upload
+// ---------------------------------------------------------------------------
+
+const EARLY_HEAD: &[u8] =
+    b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 9\r\nConnection: close\r\n\r\n";
+const EARLY_BODY: &[u8] = b"too large";
+/// A request long enough to be written in two parts.
+const LONG_REQUEST: &[u8] = b"POST /v1/messages HTTP/1.1\r\nHost: up.example\r\nConnection: close\r\nContent-Length: 20\r\n\r\n01234567890123456789";
+
+fn write_failed(sock: SockId, data: &[u8]) -> Event {
+    Event::Wrote {
+        sock,
+        data: data.to_vec(),
+        result: Err(err(ErrorKind::BrokenPipe)),
+    }
+}
+
+fn early_response() -> Event {
+    read(C, &[EARLY_HEAD, EARLY_BODY].concat())
+}
+
+fn early_head() -> ClientEvent {
+    ClientEvent::Head {
+        fetch: F,
+        status: 413,
+        headers: vec![
+            ("Content-Length".into(), "9".into()),
+            ("Connection".into(), "close".into()),
+        ],
+        raw: EARLY_HEAD.to_vec(),
+    }
+}
+
+/// `LONG_REQUEST` fetched from `addr(1)`: its first write was short, and
+/// the rest is in flight with the first read.
+fn uploading() -> T {
+    let mut t = T::new();
+    let (head, body) = LONG_REQUEST.split_at(LONG_REQUEST.len() - 20);
+    t.step([ClientCmd::Fetch {
+        fetch: F,
+        target: target(Some(addr(1))),
+        head: head.to_vec(),
+        body: body.to_vec(),
+    }]);
+    t.reap([connected(C, Ok(Progress::Done))]);
+    assert_eq!(
+        t.actions(),
+        [write_act(C, LONG_REQUEST), read_act(C, MAX_HEAD)]
+    );
+    t.reap([Event::Wrote {
+        sock: C,
+        data: LONG_REQUEST.to_vec(),
+        result: Ok(10),
+    }]);
+    assert_eq!(t.actions(), [write_act(C, &LONG_REQUEST[10..])]);
+    t
+}
+
+/// Ack the early body, read EOF, and close.
+fn finish_early(t: &mut T) {
+    let (out, actions) = t.step([ack(F)]);
+    assert_eq!(out, []);
+    assert_eq!(
+        actions,
+        [read_act(C, READ_CHUNK)],
+        "no write after the error"
+    );
+    assert_eq!(t.reap([read(C, b"")]), [ClientEvent::End { fetch: F }]);
+    assert_eq!(t.actions(), [close_act(C)]);
+    t.reap([closed(C)]);
+    assert!(t.c.idle());
+}
+
+#[test]
+fn an_early_response_after_the_write_error_is_read() {
+    let mut t = uploading();
+    let out = t.reap([
+        write_failed(C, &LONG_REQUEST[10..]),
+        read_err(C, ErrorKind::WouldBlock),
+    ]);
+    assert_eq!(out, []);
+    let arm = Action::Arm {
+        sock: C,
+        interest: Interest::READ,
+    };
+    assert_eq!(t.actions(), [arm]);
+    t.reap([ready(C)]);
+    assert_eq!(t.actions(), [read_act(C, MAX_HEAD)]);
+    assert_eq!(
+        t.reap([early_response()]),
+        [early_head(), body(F, EARLY_BODY)]
+    );
+    finish_early(&mut t);
+}
+
+#[test]
+fn an_early_response_with_the_write_error_is_read() {
+    // The write fails in the batch whose read carries the whole response.
+    let mut t = uploading();
+    let out = t.reap([write_failed(C, &LONG_REQUEST[10..]), early_response()]);
+    assert_eq!(out, [early_head(), body(F, EARLY_BODY)]);
+    finish_early(&mut t);
+}
+
+#[test]
+fn an_early_response_before_the_write_error_is_read() {
+    let mut t = uploading();
+    assert_eq!(
+        t.reap([early_response()]),
+        [early_head(), body(F, EARLY_BODY)]
+    );
+    assert_eq!(t.actions(), [], "the upload is in flight, the body owed");
+    assert_eq!(t.reap([write_failed(C, &LONG_REQUEST[10..])]), []);
+    finish_early(&mut t);
 }
 
 // ---------------------------------------------------------------------------
@@ -754,7 +953,7 @@ fn several_fetches_run_side_by_side() {
     let refused = err(ErrorKind::ConnectionRefused);
     let out = t.reap([
         connected(cg, Ok(Progress::Done)),
-        connected(cf, Err(refused)),
+        connected(cf, Err(refused.clone())),
     ]);
     assert_eq!(out, [failed(F, ClientError::Connect(refused))]);
     let req = request();
@@ -815,7 +1014,7 @@ fn errors_read_well() {
     }
     let reset = err(ErrorKind::ConnectionReset);
     assert!(
-        ClientError::Io(reset)
+        ClientError::Io(reset.clone())
             .to_string()
             .starts_with("the upstream connection failed: ")
     );

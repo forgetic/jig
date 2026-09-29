@@ -9,13 +9,14 @@
 //! caller builds the request head, and gets the response head back as parsed
 //! fields and as the raw bytes, for relaying verbatim.
 //!
-//! Each fetch is one `State` enum whose variants hold that state's data, as
-//! in the server planner: every transition is one `match` arm that moves
-//! owned data on, and every reap and step sweeps all fetches through it. A
-//! connection's stages (`Pipe`) are a [`Conn`] and, optionally, the TLS stage
-//! between it and the HTTP parser. Sockets a fetch no longer uses (a failed
-//! attempt's, a finished fetch's) are retired to a list until their `Closed`
-//! comes, so a fetch's state only ever holds its current socket.
+//! Each fetch is a `Phase` enum whose variants hold that phase's data, as in
+//! the server planner: every transition is one `match` arm that moves owned
+//! data on, and every reap and step sweeps all fetches through it. Beside the
+//! phase sits the connection's stages (`Pipe`), once the fetch has a socket:
+//! a [`Conn`] and, optionally, the TLS stage between it and the HTTP parser.
+//! Sockets a fetch no longer uses (a failed attempt's, a finished fetch's)
+//! are retired to a list until their `Closed` comes, so a fetch only ever
+//! holds its current socket.
 //!
 //! # Until EOF
 //!
@@ -32,6 +33,21 @@
 //! [`ChunkedDecoder`](super::codec::ChunkedDecoder) and ends when the
 //! decoder is done; either way `End` comes without waiting for the peer to
 //! close. Reusing the connection for another request would come after that.
+//!
+//! # Interim responses
+//!
+//! A `1xx` response other than `101` (`100 Continue`, `103 Early Hints`) is
+//! dropped where it stands: the core gets the `Head` of the final response
+//! that follows it. The request goes out whole, head and body at once, so a
+//! `100 Continue` releases nothing.
+//!
+//! # Early responses
+//!
+//! An upstream may answer before it has read the whole request (a 413, 401
+//! or 429) and close, so the rest of the upload fails with `EPIPE` or a
+//! reset. That write error stops only the writing (see [`crate::tcp`]): the
+//! response is read as usual, and the fetch fails with the write error only
+//! if the peer ends before a head arrives.
 //!
 //! # Credit
 //!
@@ -64,7 +80,7 @@ use std::sync::Arc;
 use rustls_pki_types::ServerName;
 
 use super::FetchId;
-use super::codec::{self, HeadError, Limits, ResponseHead};
+use super::codec::{self, HeadError, Limits};
 use crate::run::IoStep;
 use crate::sys::{Action, Event, Ids, IoError};
 use crate::tcp::{Conn, READ_CHUNK};
@@ -157,7 +173,9 @@ pub enum ClientError {
     /// stream), or TLS was asked for without a config. The text is
     /// [`crate::tls::TlsError`]'s where the stage found the problem.
     Tls(String),
-    /// Reading or writing the connection failed (a reset, say).
+    /// Reading the connection failed (a reset, say), or writing it did and
+    /// the peer then closed without a response head. A write error after
+    /// the head changes nothing: the body is read to EOF as usual.
     Io(IoError),
     /// The response head was malformed or too large, or the peer closed
     /// before it ended.
@@ -189,7 +207,7 @@ const EOF_IN_HEAD: HeadError =
 /// The HTTP/1.1 client planner. See the module docs.
 #[derive(Debug)]
 pub struct Client {
-    fetches: BTreeMap<FetchId, State>,
+    fetches: BTreeMap<FetchId, Fetch>,
     shared: Shared,
     /// `reap`'s scratch: the events that are not the client's, handed back.
     foreign: Vec<Event>,
@@ -207,8 +225,16 @@ struct Shared {
 }
 
 #[derive(Debug)]
-enum State {
-    /// Waiting for the `Resolved` of `query`.
+struct Fetch {
+    phase: Phase,
+    /// The current attempt's stages: none while resolving, and none once
+    /// done (the socket is retired).
+    pipe: Option<Pipe>,
+}
+
+#[derive(Debug)]
+enum Phase {
+    /// Waiting for the `Resolved` of `query`, with the stages' link.
     Resolving {
         query: u64,
         request: Vec<u8>,
@@ -217,15 +243,14 @@ enum State {
     /// Connecting to one address, with `rest` to try if it fails. The request
     /// waits here: a failed attempt's `Conn` drops what it was given.
     Connecting {
-        pipe: Pipe,
         rest: vec::IntoIter<SocketAddr>,
         request: Vec<u8>,
     },
     /// Sending the request and reading the response head. `plain_in[..scanned]`
     /// has no newline the parser hasn't seen.
-    Head { pipe: Pipe, scanned: usize },
+    Head { scanned: usize },
     /// Relaying the body. `owed`: a `Body` is out and its `Ack` hasn't come.
-    Body { pipe: Pipe, owed: bool },
+    Body { owed: bool },
     /// The terminal event is out and the socket retired: forgotten at the
     /// end of the sweep.
     Done,
@@ -300,9 +325,9 @@ impl Client {
     pub fn reap(&mut self, _now: Time, events: &mut Vec<Event>, out: &mut Vec<ClientEvent>) {
         for event in events.drain(..) {
             match self.owner(&event) {
-                Some(Owner::Fetch(fetch)) => {
-                    if let Some(state) = self.fetches.get_mut(&fetch) {
-                        on_event(fetch, state, event, &mut self.shared, out);
+                Some(Owner::Fetch(id)) => {
+                    if let Some(fetch) = self.fetches.get_mut(&id) {
+                        on_event(id, fetch, event, &mut self.shared, out);
                     }
                 }
                 Some(Owner::Retired(i)) => {
@@ -334,13 +359,17 @@ impl Client {
                 body,
             } => self.start(fetch, target, head, body, out, actions),
             ClientCmd::Ack { fetch } => {
-                if let Some(State::Body { owed, .. }) = self.fetches.get_mut(&fetch) {
+                if let Some(Fetch {
+                    phase: Phase::Body { owed },
+                    ..
+                }) = self.fetches.get_mut(&fetch)
+                {
                     *owed = false;
                 }
             }
             ClientCmd::Cancel { fetch } => {
-                if let Some(state) = self.fetches.remove(&fetch) {
-                    if let Some(pipe) = state.into_pipe() {
+                if let Some(cancelled) = self.fetches.remove(&fetch) {
+                    if let Some(pipe) = cancelled.pipe {
                         self.shared.retire(pipe.tcp, false);
                     }
                     let error = ClientError::Cancelled;
@@ -354,10 +383,8 @@ impl Client {
     /// close retired sockets.
     pub fn plan(&mut self, _now: Time, out: &mut Vec<ClientEvent>, actions: &mut Vec<Action>) {
         self.sweep(out);
-        for state in self.fetches.values_mut() {
-            if let Some(pipe) = state.pipe_mut() {
-                pipe.tcp.plan(actions);
-            }
+        for pipe in self.fetches.values_mut().filter_map(|f| f.pipe.as_mut()) {
+            pipe.tcp.plan(actions);
         }
         for tcp in &mut self.shared.retired {
             // Planning first gives a TLS alert left in `outbound` its one
@@ -403,11 +430,12 @@ impl Client {
                 let query = self.shared.ids.next_id();
                 let (host, port) = (target.host, target.port);
                 actions.push(Action::Resolve { query, host, port });
-                State::Resolving {
+                let phase = Phase::Resolving {
                     query,
                     request,
                     link,
-                }
+                };
+                Fetch { phase, pipe: None }
             }
         };
         self.fetches.insert(fetch, state);
@@ -415,11 +443,11 @@ impl Client {
 
     fn owner(&self, event: &Event) -> Option<Owner> {
         let sock = event.sock();
-        let owns = |state: &State| match (state, event) {
-            (State::Resolving { query, .. }, Event::Resolved { query: q, .. }) => query == q,
-            _ => sock.is_some() && state.pipe().map(|pipe| pipe.tcp.sock()) == sock,
+        let owns = |f: &Fetch| match (&f.phase, event) {
+            (Phase::Resolving { query, .. }, Event::Resolved { query: q, .. }) => query == q,
+            _ => sock.is_some() && f.pipe.as_ref().map(|pipe| pipe.tcp.sock()) == sock,
         };
-        if let Some((&fetch, _)) = self.fetches.iter().find(|(_, state)| owns(state)) {
+        if let Some((&fetch, _)) = self.fetches.iter().find(|(_, f)| owns(f)) {
             return Some(Owner::Fetch(fetch));
         }
         let sock = sock?;
@@ -432,12 +460,12 @@ impl Client {
     /// Move every fetch along, and forget the finished ones and the closed
     /// sockets.
     fn sweep(&mut self, out: &mut Vec<ClientEvent>) {
-        for (&fetch, state) in &mut self.fetches {
-            let current = mem::replace(state, State::Done);
-            *state = next(current, fetch, &mut self.shared, out);
+        for (&id, fetch) in &mut self.fetches {
+            let phase = mem::replace(&mut fetch.phase, Phase::Done);
+            fetch.phase = next(phase, &mut fetch.pipe, id, &mut self.shared, out);
         }
         self.fetches
-            .retain(|_, state| !matches!(state, State::Done));
+            .retain(|_, fetch| !matches!(fetch.phase, Phase::Done));
         self.shared.retired.retain(|tcp| !tcp.is_closed());
     }
 }
@@ -483,67 +511,86 @@ enum Owner {
 
 /// Hand an event to the fetch it belongs to.
 fn on_event(
-    fetch: FetchId,
-    state: &mut State,
+    id: FetchId,
+    fetch: &mut Fetch,
     event: Event,
     shared: &mut Shared,
     out: &mut Vec<ClientEvent>,
 ) {
     let Event::Resolved { result, .. } = event else {
-        if let Some(pipe) = state.pipe_mut() {
+        if let Some(pipe) = &mut fetch.pipe {
             pipe.tcp.on_event(event);
         }
         return;
     };
-    *state = match (mem::replace(state, State::Done), result) {
-        (State::Resolving { request, link, .. }, Ok(addrs)) => {
+    match (mem::replace(&mut fetch.phase, Phase::Done), result) {
+        (Phase::Resolving { request, link, .. }, Ok(addrs)) => {
             let mut rest = addrs.into_iter();
-            match rest.next() {
+            *fetch = match rest.next() {
                 Some(addr) => shared.dial(addr, rest, request, link),
-                None => fail(fetch, ClientError::Resolve(None), out),
-            }
+                None => fail(id, ClientError::Resolve(None), out),
+            };
         }
-        (State::Resolving { .. }, Err(e)) => fail(fetch, ClientError::Resolve(Some(e)), out),
-        (other, _) => other,
-    };
+        (Phase::Resolving { .. }, Err(e)) => *fetch = fail(id, ClientError::Resolve(Some(e)), out),
+        (phase, _) => fetch.phase = phase,
+    }
 }
 
-/// The state after `state`, given its socket: one `match` arm per state.
-fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientEvent>) -> State {
-    match state {
-        State::Connecting {
-            mut pipe,
-            mut rest,
-            request,
-        } => {
+/// The phase after `phase`, given the socket in `slot`: one `match` arm per
+/// phase. A phase without a socket stays as it is.
+fn next(
+    phase: Phase,
+    slot: &mut Option<Pipe>,
+    fetch: FetchId,
+    shared: &mut Shared,
+    out: &mut Vec<ClientEvent>,
+) -> Phase {
+    let Some(pipe) = slot else {
+        return phase;
+    };
+    match phase {
+        Phase::Connecting { mut rest, request } => {
             if pipe.tcp.is_open() {
                 pipe.send(request);
-                return next(State::Head { pipe, scanned: 0 }, fetch, shared, out);
+                return next(Phase::Head { scanned: 0 }, slot, fetch, shared, out);
             }
-            let Some(error) = pipe.tcp.error() else {
-                return State::Connecting {
-                    pipe,
-                    rest,
-                    request,
-                };
+            let Some(error) = pipe.tcp.error().cloned() else {
+                return Phase::Connecting { rest, request };
             };
-            let Pipe { tcp, link } = pipe;
-            shared.retire(tcp, false);
             match rest.next() {
-                Some(addr) => shared.dial(addr, rest, request, link),
-                None => fail(fetch, ClientError::Connect(error), out),
+                Some(addr) => {
+                    let failed = mem::replace(&mut pipe.tcp, shared.connect(addr));
+                    shared.retire(failed, false);
+                    Phase::Connecting { rest, request }
+                }
+                None => shared.end(fetch, slot, Err(ClientError::Connect(error)), out),
             }
         }
-        State::Head {
-            mut pipe,
-            mut scanned,
-        } => {
+        Phase::Head { mut scanned } => {
             if let Err(error) = pipe.flow() {
-                return shared.end(fetch, pipe, Err(error), out);
+                return shared.end(fetch, slot, Err(error), out);
             }
             let limits = shared.limits;
+            let parsed = loop {
+                match codec::reparse(
+                    pipe.plain_in(),
+                    &mut scanned,
+                    &limits,
+                    codec::parse_response_head,
+                ) {
+                    // An interim response (100 Continue, 103 Early Hints)
+                    // comes before the real one and has no body; the core
+                    // relays and captures only the real one. 101 is final:
+                    // the connection is the upgraded protocol's from here.
+                    Ok(Some(head)) if (100..200).contains(&head.status) && head.status != 101 => {
+                        pipe.plain_in().drain(..head.head_len);
+                        scanned = 0;
+                    }
+                    other => break other,
+                }
+            };
             let plain = pipe.plain_in();
-            match read_head(plain, &mut scanned, &limits) {
+            match parsed {
                 Ok(Some(head)) => {
                     let body = plain.split_off(head.head_len);
                     let raw = mem::replace(plain, body);
@@ -553,22 +600,27 @@ fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientE
                         headers: head.headers,
                         raw,
                     });
-                    next(State::Body { pipe, owed: false }, fetch, shared, out)
+                    next(Phase::Body { owed: false }, slot, fetch, shared, out)
                 }
+                // A write error counts only once no head can come: a peer that
+                // stopped taking the request may have answered it first.
                 Ok(None) if pipe.ended() => {
-                    let error = ClientError::Protocol(EOF_IN_HEAD);
-                    shared.end(fetch, pipe, Err(error), out)
+                    let error = match pipe.tcp.error() {
+                        Some(e) => ClientError::Io(e.clone()),
+                        None => ClientError::Protocol(EOF_IN_HEAD),
+                    };
+                    shared.end(fetch, slot, Err(error), out)
                 }
                 Ok(None) => {
                     pipe.want(limits.max_head);
-                    State::Head { pipe, scanned }
+                    Phase::Head { scanned }
                 }
-                Err(e) => shared.end(fetch, pipe, Err(ClientError::Protocol(e)), out),
+                Err(e) => shared.end(fetch, slot, Err(ClientError::Protocol(e)), out),
             }
         }
-        State::Body { mut pipe, mut owed } => {
+        Phase::Body { mut owed } => {
             if let Err(error) = pipe.flow() {
-                return shared.end(fetch, pipe, Err(error), out);
+                return shared.end(fetch, slot, Err(error), out);
             }
             let plain = pipe.plain_in();
             if !owed && !plain.is_empty() {
@@ -577,64 +629,21 @@ fn next(state: State, fetch: FetchId, shared: &mut Shared, out: &mut Vec<ClientE
                 owed = true;
             }
             if pipe.plain_in().is_empty() && pipe.ended() {
-                return shared.end(fetch, pipe, Ok(()), out);
+                return shared.end(fetch, slot, Ok(()), out);
             }
             pipe.want(if owed { 0 } else { READ_CHUNK });
-            State::Body { pipe, owed }
+            Phase::Body { owed }
         }
-        State::Resolving { .. } | State::Done => state,
+        Phase::Resolving { .. } | Phase::Done => phase,
     }
 }
 
 /// Report a failure that left no socket behind.
-fn fail(fetch: FetchId, error: ClientError, out: &mut Vec<ClientEvent>) -> State {
+fn fail(fetch: FetchId, error: ClientError, out: &mut Vec<ClientEvent>) -> Fetch {
     out.push(ClientEvent::Failed { fetch, error });
-    State::Done
-}
-
-/// Parse the head if the bytes since the last look could have completed it:
-/// a head ends at a newline, or fails at the size limit.
-fn read_head(
-    plain: &[u8],
-    scanned: &mut usize,
-    limits: &Limits,
-) -> Result<Option<ResponseHead>, HeadError> {
-    let fresh = plain.get(*scanned..).unwrap_or_default();
-    let worth_parsing = fresh.contains(&b'\n') || plain.len() >= limits.max_head;
-    *scanned = plain.len();
-    if worth_parsing {
-        codec::parse_response_head(plain, limits)
-    } else {
-        Ok(None)
-    }
-}
-
-impl State {
-    fn pipe(&self) -> Option<&Pipe> {
-        match self {
-            State::Connecting { pipe, .. }
-            | State::Head { pipe, .. }
-            | State::Body { pipe, .. } => Some(pipe),
-            State::Resolving { .. } | State::Done => None,
-        }
-    }
-
-    fn pipe_mut(&mut self) -> Option<&mut Pipe> {
-        match self {
-            State::Connecting { pipe, .. }
-            | State::Head { pipe, .. }
-            | State::Body { pipe, .. } => Some(pipe),
-            State::Resolving { .. } | State::Done => None,
-        }
-    }
-
-    fn into_pipe(self) -> Option<Pipe> {
-        match self {
-            State::Connecting { pipe, .. }
-            | State::Head { pipe, .. }
-            | State::Body { pipe, .. } => Some(pipe),
-            State::Resolving { .. } | State::Done => None,
-        }
+    Fetch {
+        phase: Phase::Done,
+        pipe: None,
     }
 }
 
@@ -680,20 +689,23 @@ impl Shared {
         ))
     }
 
-    /// Start connecting to `addr`.
+    /// A fetch connecting to `addr` first.
     fn dial(
         &mut self,
         addr: SocketAddr,
         rest: vec::IntoIter<SocketAddr>,
         request: Vec<u8>,
         link: Link,
-    ) -> State {
-        let tcp = Conn::connect(self.ids.next_sock(), addr);
-        State::Connecting {
-            pipe: Pipe { tcp, link },
-            rest,
-            request,
+    ) -> Fetch {
+        let tcp = self.connect(addr);
+        Fetch {
+            phase: Phase::Connecting { rest, request },
+            pipe: Some(Pipe { tcp, link }),
         }
+    }
+
+    fn connect(&mut self, addr: SocketAddr) -> Conn {
+        Conn::connect(self.ids.next_sock(), addr)
     }
 
     /// Report the fetch's end and retire its socket. A TLS failure leaves an
@@ -701,17 +713,19 @@ impl Shared {
     fn end(
         &mut self,
         fetch: FetchId,
-        pipe: Pipe,
+        slot: &mut Option<Pipe>,
         outcome: Result<(), ClientError>,
         out: &mut Vec<ClientEvent>,
-    ) -> State {
+    ) -> Phase {
         let alert = matches!(outcome, Err(ClientError::Tls(_)));
-        self.retire(pipe.tcp, alert);
+        if let Some(pipe) = slot.take() {
+            self.retire(pipe.tcp, alert);
+        }
         out.push(match outcome {
             Ok(()) => ClientEvent::End { fetch },
             Err(error) => ClientEvent::Failed { fetch, error },
         });
-        State::Done
+        Phase::Done
     }
 
     /// Keep `tcp` until it is closed: at once, or after one write of what it
@@ -740,10 +754,11 @@ impl Pipe {
     }
 
     /// Move bytes between the socket's buffers and the plaintext ones, and
-    /// report a failure of either.
+    /// report a failure of either. A write error alone is no failure here:
+    /// the response may still arrive (see `crate::tcp`).
     fn flow(&mut self) -> Result<(), ClientError> {
-        if let Some(e) = self.tcp.error() {
-            return Err(ClientError::Io(e));
+        if let Some(e) = self.tcp.read_error() {
+            return Err(ClientError::Io(e.clone()));
         }
         match &mut self.link {
             Link::Plain => Ok(()),

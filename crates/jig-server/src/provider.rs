@@ -37,6 +37,10 @@ pub enum Comp {
     Request { req: ReqId, request: Request },
     /// The embedder's answer to [`HostReq::Decide`] for `req`.
     Decision { req: ReqId, action: ScriptAction },
+    /// The exchange for `req` ended before its response was written: the
+    /// client left, or shutdown's grace ran out. A decision it awaits is no
+    /// longer owed.
+    Gone { req: ReqId },
     /// The embedder wants the server to stop.
     Stop,
 }
@@ -132,6 +136,11 @@ impl Core for Provider {
                             response: render_action(dialect, action),
                         });
                     }
+                }
+                // Without this, a host that never answers (`NoHost`, or one
+                // that defers) would keep `done` false for good.
+                Comp::Gone { req } => {
+                    self.undecided.remove(&req);
                 }
                 // Requests that still arrive are served; which of them get
                 // written is the I/O step's call under the grace period.

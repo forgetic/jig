@@ -873,6 +873,26 @@ fn a_raw_relay_reports_each_flush_and_closes_after_its_end() {
 }
 
 #[test]
+fn a_write_error_mid_relay_is_gone_and_reads_nothing() {
+    // Writing stops at the error while reading could go on (the client
+    // planner's early responses), but the server has nothing left to read.
+    let mut t = T::with_request();
+    t.step([ServerCmd::RawStart { req: REQ }]);
+    let (_, actions) = t.step([raw_bytes(b"part")]);
+    assert_eq!(actions, [write_act(C, b"part")]);
+    let pipe = IoError::from(ErrorKind::BrokenPipe);
+    assert_eq!(
+        t.reap([wrote(C, b"part", Err(pipe))]),
+        [ServerEvent::Gone { req: REQ }],
+        "no Flushed for bytes never written"
+    );
+    assert_eq!(t.actions(), [close(C)]);
+    let (out, actions) = t.step([raw_bytes(b"more"), ServerCmd::RawEnd { req: REQ }]);
+    assert_eq!((out, actions), (vec![], vec![]));
+    assert_eq!(t.reap([closed(C)]), []);
+}
+
+#[test]
 fn a_raw_end_with_everything_written_closes_at_once() {
     let mut t = T::with_request();
     t.step([ServerCmd::RawStart { req: REQ }]);

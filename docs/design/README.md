@@ -51,15 +51,18 @@ go deeper into each part. The mechanics are those of skein's
   resources as paths, effects keyed, topics, procedures' steps,
   requirements as verdicts. A connector keeps its own state per task,
   keyed by the task's number. The core never sees a connector's types.
-- **The store, the worker and the client follow the same pattern.**
+- **The store, the hosts and the client follow the same pattern.**
   - The store holds jig's records and the application's, in one commit.
-  - The worker hosts smith's agents in workspaces of the application's
-    kinds.
+  - Agents are optional. An application may have none, run them inside
+    its engine, or run them on workers, in workspaces of its own kinds.
   - The client domain covers the primitives, and the application adds
-    its own kinds of object.
+    its own kinds of object. It runs on any platform.
 
   In each case the application's root composes jig's part with its own,
   in its domain and in its protocol layer.
+- **The core never depends on smith.** Only jig's agent hosts, and the
+  client's view of conversations, link smith. An application without
+  agents never does.
 - **Flexibility and orthogonality over convenience.** An application
   writes some predictable code to wire jig in. Agents write such code
   well, and getting it wrong cannot break a promise silently.
@@ -98,21 +101,22 @@ go deeper into each part. The mechanics are those of skein's
 people    a client: the application's, around jig's client domain
 engine    where work is decided: the application's process, around jig's core
 store     skein-kv inside the engine: jig's records and the application's, committed together
-workers   execution hosts: the application's process, around jig's worker host
-agents    smith's: one run per agent process, reporting to its worker
+workers   if any: execution hosts, the application's process, around jig's worker host
+agents    if any: smith's, inside the engine or one run per agent process on a worker
 systems   what the application's connectors drive
 ```
 
 - **One engine per deployment.** It is the store's only writer and the
   only client of every connector's system (`core.md`).
-- **The engine decides, workers host, agents think.** Workers dial the
-  engine. Agents reach the engine only through tools their worker relays.
+- **The engine decides, hosts host, agents think.** A host is the engine
+  itself or a worker that dials it (section 9). Agents reach the engine
+  only through tools their host relays.
 - **Every process is the application's.** The application writes the
   root, the protocol layer, `iterate` and `main`, as with any service on
   skein. jig supplies the parts beneath its roots, and the pieces of its
   protocol layers that speak jig's vocabularies: the store's encoding of
-  jig's records, the engine's side of the workers' channel, and the
-  client's wire documents.
+  jig's records, the engine's side of the workers' channel when it has
+  workers, and the client's wire documents.
 
 ## 4. The application owns the root
 
@@ -155,7 +159,8 @@ application root    routing between its children, translation; its store, channe
 - **Its vocabulary toward the root:**
   - the store: its own records, saved, erased, loaded and restored, as
     every child's are (`engine.md`);
-  - the workers' channel, the engine's side;
+  - agents' hosts: the workers' channel, the engine's side, or the host
+    inside the engine (section 9);
   - people's requests, and the replies to them;
   - LLM accounts' refreshes;
   - the connectors' vocabulary (section 7).
@@ -167,11 +172,14 @@ application root    routing between its children, translation; its store, channe
   - **tasks**, the hub: batches, lifecycle, inboxes, wakes, proposals;
   - **authority**: policy as data, checks and budgets;
   - **people**: identities, roles, requests, inboxes, chats;
-  - **fleet**: workers, slots, placement, attempts;
+  - **fleet**: agents' hosts, slots, placement, attempts;
   - **accounts**: the LLM credentials;
   - **brief**: a run's context, in typed sections within a byte budget;
   - **notes**: what agents learn, in scopes;
   - **views**: live streams to watchers.
+- **Agents are optional.** An application without them configures no
+  charters. The batch check then refuses tasks with agent executors, and
+  the fleet and accounts stay idle.
 
 ## 6. The rails
 
@@ -381,19 +389,59 @@ and the conformance world crashes the application at every commit.
   both are loaded by the core's restart script (6.4). skein-kv is
   underneath, inside the engine (`store.md`).
 
-## 9. Workers and agents
+## 9. Agents and their hosts
 
-- **smith is the agent.** jig's worker host runs smith's agents and is
-  smith's host.
-- **The worker host is jig's:**
-  - slots, attempts, turns and graces;
-  - agent processes;
+- **smith is the agent.** Nothing in smith assumes code, repositories or
+  a workspace, so the same agent serves every application, told apart by
+  its charters.
+- **The core never depends on smith.** It keeps turns opaque, and reads
+  only a turn's size, its spend and the last message it read. Charters
+  are put into smith's form by the protocol layer, not by the domain.
+- **What the core needs is a host for each run, not a worker.** The
+  core's contract with a run is:
+  - a start: the charter, the brief, the transcript, credential grants,
+    an attempt number;
+  - turns sent up, committed and acknowledged;
+  - calls relayed and answered once, and messages relayed;
+  - an answer at the end;
+  - cancellation, and graces for a host that is lost.
+
+  smith's host contract carries the same, as frames over a channel or as
+  calls inside one process (smith's `host.md`, sections 3 and 9).
+- **Three shapes of application:**
+
+  ```
+  no agents           procedures and people only             no host, no smith, no LLM accounts
+  agents in-engine    smith's domain inside the engine       no workspace; tools are host tools only
+  agents on workers   worker processes, agent processes      workspaces, commands, many machines
+  ```
+
+  1. **No agents,** such as an approval or operations pipeline. Nothing
+     links smith (section 5).
+  2. **Agents in the engine,** such as a researcher, a triager or a chat
+     assistant, whose tools are the engine's tools and the connectors'
+     reads. The engine's root composes smith's domain in its one-process
+     form, and the fleet places runs on the engine's own slots. The costs:
+     - no process containment, which is fine when nothing runs
+       commands;
+     - the engine's worst case includes its runs;
+     - LLM traffic goes through the engine's protocol layer, on the
+       engine's loop.
+  3. **Agents on workers,** when runs execute commands, hold workspaces,
+     or need many machines, as temper's do. Each run is its own agent
+     process, so stopping a run ends its process tree.
+
+  An application may mix the second and third shapes: a charter says
+  which hosts may run it.
+- **jig's worker host,** for the third shape:
+  - slots, attempts, turns kept until acknowledged, and graces;
+  - agent processes, supervised through smith's host domain;
   - the worker's side of the channel to the engine.
 - **Workspaces are the application's.** A connector says which of its
   resources a run needs prepared. A connector whose resources are not
   files gives a run tools instead. The worker's root is the
-  application's: it composes jig's host with the application's kinds of
-  workspace (for temper, git checkouts).
+  application's: it composes jig's worker host with the application's
+  kinds of workspace (for temper, git checkouts).
 - **Host tools:** the engine's tools are jig's, and each connector's
   reads are declared by the application.
 
@@ -405,8 +453,10 @@ and the conformance world crashes the application at every commit.
     person tasks, results and live runs, with the pending keyed requests,
     pages and streams;
   - the wire documents for these;
-  - their views;
-  - the browser shell, and the native shell the worlds use;
+  - their views, conversations among them, rendered with smith's
+    transcript crate, which is the client's only use of smith;
+  - shells: the browser's, and a native one on skein's HTTP client for
+    Linux and the worlds;
   - the fake person, who reads the view tree by role, name and text.
 - **The application's part:**
   - its own kinds of object, as children of its client root;
@@ -415,9 +465,24 @@ and the conformance world crashes the application at every commit.
   The client root composes these with jig's client domain, under the
   same rule as the engine's: the root routes, and jig's client domain
   keeps the invariants of pending requests and pages.
-- **Any client.** The domain and the view are step crates, built for the
-  host and for wasm32. A new platform needs a new shell, and perhaps a new
-  view; the domain and the protocol stay the same.
+- **Any client, on any platform:** a browser through wasm32, a phone, a
+  desktop application on Linux, macOS or Windows, a command-line tool, or
+  another service.
+  - **Only the shell is the platform's.** The wire, the protocol layer,
+    the domain and the view are step crates, built for the host and for
+    wasm32.
+  - **A shell can sit on any HTTP stack.** The client's protocol layer
+    sits above HTTP: it gives the shell a method, a path and a body, and
+    gets back whole bodies and whole stream events. A shell may use the
+    browser's fetch, the operating system's own HTTP stack, or skein's
+    HTTP client, whose io is Linux's. Each shell is small.
+  - **The view is optional.** The view tree suits graphical clients. A
+    command-line tool may want a text view of its own. A service may use
+    the domain and the protocol only: keyed requests sent again until
+    durable, streams and paging.
+- **Clients that are not people.** Every party today is a person who
+  signed in, with a role in a project. A service acting through a client
+  needs an identity and a role too (section 14).
 - **The web protocol** carries jig's documents and the application's
   over one connection, composed in each end's protocol layer. Sign-in
   providers are the application's.
@@ -432,7 +497,7 @@ and the conformance world crashes the application at every commit.
 | the journal | skein (skein-lib) |
 | the store's encoding: of jig's records / of the application's, and their composition | jig / the application |
 | the engine's protocol layer, `iterate` and `main` | the application, from jig's and skein's pieces |
-| the worker host / the worker's root, kinds of workspace, `main` | jig / the application |
+| agents' hosts: the worker host, the in-engine host / the worker's root, kinds of workspace, `main` (none without agents) | jig / the application |
 | the agent / its charters | smith / the application |
 | the client domain, views, wire and shells / its own objects and its client root | jig / the application |
 | the conformance world, the referee, scripted workers and people, the fake person / its worlds and its systems' fakes | jig / the application |
@@ -464,7 +529,8 @@ To be written, in reading order:
    accounts.
 6. **people.md:** people as parties: identity, roles, requests, inboxes,
    chats, person tasks.
-7. **worker.md:** the worker host.
+7. **hosts.md:** agents and their hosts: the three shapes, the host
+   inside the engine, the worker host.
 8. **store.md:** jig's records, and how an application's join them.
 9. **client.md:** the client domain, its views, its wire and its shells.
 10. **testing.md:** jig's worlds, the conformance world and its referee,
@@ -506,5 +572,11 @@ To be written, in reading order:
   for example as one kind of card per family.
 - **Versioning:** how jig is released and pinned, and how a change to its
   vocabulary reaches every application.
+- **Clients that are not people:** whether a service acting through a
+  client is a party of its own kind, with a role, or acts with a person's
+  sign-in delegated to it.
+- **The host inside the engine:** whether its slots are a kind of slot in
+  the fleet, or a host of their own beside the fleet.
 - **The worker:** whether the worker's root is always the application's,
-  as section 9 assumes, or jig can ship a worker that needs none.
+  as section 9 assumes, or jig can ship a worker that needs none, for
+  applications whose runs need containment but no workspace prepared.

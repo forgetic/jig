@@ -34,6 +34,9 @@
   routes and translates (`README.md`, section 6). A change that would
   make an application's root decide or order something is a change to
   jig's design first.
+- **The core never depends on smith.** Only jig's agent hosts and the
+  client's view of conversations do, so an application without agents
+  never links smith (`README.md`, section 9).
 - **No system is named in jig's code:** no forge, repository, branch, pull
   request, issue or git. Systems are an application's connectors.
 - **Work locally,** on isolated branches merged with `--ff-only`. Do not

@@ -325,9 +325,16 @@ to watchers and answers to a run's read tools.
 
 ### 6.7 A reference root
 
-jig's example application (`examples.md`) is small, not about software,
-and complete: a root, a connector, the connector's fake, a client and
-worlds. Its root is the template every application copies. With
+jig's example application, `ops` (`examples.md`), is a small system for
+running services in production. It is chosen because it shares none of
+temper's shapes of work:
+- two connectors, observability and infrastructure;
+- a stream of events, mostly noise;
+- effects on shared and scarce resources that cost money;
+- its agents inside its engine.
+
+It is complete: a root, its connectors, their fake, a client and worlds.
+Its root is the template every application copies. With
 exhaustive matches and one shape (6.3), roots look alike, and agents fill
 in their arms.
 
@@ -535,7 +542,8 @@ To be written, in reading order:
 9. **client.md:** the client domain, its views, its wire and its shells.
 10. **testing.md:** jig's worlds, the conformance world and its referee,
     and the kits an application's worlds use.
-11. **examples.md:** the example application, and the reference root.
+11. **examples.md:** the example application, `ops`, and the reference
+    root.
 
 ## 13. Conventions
 
@@ -566,8 +574,6 @@ To be written, in reading order:
   connector's while the effect it guards is another's.
 - **Scarce resources:** whether a write hold that is taken waits or is
   refused.
-- **The example application:** which one. It must be small, not about
-  software, and drive a system unlike a forge.
 - **The client's pages:** how jig's pages show an application's objects,
   for example as one kind of card per family.
 - **Versioning:** how jig is released and pinned, and how a change to its

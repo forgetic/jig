@@ -173,3 +173,22 @@ fn a_keyed_silence_suppresses_alerts_and_can_be_found_after_its_answer_is_lost()
     assert!(production.inject_incident(&name));
     assert_eq!(production.alerts().len(), 1);
 }
+
+#[test]
+fn conditional_changes_report_their_origin_and_hand_changes_clear_it() {
+    let mut production = Production::new(0, Backend::Fake);
+    let service = ServiceName::new("production", "checkout");
+    production.add_service(service.clone(), "v2", 2);
+    assert_eq!(production.scale_with_key(&service, 2, 3, key(1)), ResultValue::Made);
+    assert_eq!(production.read_service(&service).expect("service exists").last_change, Some(key(1)));
+    production.other_hand(Fault::HandScale { service: service.clone(), replicas: 4 });
+    assert_eq!(production.read_service(&service).expect("service exists").last_change, None);
+    assert_eq!(production.rollback_with_key(&service, "v2", "v1", key(2)), ResultValue::Made);
+    assert_eq!(production.read_service(&service).expect("service exists").last_change, Some(key(2)));
+
+    production.set_pool_quota("staging", 1);
+    let environment = EnvironmentName::new("staging", "payments");
+    assert_eq!(production.create_environment(environment.clone(), key(3), 100, 10), ResultValue::Made);
+    assert_eq!(production.tear_down(&environment, key(3)), ResultValue::Made);
+    assert_eq!(production.deleted_by(&environment), Some(key(3)));
+}

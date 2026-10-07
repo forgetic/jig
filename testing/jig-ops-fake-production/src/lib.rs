@@ -130,6 +130,8 @@ pub struct ServiceFacts {
     pub observed: u64,
     /// Revision changed by either hand.
     pub revision: u64,
+    /// Key of the latest conditional change, absent for another hand's move.
+    pub last_change: Option<Key>,
 }
 
 /// Facts returned by an environment read.
@@ -206,6 +208,7 @@ pub struct Production {
     operations: BTreeMap<u64, ServiceName>,
     rules: BTreeMap<String, ServiceName>,
     silences: BTreeMap<Key, (String, u64)>,
+    deleted: BTreeMap<EnvironmentName, Key>,
     alerts: Vec<Alert>,
     observed: Vec<ObservedEffect>,
     faults: VecDeque<Fault>,
@@ -229,6 +232,7 @@ impl Production {
             operations: BTreeMap::new(),
             rules: BTreeMap::new(),
             silences: BTreeMap::new(),
+            deleted: BTreeMap::new(),
             alerts: Vec::new(),
             observed: Vec::new(),
             faults: VecDeque::new(),
@@ -286,6 +290,7 @@ impl Production {
             error_rate_percent: 0,
             observed: self.now,
             revision: 1,
+            last_change: None,
         };
         let service = Service {
             facts,
@@ -352,6 +357,7 @@ impl Production {
         service.facts.healthy_replicas = service.facts.replicas.saturating_sub(1);
         service.facts.load_percent = 95;
         service.facts.revision = service.facts.revision.checked_add(1).expect("revision fits");
+        service.facts.last_change = None;
         service.logs.push(Log { at: self.now, text: "incident: elevated errors".into() });
         service.samples.push(Sample { at: self.now, load_percent: 95, errors: 20 });
         let mut silenced = false;
@@ -476,6 +482,12 @@ impl Production {
         self.environments.get(name).cloned()
     }
 
+    /// Finds which creation key made a deletion, when this system made it.
+    pub fn deleted_by(&mut self, name: &EnvironmentName) -> Option<Key> {
+        self.count_call();
+        self.deleted.get(name).copied()
+    }
+
     /// Reads a pool's capacity and occupied slots.
     pub fn read_pool(&mut self, name: &str) -> Option<(u32, u32)> {
         self.count_call();
@@ -493,6 +505,15 @@ impl Production {
 
     /// Restarts a service, once by operation ID on the fake backend.
     pub fn restart(&mut self, name: &ServiceName, operation: u64) -> ResultValue {
+        self.restart_with_owner(name, operation, None)
+    }
+
+    /// Restarts under an application key whose provenance can be read afresh.
+    pub fn restart_with_key(&mut self, name: &ServiceName, operation: u64, key: Key) -> ResultValue {
+        self.restart_with_owner(name, operation, Some(key))
+    }
+
+    fn restart_with_owner(&mut self, name: &ServiceName, operation: u64, owner: Option<Key>) -> ResultValue {
         self.count_call();
         let fault = self.take_fault();
         if fault == Some(Fault::ApiError) {
@@ -508,6 +529,7 @@ impl Production {
             return ResultValue::Missing;
         };
         service.facts.revision = service.facts.revision.checked_add(1).expect("revision fits");
+        service.facts.last_change = owner;
         service.recovery_at = Some(self.now.saturating_add(5));
         service.logs.push(Log { at: self.now, text: "restart requested".into() });
         if self.backend == Backend::Fake {
@@ -519,6 +541,15 @@ impl Production {
 
     /// Sets replicas only from the count the caller decided from.
     pub fn scale(&mut self, name: &ServiceName, from: u32, to: u32) -> ResultValue {
+        self.scale_with_owner(name, from, to, None)
+    }
+
+    /// Sets replicas under a caller key whose provenance can be read afresh.
+    pub fn scale_with_key(&mut self, name: &ServiceName, from: u32, to: u32, key: Key) -> ResultValue {
+        self.scale_with_owner(name, from, to, Some(key))
+    }
+
+    fn scale_with_owner(&mut self, name: &ServiceName, from: u32, to: u32, owner: Option<Key>) -> ResultValue {
         self.count_call();
         let fault = self.take_fault();
         if fault == Some(Fault::ApiError) {
@@ -530,6 +561,7 @@ impl Production {
         let applied = service.facts.replicas == from;
         if applied {
             service.facts.replicas = to;
+            service.facts.last_change = owner;
             service.facts.healthy_replicas = if service.incident { to.saturating_sub(1) } else { to };
             service.facts.revision = service.facts.revision.checked_add(1).expect("revision fits");
         }
@@ -539,6 +571,15 @@ impl Production {
 
     /// Sets a version only from the version the caller decided from.
     pub fn rollback(&mut self, name: &ServiceName, from: &str, to: &str) -> ResultValue {
+        self.rollback_with_owner(name, from, to, None)
+    }
+
+    /// Sets a version under a caller key whose provenance can be read afresh.
+    pub fn rollback_with_key(&mut self, name: &ServiceName, from: &str, to: &str, key: Key) -> ResultValue {
+        self.rollback_with_owner(name, from, to, Some(key))
+    }
+
+    fn rollback_with_owner(&mut self, name: &ServiceName, from: &str, to: &str, owner: Option<Key>) -> ResultValue {
         self.count_call();
         let fault = self.take_fault();
         if fault == Some(Fault::ApiError) {
@@ -550,6 +591,7 @@ impl Production {
         let applied = service.facts.version == from;
         if applied {
             service.facts.version = to.into();
+            service.facts.last_change = owner;
             service.facts.revision = service.facts.revision.checked_add(1).expect("revision fits");
         }
         self.observed.push(ObservedEffect::Rollback {
@@ -610,6 +652,7 @@ impl Production {
         let applied = existing.key == key;
         if applied {
             self.environments.remove(name);
+            self.deleted.insert(name.clone(), key);
         }
         self.observed.push(ObservedEffect::TearDown { environment: name.clone(), key, applied });
         if applied { Self::after_effect(fault.as_ref()) } else { ResultValue::Conflict }
@@ -621,6 +664,7 @@ impl Production {
             Fault::HandRestart { service: name } => {
                 if let Some(service) = self.services.get_mut(&name) {
                     service.facts.revision = service.facts.revision.checked_add(1).expect("revision fits");
+                    service.facts.last_change = None;
                     service.recovery_at = Some(self.now.saturating_add(5));
                     service.logs.push(Log { at: self.now, text: "hand restart".into() });
                 }
@@ -628,12 +672,14 @@ impl Production {
             Fault::HandScale { service: name, replicas } => {
                 if let Some(service) = self.services.get_mut(&name) {
                     service.facts.replicas = replicas;
+                    service.facts.last_change = None;
                     service.facts.healthy_replicas = replicas;
                     service.facts.revision = service.facts.revision.checked_add(1).expect("revision fits");
                 }
             }
             Fault::HandDelete { environment } => {
                 self.environments.remove(&environment);
+                self.deleted.remove(&environment);
             }
             Fault::ApiError | Fault::LostAnswer | Fault::QuotaExhausted | Fault::SlowProvisioning { .. } => {}
         }

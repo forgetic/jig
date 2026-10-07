@@ -58,7 +58,7 @@ use skein_lib::{Duration, ReplyTo, Token};
 pub enum HostKind {
     /// A worker connected on a channel.
     Worker,
-    /// The engine's own local host.
+    /// The engine's own host.
     Engine,
 }
 

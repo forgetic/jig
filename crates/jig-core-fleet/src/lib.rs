@@ -31,7 +31,7 @@
 //!
 //! Sans-io: [`step`], [`fire`] and [`resume`] turn events into requests and
 //! change nothing but the [`Domain`] they are given. Every effect is a
-//! [`Request`] that its parent routes to a worker's channel, the local host,
+//! [`Request`] that its parent routes to a worker's channel, the engine's host,
 //! or its own state. Their outcomes come back
 //! later through the parent as an [`Event`]. The fleet owns its timers: the
 //! grace of a lost channel, and that of an adoption.

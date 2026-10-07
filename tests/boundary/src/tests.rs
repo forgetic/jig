@@ -174,9 +174,7 @@ fn core_and_children_use_only_the_kit_and_foundation_even_when_empty() {
 fn hosts_and_translation_use_no_core_crates_even_when_empty() {
     let failures: Vec<_> = manifests()
         .into_iter()
-        .filter(|manifest| {
-            matches!(manifest.name.as_str(), "jig-local-host" | "jig-host" | "jig-inline-agent" | "jig-charter")
-        })
+        .filter(|manifest| matches!(manifest.name.as_str(), "jig-host" | "jig-inline-agent" | "jig-charter"))
         .flat_map(|manifest| {
             manifest
                 .dependencies

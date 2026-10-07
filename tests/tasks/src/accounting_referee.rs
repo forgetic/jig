@@ -117,6 +117,7 @@ impl Accounting {
                             }
                             Stored::Live(_)
                             | Stored::Ended(_)
+                            | Stored::Stub(_)
                             | Stored::Ledger(_)
                             | Stored::History(_)
                             | Stored::PersonProposal(_) => None,
@@ -150,6 +151,7 @@ impl Accounting {
                             }
                             Stored::Live(_)
                             | Stored::Ended(_)
+                            | Stored::Stub(_)
                             | Stored::Ledger(_)
                             | Stored::History(_)
                             | Stored::PersonProposal(_) => None,
@@ -177,7 +179,7 @@ impl Accounting {
                         return Err("original source identity changed");
                     }
                 }
-                Stored::Ended(_) | Stored::History(_) | Stored::PersonProposal(_) => {}
+                Stored::Ended(_) | Stored::Stub(_) | Stored::History(_) | Stored::PersonProposal(_) => {}
             }
         }
         self.before = rows.clone();

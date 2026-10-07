@@ -8,6 +8,43 @@ use crate::{
 use alloc::boxed::Box;
 use skein_lib::{Env, List, Queue};
 
+pub(crate) fn named_by_live(domain: &Domain, ended: u64) -> bool {
+    for (number, _) in &domain.names {
+        let row = record(domain, *number).expect("indexed live task");
+        if crate::batch::contains(&row.dependencies, ended)
+            || crate::batch::contains(&row.spec.inputs, ended)
+            || crate::batch::contains(&row.references, ended)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn remember_stub(domain: &mut Domain, stub: crate::Stub, out: &mut Queue<Request>) {
+    if !domain.ready() || stub.task == 0 || stub.result.raw() != stub.task || !named_by_live(domain, stub.task) {
+        return;
+    }
+    if domain.stubs.contains_key(&stub.task) {
+        return;
+    }
+    domain.stubs.insert(stub.task, stub).expect("new historical input fits bounded live names");
+    out.push(Request::Save { record: Stored::Stub(stub) });
+}
+
+fn prune_stubs(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>) {
+    let mut unused = List::with_capacity(crate::limits::stub_capacity(&env.limits).expect("valid stub bound"));
+    for (number, _) in &domain.stubs {
+        if !named_by_live(domain, *number) {
+            unused.push(*number).expect("stub count bounded");
+        }
+    }
+    for number in unused.into_boxed() {
+        domain.stubs.remove(&number);
+        out.push(Request::Erase { key: Key::Stub(number) });
+    }
+}
+
 pub(crate) fn status(ending: &Ending) -> Status {
     match ending {
         Ending::Done(_) => Status::Done,
@@ -105,7 +142,7 @@ pub(crate) fn cancel_tree(
             // required to associate the final cancelled result with it.
             let stage = match stage {
                 Stage::Settled => Stage::Delegates,
-                Stage::Run { .. } | Stage::Delegates | Stage::Effects => stage,
+                Stage::Run { .. } | Stage::Delegates | Stage::Effects | Stage::Releases => stage,
             };
             task_mut(domain, *number).expect("selected task live").record.phase =
                 Phase::Closing(Closing { stage, ending: Ending::Cancelled { reason: reason.into(), result: partial } });
@@ -122,7 +159,36 @@ pub(crate) fn cancel_tree(
                 };
                 out.push(Request::Close { task: *number, ending });
             }
+            if stage == Stage::Releases {
+                let ending = match &record(domain, *number).expect("selected task live").phase {
+                    Phase::Closing(closing) => closing.ending.clone(),
+                    Phase::Waiting | Phase::Active(_) | Phase::Held { .. } | Phase::Ended(_) => {
+                        unreachable!("cancel installed closing")
+                    }
+                };
+                out.push(Request::Release { task: *number, ending });
+            }
         }
+    }
+}
+
+pub(crate) fn effects_settled(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue<Request>) {
+    if !domain.ready() {
+        return;
+    }
+    let Some(task) = task_mut(domain, number) else { return };
+    match &mut task.record.phase {
+        Phase::Closing(closing) if closing.stage == Stage::Effects => {
+            closing.stage = Stage::Releases;
+            let ending = closing.ending.clone();
+            publish(domain, env, number, out);
+            out.push(Request::Release { task: number, ending });
+        }
+        Phase::Held { was: Was::Closing(closing), .. } if closing.stage == Stage::Effects => {
+            closing.stage = Stage::Releases;
+            publish(domain, env, number, out);
+        }
+        Phase::Waiting | Phase::Active(_) | Phase::Closing(_) | Phase::Held { .. } | Phase::Ended(_) => {}
     }
 }
 
@@ -134,7 +200,9 @@ pub(crate) fn settled(domain: &mut Domain, env: &Env<Limits>, number: u64, out: 
         return;
     };
     match &mut task.record.phase {
-        Phase::Closing(closing) | Phase::Held { was: Was::Closing(closing), .. } if closing.stage == Stage::Effects => {
+        Phase::Closing(closing) | Phase::Held { was: Was::Closing(closing), .. }
+            if closing.stage == Stage::Releases =>
+        {
             closing.stage = Stage::Settled;
             publish(domain, env, number, out);
         }
@@ -178,7 +246,7 @@ pub(crate) fn progress(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
                         out.push(Request::Close { task: number, ending });
                         changed = true;
                     }
-                    Stage::Run { .. } | Stage::Effects | Stage::Delegates => {}
+                    Stage::Run { .. } | Stage::Effects | Stage::Releases | Stage::Delegates => {}
                     Stage::Settled => {
                         let requester = task.requester;
                         end_task(domain, env, number, out);
@@ -207,7 +275,9 @@ fn end_task(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue
     let ending = match &task.phase {
         Phase::Closing(closing) => match closing.stage {
             Stage::Settled => &closing.ending,
-            Stage::Run { .. } | Stage::Delegates | Stage::Effects => unreachable!("ending follows settlement"),
+            Stage::Run { .. } | Stage::Delegates | Stage::Effects | Stage::Releases => {
+                unreachable!("ending follows settlement")
+            }
         },
         Phase::Waiting | Phase::Active(_) | Phase::Held { .. } | Phase::Ended(_) => {
             unreachable!("ending follows settlement")
@@ -272,6 +342,12 @@ fn end_task(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue
         }
         Party::Person(_) | Party::Deployment { .. } => {}
     }
+    if named_by_live(domain, number) {
+        let stub = crate::Stub { task: number, phase: status, result: skein_lib::Token::new(number) };
+        domain.stubs.insert(number, stub).expect("one stub for a bounded live reference");
+        out.push(Request::Save { record: Stored::Stub(stub) });
+    }
+    prune_stubs(domain, env, out);
     let state = match status {
         Status::Done => crate::NoticeState::Done,
         Status::Failed => crate::NoticeState::Failed,

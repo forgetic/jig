@@ -69,20 +69,13 @@ pub(crate) fn end(domain: &mut Domain, env: &Env<Limits>, ended: u64, out: &mut 
                     owed = true;
                 }
             }
-            if crate::batch::contains(&row.references, ended) || owed {
+            if owed {
                 peers.push(*number).expect("live peer count bounded");
             }
         }
     }
     for number in peers.into_boxed() {
         let row = task_mut(domain, number).expect("live peer");
-        let mut references = List::with_capacity(env.limits.references);
-        for peer in &row.record.references {
-            if *peer != ended {
-                references.push(*peer).expect("reference subset bounded");
-            }
-        }
-        row.record.references = references.into_boxed();
         let mut credits = List::with_capacity(env.limits.inbox_messages);
         for credit in &row.record.questions {
             if credit.answerer != ended {

@@ -381,6 +381,15 @@ pub enum Status {
     Cancelled,
 }
 
+/// Bounded working-set pointer to an ended result still named by live work.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Stub {
+    pub task: u64,
+    pub phase: Status,
+    /// `Key::Ended(result.raw())` is the historical result row.
+    pub result: skein_lib::Token,
+}
+
 /// Root-to-tasks activation terminal, fenced by task/attempt; a terminal may park or retry without
 /// ending the task. (domain/tasks.md, sections 5.2, 5.5 and 5.6).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -449,8 +458,8 @@ pub enum Active {
     },
 }
 
-/// Ordered closing obligation; the root owns actual effect/resource settlement and returns
-/// `Settled` after `Close`. (domain/tasks.md, section 5.1).
+/// Ordered closing obligation; the root confirms effect settlement before resource release.
+/// (domain/tasks.md, section 5.1).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Stage {
     /// Wait for the exact live attempt's terminal.
@@ -460,8 +469,10 @@ pub enum Stage {
     },
     /// Wait for all live delegates and actual incoming financial allocations to settle.
     Delegates,
-    /// `Close` output is owed settlement from root; tasks owns no connector obligations.
+    /// `Close` output is owed settlement of all prior effects from root.
     Effects,
+    /// `Release` output is owed settlement of resource cleanup from root.
+    Releases,
     /// Root closing obligations settled; final financial posting and historical end can commit.
     /// Unheld `Settled` is transient and refused on live restore; held prior closing may retain it.
     Settled,
@@ -647,6 +658,8 @@ pub enum Key {
     Live(/** `Live` task identity whose row is replaced or erased. */ u64),
     /// Logical historical ended-task row.
     Ended(/** Historical ended task identity retained in the store, outside the live arena. */ u64),
+    /// Working-set pointer retained only while a live task names the ending.
+    Stub(u64),
     /// Logical finite period/pool row.
     Ledger(/** Actual period/pool source identity. */ Funder),
 }
@@ -670,6 +683,8 @@ pub enum Stored {
         /** Owned boxed historical ending retained in root storage; never a live restore input or a replayed result delivery. */
          Box<TaskRecord>,
     ),
+    /// Compact durable pointer to a historical result named by live work.
+    Stub(Stub),
     /// Authentic finite external source accounting; restored links are checked with live
     /// reservations.
     Ledger(
@@ -688,6 +703,7 @@ impl Stored {
             Stored::History(row) => Key::History { task: row.task, revision: row.revision },
             Stored::Live(record) => Key::Live(record.number),
             Stored::Ended(record) => Key::Ended(record.number),
+            Stored::Stub(stub) => Key::Stub(stub.task),
             Stored::Ledger(record) => Key::Ledger(record.funder),
         }
     }
@@ -854,6 +870,8 @@ pub enum Event {
     /// Root delivers a just-ended delegate's result to its task requester in
     /// the same decision that archived the delegate.
     DelegateResult { task: u64, word: Word },
+    /// Root verified a newly named historical input against its ended store row.
+    RememberStub { stub: Stub },
     /// Root `SetRoles` preflight: inspect only current person-requested `Waiting`
     /// contexts without mutation; one typed terminal even before readiness.
     InspectEscalations {
@@ -1026,10 +1044,15 @@ pub enum Event {
         /// Authorized or root-classified hold reason; tasks judges no policy here.
         why: Hold,
     },
-    /// Root notification after `Close` obligations finish; matching `Effects` stages advance,
+    /// Root notification that prior effects settled; matching `Effects` stages advance.
+    EffectsSettled {
+        /// Closing task whose prior effects have settled.
+        task: u64,
+    },
+    /// Root notification after cleanup finishes; matching `Releases` stages advance,
     /// including held prior closing, without lifting a hold.
     Settled {
-        /// Task whose root-owned `Close` obligations settled; only `Effects` stages advance,
+        /// Task whose root-owned cleanup obligations settled; only `Releases` stages advance,
         /// including preserved closing while held.
         task: u64,
     },
@@ -1177,14 +1200,16 @@ pub enum Request {
         /** Highest committed turn in the restored attempt, supplied for fleet reconciliation. */
         kept: u32,
     },
-    /// Ask root to complete its actual closing obligations, then return `Settled`; emitted only
+    /// Ask root to settle prior effects, then return `EffectsSettled`; emitted only
     /// after delegates and funded allocations settle.
     Close {
         /** Task whose delegates/financial allocations have settled and root closing obligations must finish. */
         task: u64,
-        /** Bounded pending final ending; root returns `Settled` only after its actual closing obligations finish. */
+        /** Bounded pending final ending; root uses it to plan cleanup after effect settlement. */
         ending: Ending,
     },
+    /// Ask root to release this task's resources after prior effects settle.
+    Release { task: u64, ending: Ending },
     /// One newly ended requester-identified notification emitted with the ended record and exact
     /// financial posting; current root exposes person result notices, with no task-requester inbox
     /// route or child delivery credit.

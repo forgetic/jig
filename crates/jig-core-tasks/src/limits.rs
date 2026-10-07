@@ -73,6 +73,12 @@ pub struct Limits {
     pub facts: u32,
 }
 
+/// Maximum ended identities named by bounded live dependencies, inputs or references.
+#[must_use]
+pub(crate) fn stub_capacity(limits: &Limits) -> Option<u32> {
+    limits.tasks.checked_mul(limits.dependencies.checked_add(limits.inputs)?.checked_add(limits.references)?)
+}
+
 /// Pure checked heap bound for live containers and nested payloads, finite ledgers, charter
 /// configuration, optional facts and bounded graph/traversal scratch under `limits`. Returns `None`
 /// on overflow or invalid task/batch/tree/retry settings. Validates output-bound arithmetic; caller
@@ -153,6 +159,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     Slab::<Task>::worst_case(limits.tasks)?
         .checked_add(Map::<crate::Funder, crate::FundingRecord>::worst_case(limits.funders)?)?
         .checked_add(Map::<u64, Id<Task>>::worst_case(limits.tasks)?)?
+        .checked_add(Map::<u64, crate::Stub>::worst_case(stub_capacity(limits)?)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?

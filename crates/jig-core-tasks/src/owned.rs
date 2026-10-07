@@ -37,7 +37,7 @@ pub fn stored_bytes(record: &Stored) -> Option<u64> {
             Some(total)
         }
         Stored::Live(task) | Stored::Ended(task) => task_bytes(task),
-        Stored::Ledger(_) => Some(0),
+        Stored::Stub(_) | Stored::Ledger(_) => Some(0),
     }
 }
 

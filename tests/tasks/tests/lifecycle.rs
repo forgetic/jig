@@ -147,6 +147,46 @@ fn dependency_order_negative_verdict_starts_but_failure_holds() {
 }
 
 #[test]
+fn ended_dependency_keeps_a_bounded_stub_until_its_last_live_reader_ends() {
+    let mut w = World::new(103, LIMITS);
+    w.make(Party::Person(1), vec![task(1, &[]), task(2, &[1])]);
+    w.claim(1, 1);
+    w.finish(1);
+    w.settle(1);
+    assert!(!w.records.contains_key(&Key::Live(1)));
+    assert!(
+        matches!(w.records.get(&Key::Stub(1)), Some(jig_core_tasks::Stored::Stub(stub)) if stub.task == 1 && stub.result.raw() == 1)
+    );
+    w.restart();
+    assert!(w.records.contains_key(&Key::Stub(1)));
+    w.claim(2, 2);
+    w.finish(2);
+    w.settle(2);
+    assert!(!w.records.contains_key(&Key::Stub(1)));
+    assert!(w.records.contains_key(&Key::Ended(1)));
+}
+
+#[test]
+fn ended_reference_survives_restart_as_a_stub_until_its_peer_ends() {
+    let mut w = World::new(104, LIMITS);
+    w.make(Party::Person(1), vec![task(1, &[])]);
+    w.make(Party::Task(1), vec![task(2, &[]), task(3, &[])]);
+    let reply_to = w.to();
+    w.send(Event::Introduce { reply_to, by: 1, left: 2, right: 3 });
+    w.claim(2, 2);
+    w.finish(2);
+    w.settle(2);
+    assert!(w.records.contains_key(&Key::Stub(2)));
+    assert_eq!(w.record(3).references.as_ref(), [2]);
+    w.restart();
+    assert_eq!(w.record(3).references.as_ref(), [2]);
+    w.claim(3, 3);
+    w.finish(3);
+    w.settle(3);
+    assert!(!w.records.contains_key(&Key::Stub(2)));
+}
+
+#[test]
 fn every_failure_class_holds_after_its_retry_budget() {
     for class in [Class::Transient, Class::Permanent, Class::Run, Class::Agent, Class::Lost, Class::Invalid] {
         let mut w = World::new(4, LIMITS);
@@ -237,6 +277,51 @@ fn corrected_finish_cancels_delegates_and_closes_deepest_first() {
     );
     assert!(matches!(w.results.get(&1), Some(Ending::Done(_))));
     w.referee.assert_passed(7);
+}
+
+#[test]
+fn a_cancel_closes_a_tree_of_three_levels_deepest_first_with_runs_live_and_effects_in_flight() {
+    let mut w = World::new(71, LIMITS);
+    w.make(Party::Person(1), vec![task(1, &[])]);
+    w.claim(1, 1);
+    w.make(Party::Task(1), vec![task(2, &[])]);
+    w.claim(2, 2);
+    w.make(Party::Task(2), vec![task(3, &[])]);
+    w.claim(3, 3);
+
+    w.terminal(1, End::Finished { result: TaskResult::Report { words: Box::new([1]) }, cancel_delegates: true });
+    assert!(w.stops.contains(&(2, 2)) && w.stops.contains(&(3, 3)));
+    w.terminal(3, End::Parked);
+    w.terminal(2, End::Parked);
+    assert_eq!(w.closing.iter().copied().collect::<Vec<_>>(), [3]);
+    w.settle_effects(3);
+    assert!(w.results.is_empty(), "effect settlement alone does not end the deepest task");
+    w.release(3);
+    assert_eq!(w.closing.iter().copied().collect::<Vec<_>>(), [2]);
+    w.settle_effects(2);
+    assert!(w.results.contains_key(&3) && !w.results.contains_key(&2));
+    w.release(2);
+    assert_eq!(w.closing.iter().copied().collect::<Vec<_>>(), [1]);
+    w.settle(1);
+    assert_eq!(w.results.len(), 3);
+    assert!(matches!(w.results.get(&1), Some(Ending::Done(_))));
+    assert!(matches!(w.results.get(&2), Some(Ending::Cancelled { .. })));
+    assert!(matches!(w.results.get(&3), Some(Ending::Cancelled { .. })));
+}
+
+#[test]
+fn a_dependent_starts_only_after_its_dependency_has_closed_and_its_effects_settled() {
+    let mut w = World::new(72, LIMITS);
+    w.make(Party::Person(1), vec![task(1, &[]), task(2, &[1])]);
+    assert!(w.activations.contains(&1) && !w.activations.contains(&2));
+    w.claim(1, 1);
+    w.finish(1);
+    assert!(w.closing.contains(&1));
+    assert!(!w.activations.contains(&2));
+    w.settle_effects(1);
+    assert!(!w.activations.contains(&2), "resource cleanup still follows effect settlement");
+    w.release(1);
+    assert!(w.activations.contains(&2));
 }
 
 #[test]

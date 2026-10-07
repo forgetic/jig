@@ -1,5 +1,5 @@
 //! Cold admission of bounded live rows and complete link validation
-//! (domain/tasks.md, sections 2 and 5). Only Live/Ledger enter startup;
+//! (domain/tasks.md, sections 2 and 5). Live/Ledger/Stub enter startup;
 //! historical Ended rows stay in root storage. Successful restoration
 //! reconstructs activations, claims, closing gates and projected retry timers;
 //! failed restoration never becomes ready through more input.
@@ -37,7 +37,7 @@ fn valid_stage(task: &TaskRecord, closing: &Closing, limits: &Limits) -> bool {
         && match closing.stage {
             Stage::Run { attempt } => attempt != 0 && attempt == task.attempt && task.last_answer != Some(attempt),
             Stage::Delegates => true,
-            Stage::Effects | Stage::Settled => task.delegates.is_empty(),
+            Stage::Effects | Stage::Releases | Stage::Settled => task.delegates.is_empty(),
         }
 }
 
@@ -68,9 +68,14 @@ fn person_phase(phase: &Phase) -> bool {
         Phase::Waiting
         | Phase::Active(Active::Due | Active::Idle)
         | Phase::Held { was: Was::Waiting | Was::Active(Active::Due | Active::Idle), .. }
-        | Phase::Closing(Closing { stage: Stage::Delegates | Stage::Effects | Stage::Settled, .. })
+        | Phase::Closing(Closing {
+            stage: Stage::Delegates | Stage::Effects | Stage::Releases | Stage::Settled, ..
+        })
         | Phase::Held {
-            was: Was::Closing(Closing { stage: Stage::Delegates | Stage::Effects | Stage::Settled, .. }),
+            was:
+                Was::Closing(Closing {
+                    stage: Stage::Delegates | Stage::Effects | Stage::Releases | Stage::Settled, ..
+                }),
             ..
         } => true,
         Phase::Active(
@@ -537,6 +542,16 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>, stored: Stored, ou
             let indexed = domain.names.insert(number, id);
             assert!(indexed == Ok(None), "restored name admitted");
         }
+        Stored::Stub(stub) => {
+            if stub.task == 0
+                || stub.result.raw() != stub.task
+                || domain.stubs.contains_key(&stub.task)
+                || domain.stubs.len() == domain.stubs.capacity()
+            {
+                return failed(domain, Some(stub.task), Refusal::Restore, out);
+            }
+            domain.stubs.insert(stub.task, stub).expect("bounded restored stub");
+        }
         // Historical ended rows stay outside the live arena;
         // they cannot accidentally return an ended task to the live arena.
         Stored::Ended(task) => failed(domain, Some(task.number), Refusal::Restore, out),
@@ -615,10 +630,11 @@ fn links(domain: &Domain, env: &Env<Limits>, task: &TaskRecord) -> bool {
         return false;
     }
     for reference in &task.references {
-        let Some(peer) = record(domain, *reference) else {
-            return false;
-        };
-        if peer.project != task.project || !crate::batch::contains(&peer.references, task.number) {
+        if let Some(peer) = record(domain, *reference) {
+            if peer.project != task.project || !crate::batch::contains(&peer.references, task.number) {
+                return false;
+            }
+        } else if !domain.stubs.contains_key(reference) {
             return false;
         }
     }
@@ -665,6 +681,11 @@ pub(crate) fn restored(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
             return failed(domain, Some(*number), Refusal::Restore, out);
         }
     }
+    for (number, _) in &domain.stubs {
+        if domain.names.contains_key(number) || !crate::closing::named_by_live(domain, *number) {
+            return failed(domain, Some(*number), Refusal::Restore, out);
+        }
+    }
     if !crate::batch::acyclic(domain, &env.limits, Party::Person(0), &[])
         || !crate::funders::links(domain, env.limits.tasks)
     {
@@ -708,6 +729,7 @@ pub(crate) fn restored(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
                     out.push(Request::Stop { task: number, attempt });
                 }
                 Stage::Effects => out.push(Request::Close { task: number, ending: closing.ending }),
+                Stage::Releases => out.push(Request::Release { task: number, ending: closing.ending }),
                 Stage::Delegates | Stage::Settled => {}
             },
             Phase::Held { was, .. } => match was {
@@ -725,7 +747,7 @@ pub(crate) fn restored(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
                 }
                 Was::Waiting
                 | Was::Active(Active::Idle | Active::Due | Active::Preparing | Active::BackingOff { .. })
-                | Was::Closing(Closing { stage: Stage::Delegates | Stage::Settled, .. }) => {}
+                | Was::Closing(Closing { stage: Stage::Delegates | Stage::Releases | Stage::Settled, .. }) => {}
             },
             Phase::Waiting | Phase::Active(Active::Idle) => {}
             Phase::Ended(_) => unreachable!("ended record not restored into live arena"),

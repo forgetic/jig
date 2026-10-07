@@ -1,11 +1,11 @@
 //! The tasks child: bounded live lifecycle, immutable dependencies and authentic
 //! finite funding (programming-model.md, section 4.5; domain/tasks.md, sections 2–5 and 10). It keeps live task rows and name indices, retry timers,
 //! configured agent charters, period/pool ledgers and optional diagnostic facts.
-//! It never knows protocol bytes, worker channels, connector internals, people
+//! It keeps bounded pointers to ended results named by live work. It never knows protocol bytes, worker channels, connector internals, people
 //! authentication or the authority child's policy tables. Root supplies those
 //! decisions through independent semantic types.
 //!
-//! `Domain::new` starts restoring. Only `Stored::Live` and `Stored::Ledger`
+//! `Domain::new` starts restoring. `Stored::Live`, `Stored::Ledger` and `Stored::Stub`
 //! enter `Restore`; `Restored` validates the complete live graph and authentic
 //! financial reservations before bounded activation/adoption outputs. Historical
 //! ended rows remain in root storage and cannot re-enter live state
@@ -16,7 +16,7 @@
 //! notifications can be ignored when stale. Priced turns/terminals preflight
 //! the whole lifecycle/financial admission before posting the new cumulative
 //! expense delta. Root owns exact transport replay proof and transcript rows;
-//! tasks keeps no replay receipt, historical stub or result-delivery credit
+//! tasks keeps no replay receipt or result-delivery credit
 
 //!
 //! `Request::Activate` carries a temporary bounded `RunContext`, not rendered
@@ -74,8 +74,8 @@ pub use boundary::{
     Accepted, Active, Cause, Closing, Contract, DelegateState, DelegationContext, End, Ending, Event, Executor, Hold,
     Key, MessageKind, New, NewsClass, NoticeState, Parameter, Party, PersonAddress, Phase, Problem, ProcedureDecision,
     QuestionCredit, RecurringOverlap, RecurringState, RecurringTemplate, Refusal, Request, ResultKind, ResultsWake,
-    RunContext, SavedResource, Spec, Stage, Status, Stored, Subscription, SubscriptionKind, TaskRecord, TaskResult,
-    Verdict, WakePolicy, WakeRule, Was, Word,
+    RunContext, SavedResource, Spec, Stage, Status, Stored, Stub, Subscription, SubscriptionKind, TaskRecord,
+    TaskResult, Verdict, WakePolicy, WakeRule, Was, Word,
 };
 pub use control::{Amendment, Change, Control, History};
 pub use domain::{Domain, ViewTask, fire, max_out, step, view_phase};

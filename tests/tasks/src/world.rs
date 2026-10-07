@@ -307,6 +307,7 @@ impl World {
             | Request::Stop { .. }
             | Request::Adopt { .. }
             | Request::Close { .. }
+            | Request::Release { .. }
             | Request::Ended { .. }
             | Request::Save { .. }
             | Request::Erase { .. }
@@ -345,6 +346,7 @@ impl World {
             | Event::Activation { cause: Cause::Unpriced, .. }
             | Event::PreparationFailed { .. }
             | Event::Hold { .. }
+            | Event::EffectsSettled { .. }
             | Event::Settled { .. }
             | Event::Restore { .. }
             | Event::Restored
@@ -356,6 +358,7 @@ impl World {
             | Event::Message { .. }
             | Event::Introduce { .. }
             | Event::DelegateResult { .. }
+            | Event::RememberStub { .. }
             | Event::Subscribe { .. }
             | Event::SubscribeTopic { .. }
             | Event::Unsubscribe { .. }
@@ -394,6 +397,7 @@ impl World {
             | Event::Activation { .. }
             | Event::PreparationFailed { .. }
             | Event::Hold { .. }
+            | Event::EffectsSettled { .. }
             | Event::Settled { .. }
             | Event::Restore { .. }
             | Event::Restored
@@ -403,6 +407,7 @@ impl World {
             | Event::RoutedEscalation { .. }
             | Event::DecideEscalation { .. }
             | Event::Introduce { .. }
+            | Event::RememberStub { .. }
             | Event::Subscribe { .. }
             | Event::SubscribeTopic { .. }
             | Event::Unsubscribe { .. }
@@ -509,6 +514,7 @@ impl World {
                 | Request::Stop { .. }
                 | Request::Adopt { .. }
                 | Request::Close { .. }
+                | Request::Release { .. }
                 | Request::RestoreRefused { .. }
                 | Request::EscalationNeeded { .. }
                 | Request::EscalationsInspected { .. }
@@ -555,6 +561,7 @@ impl World {
                 }),
                 Stored::Live(_)
                 | Stored::Ended(_)
+                | Stored::Stub(_)
                 | Stored::Ledger(_)
                 | Stored::History(_)
                 | Stored::PersonProposal(_) => None,
@@ -585,7 +592,8 @@ impl World {
                 | Request::Timer { .. }
                 | Request::ProposalRerouteNeeded { .. }
                 | Request::ProposalStalled { .. }
-                | Request::EscalationStalled { .. } => {}
+                | Request::EscalationStalled { .. }
+                | Request::Release { .. } => {}
                 Request::PersonProposed { reply_to, .. }
                 | Request::PersonProposalDecided { reply_to, .. }
                 | Request::Sent { reply_to, .. }
@@ -631,7 +639,11 @@ impl World {
             .values()
             .filter_map(|row| match row {
                 Stored::Live(record) => Some(*record.clone()),
-                Stored::Ended(_) | Stored::Ledger(_) | Stored::History(_) | Stored::PersonProposal(_) => None,
+                Stored::Ended(_)
+                | Stored::Stub(_)
+                | Stored::Ledger(_)
+                | Stored::History(_)
+                | Stored::PersonProposal(_) => None,
             })
             .collect();
         self.observe(Seen::Stored { live, limits: Box::new(self.env.limits) });
@@ -653,7 +665,7 @@ impl World {
     pub fn record(&self, number: u64) -> &tasks::TaskRecord {
         match &self.records[&Key::Live(number)] {
             Stored::Live(record) => record,
-            Stored::Ended(_) | Stored::Ledger(_) | Stored::History(_) | Stored::PersonProposal(_) => {
+            Stored::Ended(_) | Stored::Stub(_) | Stored::Ledger(_) | Stored::History(_) | Stored::PersonProposal(_) => {
                 unreachable!("live key")
             }
         }
@@ -671,7 +683,12 @@ impl World {
             .keys()
             .filter_map(|key| match key {
                 Key::Live(number) if !before.contains(key) => Some(*number),
-                Key::Live(_) | Key::Ended(_) | Key::Ledger(_) | Key::History { .. } | Key::PersonProposal(_) => None,
+                Key::Live(_)
+                | Key::Ended(_)
+                | Key::Stub(_)
+                | Key::Ledger(_)
+                | Key::History { .. }
+                | Key::PersonProposal(_) => None,
             })
             .collect();
         self.observe(Seen::Batch { members, accepted: matches!(reply, Reply::Made(_)), made });
@@ -721,7 +738,7 @@ impl World {
             .values()
             .filter_map(|row| match row {
                 Stored::Live(record) | Stored::Ended(record) => Some(record.attempt),
-                Stored::Ledger(_) | Stored::History(_) | Stored::PersonProposal(_) => None,
+                Stored::Ledger(_) | Stored::Stub(_) | Stored::History(_) | Stored::PersonProposal(_) => None,
             })
             .max()
             .unwrap_or(0)
@@ -737,6 +754,16 @@ impl World {
     }
 
     pub fn settle(&mut self, task: u64) {
+        self.settle_effects(task);
+        self.release(task);
+    }
+
+    pub fn settle_effects(&mut self, task: u64) {
+        assert!(self.closing.contains(&task));
+        self.send(Event::EffectsSettled { task });
+    }
+
+    pub fn release(&mut self, task: u64) {
         assert!(self.closing.remove(&task));
         self.observe(Seen::Settled { task });
         self.send(Event::Settled { task });
@@ -788,6 +815,7 @@ impl World {
                 | Request::Stop { .. }
                 | Request::Adopt { .. }
                 | Request::Close { .. }
+                | Request::Release { .. }
                 | Request::RestoreRefused { .. }
                 | Request::EscalationsInspected { .. }
                 | Request::EscalationsRechecked { .. }
@@ -838,7 +866,7 @@ impl World {
         let rows = self
             .records
             .values()
-            .filter(|row| matches!(row, Stored::Live(_) | Stored::Ledger(_)))
+            .filter(|row| matches!(row, Stored::Live(_) | Stored::Ledger(_) | Stored::Stub(_)))
             .cloned()
             .collect::<Vec<_>>();
         for record in rows {

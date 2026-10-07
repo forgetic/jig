@@ -122,12 +122,16 @@ pub(crate) fn run_attempt(phase: &Phase) -> Option<u64> {
         } => Some(*attempt),
         Phase::Waiting
         | Phase::Active(Active::Idle | Active::Due | Active::Preparing | Active::BackingOff { .. })
-        | Phase::Closing(Closing { stage: Stage::Delegates | Stage::Effects | Stage::Settled, .. })
+        | Phase::Closing(Closing {
+            stage: Stage::Delegates | Stage::Effects | Stage::Releases | Stage::Settled, ..
+        })
         | Phase::Held {
             was:
                 Was::Waiting
                 | Was::Active(Active::Idle | Active::Due | Active::Preparing | Active::BackingOff { .. })
-                | Was::Closing(Closing { stage: Stage::Delegates | Stage::Effects | Stage::Settled, .. }),
+                | Was::Closing(Closing {
+                    stage: Stage::Delegates | Stage::Effects | Stage::Releases | Stage::Settled, ..
+                }),
             ..
         }
         | Phase::Ended(_) => None,

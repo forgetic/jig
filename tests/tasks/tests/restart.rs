@@ -152,6 +152,10 @@ fn terminal_and_settlement_each_have_a_durable_cut_before_delivery() {
     w.restart();
     assert!(w.closing.contains(&1));
     assert!(!w.runs.contains_key(&1));
+    w.stage(Event::EffectsSettled { task: 1 });
+    w.durable();
+    assert!(w.results.is_empty());
+    w.restart();
     w.observe(jig_tasks_world::referee::Seen::Settled { task: 1 });
     w.stage(Event::Settled { task: 1 });
     w.durable();
@@ -364,7 +368,7 @@ fn restore_refuses_task_funding_outside_its_requester_ancestry() {
             Stored::Live(task) if task.number == 1 => task.numbers.reserved = 100,
             Stored::Live(task) if task.number == 2 => task.funder = Funder::Task(1),
             Stored::Ledger(ledger) => ledger.numbers.reserved = 100,
-            Stored::Live(_) | Stored::Ended(_) | Stored::History(_) | Stored::PersonProposal(_) => {}
+            Stored::Live(_) | Stored::Ended(_) | Stored::Stub(_) | Stored::History(_) | Stored::PersonProposal(_) => {}
         }
     }
     let mut domain = Domain::new(&LIMITS, 34, Box::new([1]));

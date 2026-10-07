@@ -1,7 +1,7 @@
 //! Live task and finite-source ownership, step dispatch and retry scheduling
 //! (domain/tasks.md, sections 2, 5 and 10). Root supplies authorized events
 //! and iteration time, routes outputs and owns durability/transport proofs.
-//! Tasks never performs IO or keeps historical stubs or root shadows.
+//! Tasks never performs IO or keeps full historical results or root shadows.
 use crate::{Active, Event, Fact, Limits, New, Party, Phase, Problem, Refusal, Request, Stored, TaskRecord, Tries};
 use alloc::boxed::Box;
 use skein_lib::{Deadlines, Env, Id, List, Map, Queue, ReplyTo, Rng, Slab, Time, Wall};
@@ -27,13 +27,14 @@ pub(crate) enum Startup {
 }
 
 /// Bounded live task arena, immutable dependencies, retry timers, finite period/pool ledgers,
-/// configured charters and deterministic retry randomness. Keeps no historical stub,
+/// configured charters and deterministic retry randomness. Keeps bounded historical stubs,
 /// transport receipt, connector state or mutable root shadow ledger. (domain/tasks.md, sections 2, 4–5 and 10).
 #[derive(Debug)]
 pub struct Domain {
     pub(crate) startup: Startup,
     pub(crate) tasks: Slab<Task>,
     pub(crate) names: Map<u64, Id<Task>>,
+    pub(crate) stubs: Map<u64, crate::Stub>,
     pub(crate) alarms: Deadlines<u64>,
     pub(crate) timers: Deadlines<u64>,
     pub(crate) wakes: Deadlines<u64>,
@@ -104,6 +105,7 @@ impl Domain {
             startup: Startup::Restoring,
             tasks: Slab::with_capacity(limits.tasks),
             names: Map::with_capacity(limits.tasks),
+            stubs: Map::with_capacity(crate::limits::stub_capacity(limits).expect("valid stub bound")),
             alarms: Deadlines::with_capacity(limits.tasks),
             timers: Deadlines::with_capacity(limits.tasks.checked_mul(limits.subscriptions).expect("timer room")),
             wakes: Deadlines::with_capacity(limits.tasks),
@@ -252,11 +254,12 @@ pub(crate) fn output_bound(limits: &Limits) -> Option<u32> {
         .checked_add(limits.batch.checked_mul(2)?)?
         .checked_add(limits.funders.checked_mul(3)?)?
         .checked_add(limits.tasks.checked_mul(limits.subscriptions)?.checked_mul(2)?)?
+        .checked_add(crate::limits::stub_capacity(limits)?)?
         .checked_add(8)
 }
 
-/// Required free `Request` slots for one `step` or `fire` under validated `limits`: checked 20
-/// times tasks plus 2 times batch plus 3 times funders plus 8. Cascades are bounded by the live
+/// Required free `Request` slots for one `step` or `fire` under validated `limits`, including
+/// a possible stale-stub erase for every bounded live name. Cascades are bounded by the live
 /// set; panics if bound arithmetic is invalid. Caller counts output payload copies separately.
 #[must_use]
 pub fn max_out(limits: &Limits) -> u32 {
@@ -344,6 +347,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::Introduce { reply_to, by, left, right } => {
             crate::refs::introduce(domain, env, reply_to, by, left, right, out);
         }
+        Event::RememberStub { stub } => crate::closing::remember_stub(domain, stub, out),
         Event::InspectEscalations { reply_to, project } => {
             let result = crate::escalation::project_contexts(domain, &env.limits, project);
             out.push(Request::EscalationsInspected { reply_to, result });
@@ -404,6 +408,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         },
         Event::PreparationFailed { task } => crate::run::preparation_failed(domain, env, task, out),
         Event::Hold { task, why } => crate::run::hold(domain, env, task, why, out),
+        Event::EffectsSettled { task } => crate::closing::effects_settled(domain, env, task, out),
         Event::Settled { task } => crate::closing::settled(domain, env, task, out),
         Event::Restore { record } => crate::stored::restore(domain, env, record, out),
         Event::Restored => {

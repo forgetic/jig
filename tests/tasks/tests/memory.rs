@@ -164,6 +164,7 @@ fn saturated_payloads_graph_backoff_held_closing_retirement_and_restore_fit() {
                 cause: tasks::Cause::Priced { cumulative: 10 },
             });
             m.event(Event::Hold { task: number, why: Hold::Effects });
+            m.event(Event::EffectsSettled { task: number });
             m.event(Event::Settled { task: number });
         }
     }
@@ -201,6 +202,7 @@ fn full_delegate_tree_dependency_edges_and_cold_restored_claims_fit() {
         cause: tasks::Cause::Unpriced,
     });
     for task in [3, 4, 2, 1] {
+        m.event(Event::EffectsSettled { task });
         m.event(Event::Settled { task });
     }
     assert!(tasks::worst_case(&Limits { tasks: u32::MAX, ..l }).is_none());

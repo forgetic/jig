@@ -213,7 +213,12 @@ fn typed_fits(turns: &[Box<[u8]>], answered: &[AnsweredCall], limits: &Limits) -
         }
         let body = match &call.answer {
             SettledAnswer::Host { error: _, body } => len(body),
-            SettledAnswer::Delivery { outcome: _ } => 0,
+            SettledAnswer::Delivery { outcome: _, evidence } => {
+                if len(evidence) > limits.delivery_evidence_bytes {
+                    return false;
+                }
+                len(evidence)
+            }
         };
         let Some(sum) = bytes.checked_add(len(&call.name)) else { return false };
         let Some(sum) = sum.checked_add(len(&call.tool)) else { return false };

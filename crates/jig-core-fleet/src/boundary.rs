@@ -104,7 +104,7 @@ pub struct Grant {
 pub struct TypedAssignment {
     /// The parent's ordered turn-body collection.
     pub turns: Token,
-    /// The parent's calls settled since its last turn.
+    /// The parent's calls settled since its last turn, including opaque delivery evidence.
     pub answered: Token,
 }
 

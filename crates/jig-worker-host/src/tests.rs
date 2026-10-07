@@ -14,6 +14,7 @@ const LIMITS: Limits = Limits {
     charter_bytes: 64,
     snapshot_bytes: 32,
     transcript_bytes: 64,
+    delivery_evidence_bytes: 64,
     turn_bytes: 64,
     outcome_bytes: 32,
     detail_bytes: 8,

@@ -600,8 +600,8 @@ pub struct AnsweredCall {
 pub enum SettledAnswer {
     /// A host tool's answer, including whether it is an error.
     Host { error: bool, body: Box<[u8]> },
-    /// A workspace delivery's outcome.
-    Delivery { outcome: DeliveryOutcome },
+    /// A workspace delivery's outcome and opaque, versioned evidence for replay.
+    Delivery { outcome: DeliveryOutcome, evidence: Box<[u8]> },
 }
 
 /// A turn's cumulative spend and last read message name are opaque accounting.

@@ -22,6 +22,8 @@ pub struct Limits {
     pub snapshot_bytes: u64,
     /// Opaque transcript, including the committed call tail.
     pub transcript_bytes: u64,
+    /// Maximum opaque evidence bytes in one settled delivery call.
+    pub delivery_evidence_bytes: u64,
     /// One completed turn body.
     pub turn_bytes: u64,
     /// The most bytes of a run's declared outcome. A run that says more has

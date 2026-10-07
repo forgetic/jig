@@ -43,7 +43,10 @@ fn a_resumed_run_starts_with_its_turn_bodies_and_answered_calls() {
         AnsweredCall {
             name: Box::from(&b"call two"[..]),
             tool: Box::from(&b"deliver"[..]),
-            answer: SettledAnswer::Delivery { outcome: DeliveryOutcome::Delivered },
+            answer: SettledAnswer::Delivery {
+                outcome: DeliveryOutcome::Delivered,
+                evidence: Box::from(&b"receipt for workspace item"[..]),
+            },
         },
     ];
     world.assign_typed(turns, answered.into_boxed_slice());
@@ -53,7 +56,13 @@ fn a_resumed_run_starts_with_its_turn_bodies_and_answered_calls() {
     assert_eq!(&start.answered[0].name[..], b"call one");
     assert_eq!(&start.answered[0].tool[..], b"inspect");
     assert_eq!(start.answered[0].answer, SettledAnswer::Host { error: false, body: Box::from(&b"found"[..]) });
-    assert_eq!(start.answered[1].answer, SettledAnswer::Delivery { outcome: DeliveryOutcome::Delivered });
+    assert_eq!(
+        start.answered[1].answer,
+        SettledAnswer::Delivery {
+            outcome: DeliveryOutcome::Delivered,
+            evidence: Box::from(&b"receipt for workspace item"[..]),
+        }
+    );
 }
 
 #[test]

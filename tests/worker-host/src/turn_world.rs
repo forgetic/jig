@@ -91,6 +91,7 @@ impl World {
         let mut limits = crate::Settings::calm(1).host;
         limits.slots = 1;
         limits.transcript_bytes = 512;
+        limits.delivery_evidence_bytes = 128;
         limits.turn_bytes = 32;
         limits.turns = 2;
         limits.turn_queue_bytes = 64;

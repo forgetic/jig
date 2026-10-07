@@ -61,6 +61,7 @@ impl Settings {
                 charter_bytes: 4096,
                 snapshot_bytes: 1024,
                 transcript_bytes: 0,
+                delivery_evidence_bytes: 0,
                 turn_bytes: 0,
                 outcome_bytes: 512,
                 detail_bytes: 64,

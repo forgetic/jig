@@ -16,7 +16,7 @@ go deeper into each part. The mechanics are those of skein's
   - many agents at once;
   - rules no agent can loosen;
   - effects on other systems made once.
-- **Five primitives** (`core.md`):
+- **Five primitives** (`domain/core.md`):
   - the **task**: what is asked;
   - the **executor**: who does it, which is an agent, a procedure or a
     person;
@@ -70,7 +70,7 @@ go deeper into each part. The mechanics are those of skein's
 ## 2. What jig is for
 
 - **What an application gets** is what is hard to get right, held to the
-  promises of `core.md`:
+  promises of `domain/core.md`:
   - authority holds;
   - every keyed effect is made once, across restarts;
   - nothing leaves the engine before the commit it follows from;
@@ -107,7 +107,7 @@ systems   what the application's connectors drive
 ```
 
 - **One engine per deployment.** It is the store's only writer and the
-  only client of every connector's system (`core.md`).
+  only client of every connector's system (`domain/core.md`).
 - **The engine decides, hosts host, agents think.** A host is the engine
   itself or a worker that dials it (section 9). Agents reach the engine
   only through tools their host relays.
@@ -158,7 +158,7 @@ application root    routing between its children, translation; its store, channe
   - the restart script (6.4).
 - **Its vocabulary toward the root:**
   - the store: its own records, saved, erased, loaded and restored, as
-    every child's are (`engine.md`);
+    every child's are (`domain/engine.md`);
   - agents' hosts: the workers' channel, the engine's side, or the host
     inside the engine (section 9);
   - people's requests, and the replies to them;
@@ -311,7 +311,7 @@ to watchers and answers to a run's read tools.
 - **What jig ships:**
   - the fakes for its own peers: the store on skein-kv's in-memory mode,
     scripted workers and scripted people;
-  - the referee for `core.md`'s promises;
+  - the referee for `domain/core.md`'s promises;
   - the faults: crashes at every commit, commits held, commits failed.
 - **What the application adds:** its whole domain and the fakes of its
   systems.
@@ -349,7 +349,7 @@ and the conformance world crashes the application at every commit.
 ## 7. Connectors
 
 - **The vocabulary between the root and a connector is jig's API**
-  (`connectors.md`):
+  (`domain/connectors.md`):
   - resources named as paths of bytes, with roles: owned, participating,
     context;
   - write holds, and one writer at a time;
@@ -370,8 +370,10 @@ and the conformance world crashes the application at every commit.
   with a reason. The core holds one rule: no effect without its verdict.
 - **What the core does not act on, it does not hold.** A connector keeps
   its own state per task, keyed by the task's number, and the root joins
-  the two. Payloads the core orders but does not read are an open
-  question (section 14).
+  the two. What the core orders but does not read (a brief section, a
+  read's answer, a connector's result) it names by token and size, and
+  the root puts outputs together from their owners' parts
+  (`domain/core.md`, section 5).
 - **The set is closed in each application.** The application's root
   knows every connector and matches on them exhaustively. Nothing below
   the root knows any connector but itself.
@@ -394,7 +396,7 @@ and the conformance world crashes the application at every commit.
     own.
 - **One commit spans both,** through the journal. The live records of
   both are loaded by the core's restart script (6.4). skein-kv is
-  underneath, inside the engine (`store.md`).
+  underneath, inside the engine (`domain/engine.md`, section 5).
 
 ## 9. Agents and their hosts
 
@@ -489,7 +491,8 @@ and the conformance world crashes the application at every commit.
     durable, streams and paging.
 - **Clients that are not people.** Every party today is a person who
   signed in, with a role in a project. A service acting through a client
-  needs an identity and a role too (section 14).
+  needs an identity and a role too: a service is a party of its own kind
+  (`domain/people.md`, section 3).
 - **The web protocol** carries jig's documents and the application's
   over one connection, composed in each end's protocol layer. Sign-in
   providers are the application's.
@@ -522,32 +525,21 @@ application as its first user.
 
 ## 12. Documents
 
-To be written, in reading order:
-
-1. **core.md:** the model: the five primitives, decisions and the store,
-   plans and coordinators, people, and what jig promises.
-2. **tasks.md:** the hub: tasks, batches, lifecycle, inboxes and wakes,
-   proposals and escalations.
-3. **authority.md:** what a task may do: authority as a value, budgets,
-   checks, proposals, the rules no task loosens.
-4. **connectors.md:** the contract every connector meets (section 7).
-5. **engine.md:** the core inside an application's engine: commits,
-   restart, runs and the engine's tools, the fleet, briefs, notes, views,
-   accounts.
-6. **people.md:** people as parties: identity, roles, requests, inboxes,
-   chats, person tasks.
-7. **hosts.md:** agents and their hosts: the three shapes, the host
-   inside the engine, the worker host.
-8. **store.md:** jig's records, and how an application's join them.
-9. **client.md:** the client domain, its views, its wire and its shells.
-10. **testing.md:** jig's worlds, the conformance world and its referee,
-    and the kits an application's worlds use.
-11. **examples.md:** the example application, `ops`, and the reference
-    root.
+- **`domain/`:** jig's domain layer: the model, tasks, authority,
+  connectors, the core, the application's root, parties, hosts, and
+  testing. Its `README.md` gives the reading order and the names, and
+  the decisions it took on what this document left open.
+- **`client/domain/`:** the client's domain, its views and its wire, to
+  be designed.
+- **examples.md:** the example application, `ops`, and the reference
+  root.
+- **Below the domain,** to come with the protocol layers: the store's
+  encoding of jig's records, the workers' channel, the client's protocol.
 
 ## 13. Conventions
 
-- **A bare file name** names a document in this directory.
+- **A bare file name** names a document in this directory;
+  `domain/core.md` names one of the domain's.
 - **skein's foundation documents** are named by their own file names:
   `programming-model.md`, `testing-strategy.md`, `notes.md`. skein's
   design documents are named with skein's name: skein's `lib.md`.
@@ -559,30 +551,10 @@ To be written, in reading order:
 
 ## 14. Open questions
 
-- **Payloads the core orders but does not read:** brief sections, answers
-  to reads, results under a connector's contract. There are two options:
-  - the core holds each as a token with a declared size, and the root or
-    the connector holds the value;
-  - the value reaches the core already in jig's terms, for example as
-    bounded bytes with a declared schema, as smith carries its host's
-    tools.
+The domain's design took decisions on most of what this document left
+open (`domain/README.md`, section 5). What remains here:
 
-  How the brief cuts its sections within a byte budget decides which.
-- **People:** whether sign-in providers are connectors, or a part of the
-  people child that the application fills in.
-- **Requirements across connectors:** a gate whose facts are one
-  connector's while the effect it guards is another's.
-- **Scarce resources:** whether a write hold that is taken waits or is
-  refused.
 - **The client's pages:** how jig's pages show an application's objects,
-  for example as one kind of card per family.
+  for example as one kind of card per family (`client/domain/`).
 - **Versioning:** how jig is released and pinned, and how a change to its
   vocabulary reaches every application.
-- **Clients that are not people:** whether a service acting through a
-  client is a party of its own kind, with a role, or acts with a person's
-  sign-in delegated to it.
-- **The host inside the engine:** whether its slots are a kind of slot in
-  the fleet, or a host of their own beside the fleet.
-- **The worker:** whether the worker's root is always the application's,
-  as section 9 assumes, or jig can ship a worker that needs none, for
-  applications whose runs need containment but no workspace prepared.

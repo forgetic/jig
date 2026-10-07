@@ -98,7 +98,7 @@ application is before its protocol layer (`README.md`, section 11).
   remediates it, so two incidents never restart it at once.
 - **Scarce resources:** a pool's environments are a quota. A task that
   asks for a slot when the pool is full waits for one, rather than being
-  refused (`README.md`, section 14).
+  refused (`domain/tasks.md`, section 6).
 - **Procedures:**
   - **remediate:** make the effect, then wait until the service is
     healthy or a deadline passes;
@@ -118,10 +118,11 @@ The infrastructure connector's effects need observability's facts:
 - a restart is verified by the service's health;
 - a scale-down is allowed only while its load is below a threshold.
 
-This is the case of a requirement whose facts are one connector's while
-the effect is another's (`README.md`, section 14). `ops` makes it
-concrete: the root gathers observability's facts for infrastructure's
-verdict.
+This is a requirement whose facts are one connector's while the effect
+is another's (`domain/authority.md`, section 10). The policy names
+observability as the judge of infrastructure's restarts and scale-downs;
+the core asks it for its verdict through the root, and observability
+judges from its own facts (`domain/connectors.md`, section 7).
 
 ## 4. Its root
 
@@ -130,15 +131,16 @@ jig-ops-domain                    the engine's root
 ├── core                          jig's core
 ├── observability                 jig-ops-domain-observability
 ├── infrastructure                jig-ops-domain-infrastructure
-└── agents                        smith's domain, one per run in flight, in its one-process form
+└── local host                    jig-local-host: smith's domain, one per run in flight (domain/hosts.md, section 5)
 ```
 
 - **It has the one shape** of `README.md`, 6.3. Every write and every
   output goes into the journal.
 - **It routes, and nothing else:**
   - between the core and each connector, in their vocabularies;
-  - between the core and the agents in the engine, as their host;
-  - facts from observability to infrastructure (3.3).
+  - between the core and jig's local host, which hosts the agents;
+  - the verdicts the core asks of observability on infrastructure's
+    effects (3.3).
 - **It is the reference root.** Its routes, its translations and its
   sum of worst cases are written to be copied, and are commented as
   such.
@@ -172,7 +174,7 @@ jig-ops-domain                    the engine's root
 - **Money:** each team has a budget per month, spent by environments,
   and a person's pool within it.
 
-These are policies as data, in authority's terms (`authority.md`). `ops`
+These are policies as data, in authority's terms (`domain/authority.md`). `ops`
 writes no rule of its own in code.
 
 ## 7. Its stories
@@ -272,12 +274,12 @@ Q, a developer
 ## 10. Its worlds
 
 - **Each connector's world,** with the fake production below it and the
-  root scripted above it, as for any connector (`connectors.md`).
+  root scripted above it, as for any connector (`domain/connectors.md`).
 - **The root's world:** the whole domain on jig's conformance world.
   Agents are smith's domain over skein's fake LLM, with scripts per
   charter; people are scripted; the store is skein-kv in memory.
 - **Budgets:** its tests fit within the application's share of the
-  suites' time (`testing.md`).
+  suites' time (`domain/testing.md`, section 9).
 
 ## 11. Open questions
 

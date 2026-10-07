@@ -70,6 +70,8 @@ impl Settings {
                 facts: 64,
                 told: 8,
                 fact_bytes: 64,
+                turns: 0,
+                turn_queue_bytes: 0,
             },
             engine: engine::Script {
                 assignments: 8,
@@ -560,7 +562,8 @@ impl World {
         match event {
             jig_worker_host::Event::AssignV2 { .. }
             | jig_worker_host::Event::Turn { .. }
-            | jig_worker_host::Event::FinishedV2 { .. } => unreachable!("this script runs version one"),
+            | jig_worker_host::Event::FinishedV2 { .. }
+            | Event::AcknowledgeTurn { .. } => unreachable!("this script runs version one"),
 
             Event::Assign { reply_to: _, assignment } => {
                 Taken::Assign { run: assignment.run, attempt: assignment.attempt }
@@ -688,7 +691,8 @@ impl World {
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
             | jig_worker_host::Request::AnswerV2 { .. }
-            | jig_worker_host::Request::StartV2 { .. } => unreachable!("this script runs version one"),
+            | jig_worker_host::Request::StartV2 { .. }
+            | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
 
             Request::Answer { to: _, run: answered, attempt: of, answer } => {
                 assert_eq!((*answered, *of), (run, attempt), "an assignment is answered as itself");
@@ -735,7 +739,8 @@ impl World {
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
             | jig_worker_host::Request::AnswerV2 { .. }
-            | jig_worker_host::Request::StartV2 { .. } => unreachable!("this script runs version one"),
+            | jig_worker_host::Request::StartV2 { .. }
+            | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
 
             Request::Answer { to, run, attempt, answer } => {
                 if let Some(owner) = self.admitted.remove(&(run, attempt)) {

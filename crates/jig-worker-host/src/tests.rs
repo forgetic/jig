@@ -23,6 +23,8 @@ const LIMITS: Limits = Limits {
     facts: 64,
     told: 2,
     fact_bytes: 16,
+    turns: 2,
+    turn_queue_bytes: 128,
 };
 
 struct Harness {
@@ -124,6 +126,48 @@ fn an_itemless_run_starts_and_ends_without_a_workspace() {
         panic!("the itemless run answers without workspace requests: {requests:?}")
     };
     assert_eq!((*answered, *answered_attempt, work.left, work.saved), (run, attempt, None, None));
+}
+
+#[test]
+fn turns_stay_in_the_host_until_their_own_ack_and_credit_returns() {
+    let mut h = Harness::new();
+    let mut assignment = assignment(1);
+    assignment.workspace = None;
+    let (run, attempt) = (assignment.run, assignment.attempt);
+    let requests = h.step(Event::AssignV2 {
+        reply_to: ReplyTo::new(run),
+        assignment: crate::AssignmentV2 { assignment, transcript: None },
+    });
+    let [Request::StartV2 { owner, workspace: None, .. }] = &*requests else {
+        panic!("an itemless version-two run starts: {requests:?}");
+    };
+    let owner = *owner;
+    let agent = Token::new(301);
+    assert!(h.step(Event::Started { owner, agent }).is_empty());
+    for number in 1..=2 {
+        let usage = u64::from(number == 1);
+        let turn = crate::Turn { turn: number, spent: usage, read: None, body: Box::from([7_u8; 64]) };
+        let requests = h.step(Event::Turn { owner, turn });
+        let [Request::Turn { turn: sent, .. }, Request::TurnCredit { agent: credited, read }] = &*requests else {
+            panic!("a turn is sent with the next credit: {requests:?}");
+        };
+        assert_eq!((*credited, *read), (agent, number == 1));
+        assert_eq!(sent.turn, number);
+        assert_eq!(sent.spent, usage, "spend passes through without a host decision");
+    }
+    assert_eq!(h.domain.retained_turns(), 2);
+    assert!(h.step(Event::AcknowledgeTurn { run, attempt: Token::new(999), turn: 1 }).is_empty());
+    assert!(h.step(Event::AcknowledgeTurn { run, attempt, turn: 3 }).is_empty());
+    assert_eq!(h.domain.retained_turns(), 2);
+    assert_eq!(&*h.step(Event::AcknowledgeTurn { run, attempt, turn: 1 }), [Request::TurnCredit { agent, read: true }]);
+    assert_eq!(h.domain.retained_turns(), 1);
+    assert!(h.step(Event::AcknowledgeTurn { run, attempt, turn: 1 }).is_empty());
+    assert_eq!(h.domain.turn(run, attempt, 2).expect("second turn remains").body, Box::from([7_u8; 64]));
+}
+
+#[test]
+fn a_turn_credit_bound_must_hold_a_maximum_body() {
+    assert!(crate::worst_case(&Limits { turn_queue_bytes: 63, ..LIMITS }).is_none());
 }
 
 #[test]

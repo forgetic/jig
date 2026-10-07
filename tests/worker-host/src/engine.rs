@@ -191,7 +191,8 @@ impl Engine {
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
             | jig_worker_host::Request::AnswerV2 { .. }
-            | jig_worker_host::Request::StartV2 { .. } => unreachable!("this script runs version one"),
+            | jig_worker_host::Request::StartV2 { .. }
+            | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
 
             Request::Answer { to, run, attempt, answer } => {
                 assert_eq!(to, ReplyTo::new(run), "an answer goes to its assignment");

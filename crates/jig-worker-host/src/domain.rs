@@ -7,6 +7,7 @@ use crate::call::{self, Call};
 use crate::facts::{AgentFacts, Fact, Facts, Told};
 use crate::hosted::{self, Hosted};
 use crate::limits::{self, Limits};
+use crate::turns::Turns;
 
 /// The most requests an entry point emits per call under `limits`: a run
 /// that leaves live answers each of its relayed calls in flight, then stops
@@ -34,6 +35,7 @@ pub struct Domain {
     pub(crate) ready: Map<Id<Hosted>, Reason>,
     pub(crate) facts: Facts,
     pub(crate) told: AgentFacts,
+    pub(crate) turns: Turns,
     /// The worker is shutting down: it admits no more runs.
     pub(crate) shut: bool,
     /// Answers the engine has yet to acknowledge, as the parent last said:
@@ -53,6 +55,7 @@ impl Domain {
             ready: Map::with_capacity(limits.slots),
             facts: Facts::with_capacity(limits.facts),
             told: AgentFacts::with_capacity(limits.told),
+            turns: Turns::new(limits),
             shut: false,
             unacknowledged: 0,
         }
@@ -160,6 +163,47 @@ impl Domain {
         self.told.lost()
     }
 
+    /// Turns retained until the engine commits them.
+    #[must_use]
+    pub fn retained_turns(&self) -> u32 {
+        self.turns.len()
+    }
+
+    /// Whether a turn is still retained for retry.
+    #[must_use]
+    pub fn has_turn(&self, run: Token, attempt: Token, turn: u32) -> bool {
+        self.turns.holds(run, attempt, turn)
+    }
+
+    /// Whether any turn of this attempt remains unacknowledged.
+    #[must_use]
+    pub fn has_turns_for(&self, run: Token, attempt: Token) -> bool {
+        self.turns.has_run(run, attempt)
+    }
+
+    /// A transmission copy of a retained turn.
+    #[must_use]
+    pub fn turn(&self, run: Token, attempt: Token, turn: u32) -> Option<crate::Turn> {
+        self.turns.get(run, attempt, turn)
+    }
+
+    /// A transmission copy of a retained turn by position, for reconnecting.
+    #[must_use]
+    pub fn turn_at(&self, index: u32) -> Option<(Token, Token, crate::Turn)> {
+        self.turns.nth(index)
+    }
+
+    /// Turns abandoned after shutdown past the contact grace.
+    pub fn give_up_turns(&mut self) {
+        self.turns.give_up();
+    }
+
+    /// How many turns were abandoned.
+    #[must_use]
+    pub const fn turns_abandoned(&self) -> u64 {
+        self.turns.abandoned()
+    }
+
     /// The reclaim point: frees what closed in this iteration.
     pub fn reclaim(&mut self) {
         self.hosted.reclaim();
@@ -173,6 +217,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::AssignV2 { reply_to, assignment } => hosted::assign_v2(domain, env, reply_to, assignment, out),
         Event::Turn { owner, turn } => hosted::turned(domain, env, owner, turn, out),
         Event::Facts { owner, fact } => hosted::told(domain, env, owner, fact),
+        Event::AcknowledgeTurn { run, attempt, turn } => hosted::acknowledge_turn(domain, env, run, attempt, turn, out),
         Event::FinishedV2 { owner, turns, spent, finish } => {
             hosted::finished_v2(domain, env, owner, turns, spent, finish, out);
         }

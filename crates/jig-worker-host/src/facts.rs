@@ -1,13 +1,13 @@
-//! What the host tells whoever watches the worker (worker-domain.md, section
-//! 7): a fact for each step of a hosted run's lifecycle, content-free (the
+//! What the host tells whoever watches the worker (domain/hosts.md, sections
+//! 6.2 and 6.5): a fact for each step of a hosted run's lifecycle, content-free (the
 //! engine's names and classifications, never what the charter, the run or the
 //! engine said), in a bounded queue the parent drains at its own pace.
 //!
 //! Facts are outside the boundary's flow control: they are not requests, take
 //! no room in `out`, and when the queue is full they are dropped and counted.
 //! Nothing the host decides depends on whether a fact was kept. An assignment
-//! refused at the entrance tells nothing: no run was hosted. What the run
-//! itself reports is not the host's: the top level forwards it.
+//! refused at the entrance tells nothing: no run was hosted. The agent's
+//! own facts wait in a separate bounded queue until the parent can send them.
 
 use alloc::boxed::Box;
 

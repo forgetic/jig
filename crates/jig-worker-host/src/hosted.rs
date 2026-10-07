@@ -1175,23 +1175,41 @@ pub(crate) fn turned(
         | State::Saving { .. }
         | State::Closed => return,
     };
+    let can_hold = domain.turns.credit(entry.run, entry.attempt, &env.limits);
     let valid = match &mut entry.runtime {
         Runtime::Legacy => false,
-        Runtime::V2 { turns, spent, .. } => {
-            if turns.checked_add(1) != Some(turn.turn) || turn.spent < *spent || len(&turn.body) > env.limits.turn_bytes
-            {
+        Runtime::V2 { turns, .. } => {
+            if !can_hold || turns.checked_add(1) != Some(turn.turn) || len(&turn.body) > env.limits.turn_bytes {
                 false
             } else {
                 *turns = turn.turn;
-                *spent = turn.spent;
                 true
             }
         }
     };
     if valid {
-        out.push(Request::Turn { agent, run: entry.run, attempt: entry.attempt, turn });
+        let (run, attempt) = (entry.run, entry.attempt);
+        let sent = crate::Turn { turn: turn.turn, spent: turn.spent, read: turn.read, body: copy_of(&turn.body) };
+        let read = domain.turns.retain(agent, run, attempt, turn, &env.limits);
+        out.push(Request::Turn { agent, run, attempt, turn: sent });
+        out.push(Request::TurnCredit { agent, read });
     } else {
         faulted(domain, env, owner, AgentFailure::Rules, out);
+    }
+}
+
+/// Release a committed turn and resume the agent reader when room returns.
+pub(crate) fn acknowledge_turn(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    run: Token,
+    attempt: Token,
+    turn: u32,
+    out: &mut Queue<Request>,
+) {
+    if let Some(agent) = domain.turns.acknowledge(run, attempt, turn) {
+        let read = domain.turns.credit(run, attempt, &env.limits);
+        out.push(Request::TurnCredit { agent, read });
     }
 }
 
@@ -1218,11 +1236,11 @@ pub(crate) fn finished_v2(
     let valid = match &mut entry.runtime {
         Runtime::Legacy => false,
         Runtime::V2 { turns: taken, spent: total, .. } => {
-            if turns != *taken || spent < *total {
-                false
-            } else {
+            if turns == *taken {
                 *total = spent;
                 true
+            } else {
+                false
             }
         }
     };

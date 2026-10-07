@@ -5,6 +5,7 @@ use crate::call::Call;
 use crate::facts::Fact;
 use crate::facts::Told;
 use crate::hosted::{Hosted, NamedEvent};
+use crate::turns::{Name, Pending};
 
 /// The host child domain's limits (section 7), handed by its parent to every
 /// step read-only.
@@ -44,6 +45,9 @@ pub struct Limits {
     pub told: u32,
     /// The most bytes in one agent fact.
     pub fact_bytes: u64,
+    /// Unacknowledged turns per attempt and their total body bytes.
+    pub turns: u32,
+    pub turn_queue_bytes: u64,
 }
 
 /// The host calls in flight at once, across runs, under `limits`, or `None` if
@@ -64,6 +68,9 @@ pub(crate) fn calls(limits: &Limits) -> Option<u32> {
 /// alongside the runs' retained state.
 #[must_use]
 pub fn worst_case(limits: &Limits) -> Option<u64> {
+    if limits.turns > 0 && (limits.turn_bytes == 0 || limits.turn_queue_bytes < limits.turn_bytes) {
+        return None;
+    }
     // The reserved output bound must be representable without saturation.
     // Cancelling each relay emits its reply and its cancellation request.
     let cancellations = limits.run_calls.checked_mul(2)?;
@@ -77,6 +84,9 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     let facts = Queue::<Fact>::worst_case(limits.facts)?;
     let told =
         Queue::<Told>::worst_case(limits.told)?.checked_add(u64::from(limits.told).checked_mul(limits.fact_bytes)?)?;
+    let capacity = limits.slots.checked_mul(limits.turns)?;
+    let turns = Map::<Name, Pending>::worst_case(capacity)?
+        .checked_add(u64::from(limits.slots).checked_mul(limits.turn_queue_bytes)?)?;
     // Until its agent starts, a run holds its charter, its snapshot and the
     // inbound events that came meanwhile; from when it is told how the run
     // finishes, the outcome, the snapshot or the detail of the failure.
@@ -101,6 +111,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(calls)?
         .checked_add(facts)?
         .checked_add(told)?
+        .checked_add(turns)?
         .checked_add(runs)?
         .checked_add(delivered)
 }

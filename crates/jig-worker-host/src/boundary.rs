@@ -25,6 +25,12 @@ pub enum Event {
         owner: Token,
         fact: Box<[u8]>,
     },
+    /// The engine committed this turn; release it and grant agent read room.
+    AcknowledgeTurn {
+        run: Token,
+        attempt: Token,
+        turn: u32,
+    },
     /// Version-two last word, with cumulative accounting.
     FinishedV2 {
         owner: Token,
@@ -182,12 +188,17 @@ pub enum Request {
         transcript: Option<Box<[u8]>>,
         grants: Box<[Grant]>,
     },
-    /// Parent retains the turn and grants more agent read credit when room permits.
+    /// A transmission copy of a turn retained until engine acknowledgement.
     Turn {
         agent: Token,
         run: Token,
         attempt: Token,
         turn: Turn,
+    },
+    /// Whether the agent may read another turn after the retained bound.
+    TurnCredit {
+        agent: Token,
+        read: bool,
     },
     DeliverV2 {
         owner: Token,
@@ -294,6 +305,10 @@ pub enum Request {
 /// section 6). These requests carry no process or channel vocabulary.
 #[derive(PartialEq, Eq, Debug)]
 pub enum ToAgent {
+    ReadCredit {
+        agent: Token,
+        read: bool,
+    },
     StartV2 {
         owner: Token,
         workspace: Option<Token>,
@@ -378,6 +393,7 @@ impl Request {
             Request::Deliver { agent, name, event } => Ok(ToAgent::Message { agent, name, event }),
             Request::Reply { agent, call, reply } => Ok(ToAgent::Answer { agent, call, reply }),
             Request::Grant { agent, grant } => Ok(ToAgent::Grant { agent, grant }),
+            Request::TurnCredit { agent, read } => Ok(ToAgent::ReadCredit { agent, read }),
             Request::Stop { agent } => Ok(ToAgent::Cancel { agent }),
             other @ (Request::RelayV2 { .. }
             | Request::AnswerV2 { .. }

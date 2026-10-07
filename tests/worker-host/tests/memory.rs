@@ -27,6 +27,8 @@ const LIMITS: Limits = Limits {
     facts: 16,
     told: 2,
     fact_bytes: 256,
+    turns: 0,
+    turn_queue_bytes: 0,
 };
 
 fn bytes(len: u64) -> Box<[u8]> {
@@ -109,7 +111,8 @@ impl Measured {
                 | Request::Reply { .. }
                 | Request::Stop { .. }
                 | Request::Release { .. }
-                | Request::Grant { .. } => Asked::Other,
+                | Request::Grant { .. }
+                | Request::TurnCredit { .. } => Asked::Other,
             });
         }
         self.meter.check(measured, self.bound, &self.env.limits);
@@ -344,7 +347,7 @@ fn every_entry_point_stays_within_the_worst_case() {
 #[test]
 fn v2_full_transcripts_and_delivery_feedback_fit_the_hosts_bound() {
     use jig_worker_host::{AssignmentV2, EndingV2, FinishV2, Turn};
-    let limits = Limits { transcript_bytes: 2048, turn_bytes: 128, ..LIMITS };
+    let limits = Limits { transcript_bytes: 2048, turn_bytes: 128, turns: 1, turn_queue_bytes: 128, ..LIMITS };
     let mut owners = Vec::with_capacity(usize::try_from(limits.slots).expect("bounded"));
     let mut host = Measured::new(limits);
     for run in 0..u64::from(limits.slots) {
@@ -376,7 +379,7 @@ fn v2_full_transcripts_and_delivery_feedback_fit_the_hosts_bound() {
                 owner,
                 turn: Turn { turn: 1, spent: 23, read: None, body: bytes(limits.turn_bytes) }
             }),
-            [Asked::Turn]
+            [Asked::Turn, Asked::Other]
         );
         host.step(Event::FinishedV2 { owner, turns: 1, spent: 29, finish: FinishV2::Parked });
         let [Asked::Save { owner: saving }] =

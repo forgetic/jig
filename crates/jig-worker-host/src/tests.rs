@@ -116,11 +116,12 @@ fn an_itemless_run_starts_and_ends_without_a_workspace() {
         [Request::Stop { agent }]
     );
     let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
-    assert!(matches!(
-        &*requests,
-        [Request::Answer { run: answered, attempt: answered_attempt, answer: Answer::Ended { work: Work { left: None, saved: None }, .. }, .. }]
-            if (*answered, *answered_attempt) == (run, attempt)
-    ));
+    let [Request::Answer { run: answered, attempt: answered_attempt, answer: Answer::Ended { work, .. }, .. }] =
+        &*requests
+    else {
+        panic!("the itemless run answers without workspace requests: {requests:?}")
+    };
+    assert_eq!((*answered, *answered_attempt, work.left, work.saved), (run, attempt, None, None));
 }
 
 #[test]
@@ -259,7 +260,7 @@ fn cancellation_returns_messages_held_before_the_agent_starts() {
     let attempt = Token::new(1001);
     let name = Token::new(42);
     let requests = h.step(Event::Prepared { owner, workspace });
-    assert!(matches!(&*requests, [Request::Start { .. }]));
+    let [Request::Start { .. }] = &*requests else { panic!("the agent starts: {requests:?}") };
     assert!(h.step(Event::Inbound { run, attempt, name, event: Box::from(&b"question"[..]) }).is_empty());
     assert_eq!(
         &*h.step(Event::Cancel { run, attempt }),
@@ -270,11 +271,10 @@ fn cancellation_returns_messages_held_before_the_agent_starts() {
     let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
     assert_eq!(&*requests, [Request::Save { owner, workspace }]);
     let requests = h.step(Event::Saved { owner, at: None });
-    assert!(matches!(
-        &*requests,
-        [
-            Request::Release { .. },
-            Request::Answer { answer: Answer::Failed { failure: Failure::Cancelled(Reason::Engine), .. }, .. }
-        ]
-    ));
+    let [Request::Release { workspace: released }, Request::Answer { answer: Answer::Failed { failure, .. }, .. }] =
+        &*requests
+    else {
+        panic!("the run releases and answers after save: {requests:?}")
+    };
+    assert_eq!((*released, *failure), (workspace, Failure::Cancelled(Reason::Engine)));
 }

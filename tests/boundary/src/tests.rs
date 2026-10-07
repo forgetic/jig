@@ -38,7 +38,8 @@ fn quoted_value(value: &str) -> Option<&str> {
 
 fn dependency_name(line: &str) -> Option<String> {
     let (key, value) = line.split_once('=')?;
-    let key = key.trim().trim_matches('"').trim_matches('\'');
+    let key = key.trim().split_once('.').map_or(key.trim(), |(name, _)| name);
+    let key = key.trim_matches('"').trim_matches('\'');
     if key.is_empty() {
         return None;
     }
@@ -209,6 +210,12 @@ fn fixtures_name_the_path_and_the_breach() {
     let parsed = parse_manifest(PathBuf::from("fixture/Cargo.toml"), &manifest);
     let failures = breaches(&[parsed], all_crates);
     assert_eq!(failures, [format!("fixture/Cargo.toml: {forbidden}")]);
+
+    let workspace_manifest =
+        format!("[package]\nname = \"jig-sample\"\n[dependencies]\n{forbidden}.workspace = true\n");
+    let parsed = parse_manifest(PathBuf::from("fixture/workspace/Cargo.toml"), &workspace_manifest);
+    let failures = breaches(&[parsed], all_crates);
+    assert_eq!(failures, [format!("fixture/workspace/Cargo.toml: {forbidden}")]);
 
     let word = ["for", "ge"].concat();
     let source = format!("const SUBJECT: &str = \"{word}\";");

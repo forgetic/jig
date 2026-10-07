@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use jig_ops_domain_observability as obs;
 use jig_ops_fake_production as production;
@@ -216,11 +216,42 @@ impl World {
     /// Rebuild the connector from committed records, then let it settle outbox entries.
     pub fn restart(&mut self) -> Vec<obs::Request> {
         self.domain = obs::Domain::new(&limits());
-        for record in self.records.values().cloned().collect::<Vec<_>>() {
+        let records: Vec<_> = self.records.values().cloned().collect();
+        let mut live = BTreeSet::new();
+        for record in &records {
+            match record {
+                obs::Record::Subscription { topic, .. } => match topic {
+                    obs::Topic::Alerts(service) | obs::Topic::Health(service) => {
+                        live.insert(service.clone());
+                    }
+                },
+                obs::Record::Watch(watch) => {
+                    live.extend(watch.services.iter().cloned());
+                }
+                obs::Record::Outbox(..) => {}
+            }
+        }
+        for record in records {
             let restored = self.event(obs::Event::Restore { record });
             assert!(restored.is_empty(), "restore makes no external request");
         }
+        for service in live {
+            self.release(&[obs::Request::System(obs::SystemRequest::Facts { service })]);
+        }
         let requests = self.event(obs::Event::Restart);
+        self.release(&requests)
+    }
+
+    /// Recheck uncertain effects when their saved absolute deadlines pass.
+    pub fn fire(&mut self) -> Vec<obs::Request> {
+        let wall = self.now.checked_mul(1_000_000_000).expect("world time fits");
+        let env = Env { now: Time::from_nanos(self.now), wall: Wall::from_nanos(wall), limits: limits() };
+        let mut out = Queue::with_capacity(obs::MAX_OUT);
+        obs::fire(&mut self.domain, &env, &mut out);
+        let mut requests = Vec::new();
+        while let Some(request) = out.pop() {
+            requests.push(request);
+        }
         self.release(&requests)
     }
 

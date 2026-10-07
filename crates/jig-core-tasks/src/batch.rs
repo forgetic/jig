@@ -5,10 +5,43 @@ use crate::{Authority, Contract, Executor, Last, Limits, New, Parameter, Party, 
 use skein_lib::List;
 
 fn problem(task: Option<u64>, why: Refusal) -> Problem {
-    Problem { task, why }
+    Problem { task, why, blocked_by: None }
 }
 
 pub(crate) fn check(domain: &Domain, limits: &Limits, creator: Party, batch: &[New]) -> Result<(), Problem> {
+    check_with_result_proposal(domain, limits, creator, batch, None, None)
+}
+
+/// Preflight an agent verdict's own delegates after its current run reservation and charge settle.
+pub(crate) fn check_direct_followups(
+    domain: &Domain,
+    limits: &Limits,
+    proposer: u64,
+    charge: u64,
+    batch: &[New],
+) -> Result<(), Problem> {
+    check_with_result_proposal(domain, limits, Party::Task(proposer), batch, None, Some((proposer, charge)))
+}
+
+/// A result proposal may admit its accepted batch while the proposer closes.
+pub(crate) fn check_result_followups(
+    domain: &Domain,
+    limits: &Limits,
+    creator: Party,
+    proposal: u64,
+    batch: &[New],
+) -> Result<(), Problem> {
+    check_with_result_proposal(domain, limits, creator, batch, Some(proposal), None)
+}
+
+fn check_with_result_proposal(
+    domain: &Domain,
+    limits: &Limits,
+    creator: Party,
+    batch: &[New],
+    result_proposal: Option<u64>,
+    direct_finish: Option<(u64, u64)>,
+) -> Result<(), Problem> {
     let size = u32::try_from(batch.len()).unwrap_or(u32::MAX);
     if size == 0 {
         return Err(problem(None, Refusal::Empty));
@@ -26,9 +59,22 @@ pub(crate) fn check(domain: &Domain, limits: &Limits, creator: Party, batch: &[N
             let Some(parent) = record(domain, number) else {
                 return Err(problem(Some(number), Refusal::Unknown));
             };
+            if let Some(proposal) = result_proposal
+                && !matches_result_action(parent, proposal, batch)
+            {
+                return Err(problem(Some(number), Refusal::Reference));
+            }
             match &parent.phase {
+                Phase::Closing(_)
+                    if result_proposal.is_some()
+                        && parent.result_proposal
+                        && result_proposal_number(parent) == result_proposal => {}
                 Phase::Closing(_) | Phase::Ended(_) => return Err(problem(Some(number), Refusal::State)),
                 Phase::Held { was, .. } => match was {
+                    Was::Closing(_)
+                        if result_proposal.is_some()
+                            && parent.result_proposal
+                            && result_proposal_number(parent) == result_proposal => {}
                     Was::Closing(_) => return Err(problem(Some(number), Refusal::State)),
                     Was::Waiting | Was::Active(_) => {}
                 },
@@ -60,13 +106,56 @@ pub(crate) fn check(domain: &Domain, limits: &Limits, creator: Party, batch: &[N
         Party::Person(_) | Party::Deployment { .. } => None,
     };
     check_members(domain, limits, creator, batch, parent)?;
-    if !crate::funders::can_reserve(domain, creator, batch) {
+    if !crate::funders::can_reserve(domain, creator, batch, result_proposal, direct_finish) {
         return Err(problem(None, Refusal::Funding));
     }
     if !acyclic(domain, limits, creator, batch) {
         return Err(problem(Some(batch.first().expect("nonempty batch admitted").number), Refusal::Cycle));
     }
     Ok(())
+}
+
+fn matches_result_action(parent: &crate::TaskRecord, number: u64, batch: &[New]) -> bool {
+    let proposed = match &parent.proposal {
+        Some(proposal) if parent.result_proposal && proposal.number == number => match &proposal.action {
+            crate::ProposalAction::Batch(members) => members,
+            crate::ProposalAction::Amend { .. }
+            | crate::ProposalAction::Widen { .. }
+            | crate::ProposalAction::Release { .. } => return false,
+        },
+        Some(_) | None => return false,
+    };
+    if proposed.len() != batch.len() {
+        return false;
+    }
+    for (old, new) in proposed.iter().zip(batch) {
+        if old.number != new.number
+            || old.project != new.project
+            || old.executor != new.executor
+            || old.spec != new.spec
+            || old.contract != new.contract
+            || old.authority != new.authority
+            || old.numbers != new.numbers
+            || old.dependencies != new.dependencies
+            || old.wake != new.wake
+            || old.recurring != new.recurring
+            || old.tracked != new.tracked
+        {
+            return false;
+        }
+    }
+    true
+}
+
+#[expect(clippy::manual_map, reason = "step code uses a closed match rather than a closure")]
+fn result_proposal_number(parent: &crate::TaskRecord) -> Option<u64> {
+    if !parent.result_proposal {
+        return None;
+    }
+    match &parent.proposal {
+        Some(proposal) => Some(proposal.number),
+        None => None,
+    }
 }
 
 #[expect(clippy::too_many_lines, reason = "one batch member validates its complete creation shape")]
@@ -251,7 +340,7 @@ pub fn valid_contract(limits: &Limits, contract: &Contract) -> bool {
                 return false;
             }
             for (at, choice) in choices.iter().enumerate() {
-                if choice.words > limits.result_bytes {
+                if choice.words > limits.result_bytes || choice.followups > limits.batch {
                     return false;
                 }
                 for earlier in choices.iter().take(at) {

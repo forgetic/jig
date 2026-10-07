@@ -508,9 +508,91 @@ pub(crate) fn propose(
             return refused(to, Some(proposal.proposer), Refusal::State, out);
         }
     }
+    install(domain, env, proposal, false, out);
+    out.push(Request::Done { reply_to: to });
+}
+
+/// Check the one proposal a verdict creates before any result expense is posted.
+pub(crate) fn check_result(domain: &Domain, env: &Env<Limits>, task: u64, proposal: &Proposal) -> bool {
+    if proposal.number == 0
+        || proposal.proposer != task
+        || proposal.as_holder
+        || proposal.reason.len() > usize::try_from(env.limits.message_bytes).expect("u32 fits usize")
+    {
+        return false;
+    }
+    let Some(row) = record(domain, task) else { return false };
+    if row.project != proposal.project || row.proposal.is_some() || row.revision == u64::MAX {
+        return false;
+    }
+    if !crate::inbox::room(
+        domain,
+        &env.limits,
+        task,
+        1,
+        usize::try_from(env.limits.message_bytes).expect("u32 fits usize"),
+    ) {
+        return false;
+    }
+    match (&row.phase, &proposal.action, &proposal.state) {
+        (Phase::Active(_), ProposalAction::Batch(batch), ProposalState::Pending { holder, .. }) => {
+            let holder_valid = match holder {
+                ProposalHolder::Task(number) => *number != 0 && *number != task,
+                ProposalHolder::Person(number) => *number != 0,
+                ProposalHolder::Policy { project, kind } => *project == row.project && *kind == ProposalKind::Batch,
+            };
+            if !holder_valid
+                || batch.is_empty()
+                || batch.len() > usize::try_from(env.limits.batch).expect("u32 fits usize")
+            {
+                return false;
+            }
+            for (at, member) in batch.iter().enumerate() {
+                if member.number == 0
+                    || member.project != row.project
+                    || member.funder != crate::Funder::Task(task)
+                    || !crate::batch::valid_spec(&env.limits, &member.spec)
+                    || !member.spec.inputs.is_empty()
+                    || !crate::batch::valid_contract(&env.limits, &member.contract)
+                    || !crate::batch::valid_authority(&env.limits, &member.authority)
+                    || !crate::wake::valid(&member.wake)
+                    || member.dependencies.len() > usize::try_from(env.limits.dependencies).expect("u32 fits usize")
+                {
+                    return false;
+                }
+                for earlier in batch.iter().take(at) {
+                    if earlier.number == member.number {
+                        return false;
+                    }
+                }
+            }
+            true
+        }
+        (Phase::Waiting | Phase::Closing(_) | Phase::Held { .. } | Phase::Ended(_), _, _)
+        | (
+            Phase::Active(_),
+            ProposalAction::Amend { .. } | ProposalAction::Widen { .. } | ProposalAction::Release { .. },
+            _,
+        )
+        | (
+            Phase::Active(_),
+            _,
+            ProposalState::Accepted { .. } | ProposalState::Rejected { .. } | ProposalState::Withdrawn,
+        ) => false,
+    }
+}
+
+/// Install a preflighted result proposal in the same decision that takes its verdict.
+pub(crate) fn propose_result(domain: &mut Domain, env: &Env<Limits>, proposal: Proposal, out: &mut Queue<Request>) {
+    install(domain, env, proposal, true, out);
+}
+
+fn install(domain: &mut Domain, env: &Env<Limits>, proposal: Proposal, result: bool, out: &mut Queue<Request>) {
     let number = proposal.proposer;
     let proposal_id = proposal.number;
-    task_mut(domain, number).expect("proposer live").record.proposal = Some(Box::new(proposal.clone()));
+    let row = &mut task_mut(domain, number).expect("proposer live").record;
+    row.proposal = Some(Box::new(proposal.clone()));
+    row.result_proposal = result;
     history(domain, proposal, Party::Task(number), Change::Proposed, out);
     publish(domain, env, number, out);
     let pending = context(domain, number, proposal_id).expect("proposal admitted");
@@ -524,7 +606,6 @@ pub(crate) fn propose(
         }
     }
     wake_holder(domain, env, &pending, out);
-    out.push(Request::Done { reply_to: to });
 }
 
 /// Advance the checked holder or finish the decision. Root executes an accepted
@@ -587,6 +668,12 @@ pub(crate) fn decide(
             None
         }
     };
+    if match outcome {
+        ProposalOutcome::Accepted | ProposalOutcome::Rejected => true,
+        ProposalOutcome::Passed | ProposalOutcome::Withdrawn | ProposalOutcome::Stale => false,
+    } {
+        task.record.result_proposal = false;
+    }
     let change = match outcome {
         ProposalOutcome::Accepted => Change::ProposalAccepted,
         ProposalOutcome::Rejected => Change::ProposalRejected,
@@ -657,11 +744,14 @@ fn holder_is(state: ProposalState, by: Party) -> bool {
     }
 }
 
-/// Closing withdraws its own still-pending proposal before the live row is saved.
+/// Closing withdraws other pending proposals; a result proposal survives until decision.
 pub(crate) fn withdraw_on_close(domain: &mut Domain, number: u64, out: &mut Queue<Request>) {
     let Some(task) = record(domain, number) else { return };
-    let closing = match task.phase {
-        Phase::Closing(_) | Phase::Held { was: Was::Closing(_), .. } => true,
+    let closing = match &task.phase {
+        Phase::Closing(closing) | Phase::Held { was: Was::Closing(closing), .. } => match &closing.ending {
+            crate::Ending::Cancelled { .. } => true,
+            crate::Ending::Done(_) | crate::Ending::Failed { .. } => !task.result_proposal,
+        },
         Phase::Waiting
         | Phase::Active(_)
         | Phase::Held { was: Was::Waiting | Was::Active(_), .. }
@@ -674,6 +764,7 @@ pub(crate) fn withdraw_on_close(domain: &mut Domain, number: u64, out: &mut Queu
         Some(proposal) => *proposal,
         None => return,
     };
+    task_mut(domain, number).expect("closing task live").record.result_proposal = false;
     proposal.state = ProposalState::Withdrawn;
     history(domain, proposal, Party::Task(number), Change::ProposalWithdrawn, out);
     domain.proposal_alarms.cancel(number);
@@ -691,10 +782,14 @@ pub(crate) fn withdraw(
     let Some(mut proposal) = context(domain, proposer, number) else {
         return out.push(Request::ProposalDecided { reply_to: to, proposer, number, outcome: ProposalOutcome::Stale });
     };
+    if record(domain, proposer).expect("pending proposer live").result_proposal {
+        return refused(to, Some(proposer), Refusal::State, out);
+    }
     if record(domain, proposer).expect("pending proposer live").revision == u64::MAX {
         return refused(to, Some(proposer), Refusal::State, out);
     }
     task_mut(domain, proposer).expect("pending proposer live").record.proposal = None;
+    task_mut(domain, proposer).expect("pending proposer live").record.result_proposal = false;
     proposal.state = ProposalState::Withdrawn;
     history(domain, proposal, Party::Task(proposer), Change::ProposalWithdrawn, out);
     domain.proposal_alarms.cancel(proposer);

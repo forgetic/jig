@@ -4,8 +4,8 @@
 //! Priced inputs use combined accounting admission; exact replay is root-owned.
 use crate::domain::{Domain, entrance, fact, publish, record, refused, task_mut};
 use crate::{
-    Accepted, Active, Class, Closing, Contract, End, Ending, Fact, Hold, Limits, Phase, Refusal, Request,
-    SavedResource, Stage, TaskResult, Tries, Was,
+    Accepted, Active, Class, Closing, Contract, End, Ending, Fact, Hold, InvalidResult, Limits, Phase, Refusal,
+    Request, SavedResource, Stage, TaskResult, Tries, Was,
 };
 use alloc::boxed::Box;
 use skein_lib::{Env, Queue, ReplyTo};
@@ -91,6 +91,7 @@ pub(crate) fn claim(
     task.record.run_reserved = budget;
     task.record.attempt = attempt;
     task.record.run_spent = 0;
+    task.record.invalid_result = None;
     task.record.turn = 0;
     task.record.phase = Phase::Active(Active::Claimed { attempt });
     publish(domain, env, number, out);
@@ -139,35 +140,95 @@ pub(crate) fn run_attempt(phase: &Phase) -> Option<u64> {
 }
 
 pub(crate) fn valid_result(contract: &Contract, result: &TaskResult, limits: &Limits) -> bool {
+    invalid_result(contract, result, limits).is_none()
+}
+
+pub(crate) fn invalid_result(contract: &Contract, result: &TaskResult, limits: &Limits) -> Option<InvalidResult> {
     match result {
         TaskResult::Failure { reason } => match contract {
             Contract::Report { .. } | Contract::Verdict { .. } | Contract::Change { .. } => {
-                reason.len() <= usize::try_from(limits.result_bytes).expect("u32 fits usize")
+                if reason.len() <= usize::try_from(limits.result_bytes).expect("u32 fits usize") {
+                    None
+                } else {
+                    Some(InvalidResult::Words)
+                }
             }
         },
         TaskResult::Report { words } => match contract {
-            Contract::Report { words: limit } => words.len() <= usize::try_from(*limit).expect("u32 fits usize"),
-            Contract::Verdict { .. } | Contract::Change { .. } => false,
+            Contract::Report { words: limit } => {
+                if words.len() <= usize::try_from(*limit).expect("u32 fits usize") {
+                    None
+                } else {
+                    Some(InvalidResult::Words)
+                }
+            }
+            Contract::Verdict { .. } | Contract::Change { .. } => Some(InvalidResult::Form),
         },
         TaskResult::Verdict { code, words } => match contract {
             Contract::Verdict { choices } => {
                 for choice in choices {
-                    if choice.code == *code && words.len() <= usize::try_from(choice.words).expect("u32 fits usize") {
-                        return true;
+                    if choice.code == *code {
+                        return if words.len() <= usize::try_from(choice.words).expect("u32 fits usize") {
+                            None
+                        } else {
+                            Some(InvalidResult::Words)
+                        };
                     }
                 }
-                false
+                Some(InvalidResult::Verdict)
             }
-            Contract::Report { .. } | Contract::Change { .. } => false,
+            Contract::Report { .. } | Contract::Change { .. } => Some(InvalidResult::Form),
         },
         TaskResult::Change { connector: actual_connector, kind: actual_kind, words, .. } => match contract {
             Contract::Change { connector, kind, words: limit } => {
-                connector == actual_connector
-                    && kind == actual_kind
-                    && words.len() <= usize::try_from(*limit).expect("u32 fits usize")
+                if connector != actual_connector || kind != actual_kind {
+                    Some(InvalidResult::Change)
+                } else if words.len() > usize::try_from(*limit).expect("u32 fits usize") {
+                    Some(InvalidResult::Words)
+                } else {
+                    None
+                }
             }
-            Contract::Report { .. } | Contract::Verdict { .. } => false,
+            Contract::Report { .. } | Contract::Verdict { .. } => Some(InvalidResult::Form),
         },
+    }
+}
+
+/// Check the admitted verdict's follow-up allowance as well as its result words.
+pub(crate) fn invalid_followups(
+    contract: &Contract,
+    result: &TaskResult,
+    followups: &crate::ResultFollowups,
+    limits: &Limits,
+) -> Option<InvalidResult> {
+    if let Some(reason) = invalid_result(contract, result, limits) {
+        return Some(reason);
+    }
+    let count = match followups {
+        crate::ResultFollowups::Delegates(batch) => batch.len(),
+        crate::ResultFollowups::Proposal(proposal) => match &proposal.action {
+            crate::ProposalAction::Batch(batch) => batch.len(),
+            crate::ProposalAction::Amend { .. }
+            | crate::ProposalAction::Widen { .. }
+            | crate::ProposalAction::Release { .. } => {
+                return Some(InvalidResult::Form);
+            }
+        },
+    };
+    match (contract, result) {
+        (Contract::Verdict { choices }, TaskResult::Verdict { code, .. }) => {
+            for choice in choices {
+                if choice.code == *code {
+                    return if count > 0 && count <= usize::try_from(choice.followups).expect("u32 fits usize") {
+                        None
+                    } else {
+                        Some(InvalidResult::Followups)
+                    };
+                }
+            }
+            Some(InvalidResult::Verdict)
+        }
+        (Contract::Report { .. } | Contract::Change { .. } | Contract::Verdict { .. }, _) => Some(InvalidResult::Form),
     }
 }
 
@@ -188,6 +249,7 @@ fn ending(result: TaskResult) -> Ending {
 }
 
 #[expect(clippy::too_many_arguments, reason = "one fenced activation terminal")]
+#[expect(clippy::too_many_lines, reason = "one terminal normalizes the result and settles its current attempt")]
 pub(crate) fn activation(
     domain: &mut Domain,
     env: &Env<Limits>,
@@ -226,10 +288,28 @@ pub(crate) fn activation(
     };
     let narrowed = old.narrowing;
     let end = if narrowed { End::Parked } else { end };
+    let result_followups = match &end {
+        End::FinishedWithFollowups { .. } => true,
+        End::Finished { .. } | End::Parked | End::Failed(_) | End::Refused => false,
+    };
+    let invalid = match &end {
+        End::Finished { result, .. } => invalid_result(&old.contract, result, &env.limits),
+        End::FinishedWithFollowups { result, followups } => {
+            invalid_followups(&old.contract, result, followups, &env.limits)
+        }
+        End::Parked | End::Failed(_) | End::Refused => None,
+    };
     let end = match end {
         End::Finished { result, cancel_delegates } => {
-            if valid_result(&old.contract, &result, &env.limits) {
+            if invalid.is_none() {
                 End::Finished { result, cancel_delegates }
+            } else {
+                End::Failed(Class::Invalid)
+            }
+        }
+        End::FinishedWithFollowups { result, .. } => {
+            if invalid.is_none() {
+                End::Finished { result, cancel_delegates: false }
             } else {
                 End::Failed(Class::Invalid)
             }
@@ -237,17 +317,20 @@ pub(crate) fn activation(
         End::Parked | End::Failed(_) | End::Refused => end,
     };
     let refuses_live = match &end {
-        End::Finished { cancel_delegates, .. } => !cancel_delegates,
+        End::Finished { cancel_delegates, .. } => !cancel_delegates && !result_followups,
+        End::FinishedWithFollowups { .. } => unreachable!("follow-ups normalized"),
         End::Parked | End::Failed(_) | End::Refused => false,
     };
     if closing.is_none() && refuses_live && !old.delegates.is_empty() {
-        return refused(to, Some(number), Refusal::LiveDelegates, out);
+        return out
+            .push(Request::Refused { reply_to: to, problem: crate::Problem::live_delegates(number, &old.delegates) });
     }
     let next = if let Some(mut closing) = closing {
         closing.stage = Stage::Delegates;
         match &mut closing.ending {
             Ending::Cancelled { result: partial, .. } => match end {
                 End::Finished { result, .. } => *partial = Some(result),
+                End::FinishedWithFollowups { .. } => unreachable!("follow-ups normalized"),
                 End::Parked | End::Failed(_) | End::Refused => {}
             },
             Ending::Done(_) | Ending::Failed { .. } => {}
@@ -261,6 +344,7 @@ pub(crate) fn activation(
                 }
                 Phase::Closing(Closing { stage: Stage::Delegates, ending: ending(result) })
             }
+            End::FinishedWithFollowups { .. } => unreachable!("follow-ups normalized"),
             End::Parked => {
                 let task = task_mut(domain, number).expect("terminal names live task");
                 task.record.tries = Tries::NONE;
@@ -272,6 +356,7 @@ pub(crate) fn activation(
         }
     };
     let task = task_mut(domain, number).expect("terminal names live task");
+    task.record.invalid_result = invalid;
     task.record.numbers.reserved =
         task.record.numbers.reserved.checked_sub(task.record.run_reserved).expect("run held");
     task.record.run_reserved = 0;

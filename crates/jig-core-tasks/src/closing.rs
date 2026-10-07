@@ -238,7 +238,11 @@ pub(crate) fn progress(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
                     }
                 }
                 Phase::Closing(closing) => match closing.stage {
-                    Stage::Delegates if task.delegates.is_empty() && !crate::funders::funded_live(domain, number) => {
+                    Stage::Delegates
+                        if task.delegates.is_empty()
+                            && !task.result_proposal
+                            && !crate::funders::funded_live(domain, number) =>
+                    {
                         let ending = closing.ending.clone();
                         let task = task_mut(domain, number).expect("closing task live");
                         task.record.phase = Phase::Closing(Closing { stage: Stage::Effects, ending: ending.clone() });

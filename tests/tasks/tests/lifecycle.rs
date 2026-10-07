@@ -1,10 +1,229 @@
 use jig_core_tasks::{
-    Active, Class, Contract, End, Ending, Event, Hold, Key, Party, Phase, Refusal, Stage, TaskResult, Was,
+    Active, Cause, Class, Contract, End, Ending, Event, Funder, Hold, Key, Party, Phase, Proposal, ProposalAction,
+    ProposalDecision, ProposalHolder, ProposalState, Refusal, ResultFollowups, Stage, TaskResult, Was,
 };
 use jig_tasks_world::{LIMITS, Reply, World, task};
 
 fn refused(reply: &Reply, why: Refusal) {
     assert!(matches!(reply, Reply::Refused(problem) if problem.why == why), "expected {why:?}, got {reply:?}");
+}
+
+fn result_followup_proposal(w: &World) -> Proposal {
+    let mut child = task(2, &[]);
+    child.funder = Funder::Task(1);
+    child.numbers.budget = 5;
+    child.authority.budget.spend = 5;
+    Proposal {
+        number: 100,
+        proposer: 1,
+        project: 1,
+        action: ProposalAction::Batch(Box::new([child])),
+        reason: Box::new([1]),
+        as_holder: false,
+        state: ProposalState::Pending { holder: ProposalHolder::Person(1), since: w.env.wall },
+    }
+}
+
+fn start_result_followup(w: &mut World) {
+    let mut first = task(1, &[]);
+    first.contract =
+        Contract::Verdict { choices: Box::new([jig_core_tasks::Verdict { code: 7, words: 32, followups: 1 }]) };
+    assert_eq!(w.make(Party::Person(1), vec![first, task(3, &[1])]), Reply::Made(vec![1, 3]));
+    w.claim_budget(1, 1, 10);
+    let proposal = result_followup_proposal(w);
+    assert_eq!(
+        w.terminal_cause(
+            1,
+            End::FinishedWithFollowups {
+                result: TaskResult::Verdict { code: 7, words: Box::new([1]) },
+                followups: ResultFollowups::Proposal(Box::new(proposal)),
+            },
+            Cause::Priced { cumulative: 0 },
+        ),
+        Reply::Acknowledged(jig_core_tasks::Accepted::New)
+    );
+    assert!(matches!(w.record(1).phase, Phase::Closing(jig_core_tasks::Closing { stage: Stage::Delegates, .. })));
+    assert!(w.results.is_empty());
+    assert!(!w.activations.contains(&3));
+}
+
+#[test]
+fn a_verdicts_proposal_is_accepted_and_its_followups_run_before_result_delivery() {
+    let mut w = World::new(201, LIMITS);
+    start_result_followup(&mut w);
+    w.restart();
+    let mut child = task(2, &[]);
+    child.funder = Funder::Task(1);
+    child.numbers.budget = 5;
+    child.authority.budget.spend = 5;
+    let to = w.to();
+    let key = to.into_token().raw();
+    w.send(Event::MakeResultFollowups {
+        reply_to: skein_lib::ReplyTo::new(skein_lib::Token::new(key)),
+        proposer: 1,
+        proposal: 100,
+        batch: Box::new([child]),
+    });
+    assert_eq!(w.replies[&key], Reply::Made(vec![2]));
+    let to = w.to();
+    w.send(Event::DecideProposal {
+        reply_to: to,
+        proposer: 1,
+        proposal: 100,
+        message: Some(101),
+        by: Party::Person(1),
+        decision: ProposalDecision::Accept,
+    });
+    assert!(w.results.is_empty());
+    assert_eq!(w.record(1).delegates.as_ref(), [2]);
+    w.claim_budget(2, 2, 5);
+    w.finish(2);
+    w.settle(2);
+    assert!(w.results.contains_key(&2) && !w.results.contains_key(&1));
+    w.settle(1);
+    assert!(w.results.contains_key(&1));
+    assert!(w.activations.contains(&3));
+}
+
+#[test]
+fn a_verdicts_proposal_is_rejected_and_its_result_is_delivered() {
+    let mut w = World::new(202, LIMITS);
+    start_result_followup(&mut w);
+    w.restart();
+    let to = w.to();
+    w.send(Event::DecideProposal {
+        reply_to: to,
+        proposer: 1,
+        proposal: 100,
+        message: Some(101),
+        by: Party::Person(1),
+        decision: ProposalDecision::Reject { reason: Box::new([2]) },
+    });
+    assert!(w.closing.contains(&1));
+    assert!(!w.activations.contains(&2));
+    w.settle(1);
+    assert!(matches!(w.results.get(&1), Some(Ending::Done(TaskResult::Verdict { code: 7, .. }))));
+    assert!(w.activations.contains(&3));
+}
+
+#[test]
+fn cancelling_a_closing_result_withdraws_its_pending_followup_proposal() {
+    let mut w = World::new(206, LIMITS);
+    start_result_followup(&mut w);
+    let to = w.to();
+    w.send(Event::Control {
+        reply_to: to,
+        by: Party::Person(1),
+        task: 1,
+        control: jig_core_tasks::Control::Cancel { reason: Box::new([9]) },
+    });
+    assert!(w.record(1).proposal.is_none());
+    assert!(!w.record(1).result_proposal);
+    assert!(w.closing.contains(&1));
+    w.settle(1);
+    assert!(matches!(w.results.get(&1), Some(Ending::Cancelled { .. })));
+}
+
+#[test]
+fn an_authorized_verdict_makes_followups_in_its_result_commit_and_waits_for_them() {
+    let mut w = World::new(203, LIMITS);
+    let mut first = task(1, &[]);
+    first.contract =
+        Contract::Verdict { choices: Box::new([jig_core_tasks::Verdict { code: 7, words: 32, followups: 1 }]) };
+    assert_eq!(w.make(Party::Person(1), vec![first, task(3, &[1])]), Reply::Made(vec![1, 3]));
+    w.claim(1, 1);
+    let mut child = task(2, &[]);
+    child.funder = Funder::Task(1);
+    child.numbers.budget = 5;
+    child.authority.budget.spend = 5;
+    assert_eq!(
+        w.terminal_cause(
+            1,
+            End::FinishedWithFollowups {
+                result: TaskResult::Verdict { code: 7, words: Box::new([1]) },
+                followups: ResultFollowups::Delegates(Box::new([child])),
+            },
+            Cause::Priced { cumulative: 0 },
+        ),
+        Reply::Acknowledged(jig_core_tasks::Accepted::New)
+    );
+    assert_eq!(w.record(1).delegates.as_ref(), [2]);
+    assert!(w.record(2).created_at == w.record(1).created_at);
+    assert!(w.results.is_empty() && !w.activations.contains(&3));
+    w.claim_budget(2, 2, 5);
+    w.finish(2);
+    w.settle(2);
+    w.settle(1);
+    assert!(w.results.contains_key(&1) && w.activations.contains(&3));
+}
+
+#[test]
+fn a_verdict_cannot_make_followups_its_contract_did_not_allow() {
+    let mut w = World::new(205, LIMITS);
+    let mut first = task(1, &[]);
+    first.contract =
+        Contract::Verdict { choices: Box::new([jig_core_tasks::Verdict { code: 7, words: 32, followups: 0 }]) };
+    w.make(Party::Person(1), vec![first]);
+    w.claim(1, 1);
+    let mut child = task(2, &[]);
+    child.funder = Funder::Task(1);
+    child.numbers.budget = 5;
+    child.authority.budget.spend = 5;
+    assert_eq!(
+        w.terminal_cause(
+            1,
+            End::FinishedWithFollowups {
+                result: TaskResult::Verdict { code: 7, words: Box::new([1]) },
+                followups: ResultFollowups::Delegates(Box::new([child])),
+            },
+            Cause::Priced { cumulative: 0 },
+        ),
+        Reply::Acknowledged(jig_core_tasks::Accepted::New)
+    );
+    assert!(!w.records.contains_key(&Key::Live(2)));
+    assert_eq!(w.record(1).invalid_result, Some(jig_core_tasks::InvalidResult::Followups));
+    assert_eq!(w.record(1).tries.invalid, 1);
+}
+
+#[test]
+fn a_plan_of_reports_a_choice_and_procedure_tasks_runs_in_dependency_order() {
+    let mut w = World::new(204, LIMITS);
+    let first = task(1, &[]);
+    let mut choice = task(2, &[1]);
+    choice.contract =
+        Contract::Verdict { choices: Box::new([jig_core_tasks::Verdict { code: 1, words: 32, followups: 0 }]) };
+    let mut procedure = task(3, &[2]);
+    procedure.executor = jig_core_tasks::Executor::Procedure { connector: 1, code: 1 };
+    let last = task(4, &[3]);
+    assert_eq!(w.make(Party::Person(1), vec![first, choice, procedure, last]), Reply::Made(vec![1, 2, 3, 4]));
+    assert!(w.activations.contains(&1));
+    assert!(!w.activations.contains(&2) && !w.activations.contains(&3) && !w.activations.contains(&4));
+    w.claim(1, 1);
+    w.finish(1);
+    w.settle(1);
+    assert!(w.activations.contains(&2) && !w.activations.contains(&3));
+    w.claim(2, 2);
+    w.terminal(
+        2,
+        End::Finished { result: TaskResult::Verdict { code: 1, words: Box::new([9]) }, cancel_delegates: false },
+    );
+    w.settle(2);
+    assert!(w.activations.contains(&3) && !w.activations.contains(&4));
+    let to = w.to();
+    let key = to.into_token().raw();
+    w.send(Event::Procedure {
+        reply_to: skein_lib::ReplyTo::new(skein_lib::Token::new(key)),
+        task: 3,
+        step: 1,
+        decision: jig_core_tasks::ProcedureDecision::Result(TaskResult::Report { words: Box::new([8]) }),
+    });
+    assert_eq!(w.replies[&key], Reply::Done);
+    w.settle(3);
+    assert!(w.activations.contains(&4));
+    w.claim(4, 4);
+    w.finish(4);
+    w.settle(4);
+    assert_eq!(w.results.len(), 4);
 }
 
 #[test]
@@ -121,7 +340,8 @@ fn dependency_order_negative_verdict_starts_but_failure_holds() {
     for fail in [false, true] {
         let mut w = World::new(3, LIMITS);
         let mut first = task(1, &[]);
-        first.contract = Contract::Verdict { choices: Box::new([jig_core_tasks::Verdict { code: 0, words: 32 }]) };
+        first.contract =
+            Contract::Verdict { choices: Box::new([jig_core_tasks::Verdict { code: 0, words: 32, followups: 0 }]) };
         w.make(Party::Person(1), vec![first, task(2, &[1])]);
         assert!(!w.activations.contains(&2));
         w.claim(1, 1);
@@ -435,8 +655,12 @@ fn invalid_results_spend_invalid_tries_and_refused_held_closing_make_is_atomic()
         End::Finished { result: TaskResult::Verdict { code: 0, words: Box::new([]) }, cancel_delegates: false },
     );
     assert_eq!(w.record(1).tries.invalid, 1);
+    assert_eq!(w.record(1).invalid_result, Some(jig_core_tasks::InvalidResult::Form));
+    w.restart();
     w.advance();
+    assert_eq!(w.contexts[&1].invalid_result, Some(jig_core_tasks::InvalidResult::Form));
     w.claim(1, 2);
+    assert_eq!(w.record(1).invalid_result, None);
     w.finish(1);
     w.send(Event::Hold { task: 1, why: Hold::Effects });
     let before = w.records.clone();

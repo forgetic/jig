@@ -39,7 +39,10 @@ pub(crate) fn stepped(
         }
         ProcedureDecision::Result(result) => {
             if !task.delegates.is_empty() {
-                return refused(to, Some(number), Refusal::LiveDelegates, out);
+                return out.push(Request::Refused {
+                    reply_to: to,
+                    problem: crate::Problem::live_delegates(number, &task.delegates),
+                });
             }
             if !crate::run::valid_result(&task.contract, result, &env.limits) {
                 return refused(to, Some(number), Refusal::Contract, out);

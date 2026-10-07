@@ -12,8 +12,9 @@ fn a_person_task_is_taken_handed_back_and_answered() {
     let mut world = World::new(220, LIMITS);
     let mut new = task(1, &[]);
     new.executor = Executor::Person(PersonAddress::Role(7));
-    new.contract =
-        Contract::Verdict { choices: Box::new([Verdict { code: 1, words: 8 }, Verdict { code: 2, words: 8 }]) };
+    new.contract = Contract::Verdict {
+        choices: Box::new([Verdict { code: 1, words: 8, followups: 0 }, Verdict { code: 2, words: 8, followups: 0 }]),
+    };
     assert_eq!(world.make(Party::Person(9), vec![new]), Reply::Made(vec![1]));
     assert_eq!(world.record(1).phase, Phase::Active(tasks::Active::Due));
     assert!(!world.activations.contains(&1), "a person task does not claim a worker");

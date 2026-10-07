@@ -3,7 +3,7 @@
 //! Preflights lifecycle and eventual financial representability before mutation.
 //! Keeps no receipt table; root owns exact transport payload replay proofs.
 use crate::domain::{Domain, entrance, publish, record, refused, task_mut};
-use crate::{Accepted, End, Limits, Refusal, Request};
+use crate::{Accepted, End, Limits, Refusal, Request, ResultFollowups, TaskResult};
 use alloc::boxed::Box;
 use skein_lib::{Env, Queue, ReplyTo};
 
@@ -88,6 +88,7 @@ pub(crate) fn turn(
 }
 
 #[expect(clippy::too_many_arguments, reason = "one complete admission event")]
+#[expect(clippy::too_many_lines, reason = "one charged result preflights and settles its follow-ups atomically")]
 pub(crate) fn activation(
     domain: &mut Domain,
     environment: &Env<Limits>,
@@ -113,6 +114,11 @@ pub(crate) fn activation(
     if !crate::run::saved_within(saved.as_deref(), &environment.limits) {
         return refused(to, Some(number), Refusal::Contract, out);
     }
+    let spent = match check_charge(domain, number, cumulative) {
+        Ok(spent) => spent,
+        Err(why) => return refused(to, Some(number), why, out),
+    };
+    let charge = cumulative.checked_sub(old.run_spent).expect("charge preflighted");
     match &end {
         End::Finished { result, cancel_delegates } => {
             if crate::run::result_bytes(result)
@@ -132,15 +138,68 @@ pub(crate) fn activation(
                 && !cancel_delegates
                 && !old.delegates.is_empty()
             {
-                return refused(to, Some(number), Refusal::LiveDelegates, out);
+                return out.push(Request::Refused {
+                    reply_to: to,
+                    problem: crate::Problem::live_delegates(number, &old.delegates),
+                });
+            }
+        }
+        End::FinishedWithFollowups { result, followups } => {
+            if crate::run::result_bytes(result)
+                > usize::try_from(environment.limits.result_bytes).expect("u32 fits usize")
+            {
+                return refused(to, Some(number), Refusal::Contract, out);
+            }
+            if !old.narrowing
+                && crate::run::invalid_followups(&old.contract, result, followups, &environment.limits).is_none()
+            {
+                match result {
+                    TaskResult::Verdict { .. } => {}
+                    TaskResult::Report { .. } | TaskResult::Change { .. } | TaskResult::Failure { .. } => {
+                        return refused(to, Some(number), Refusal::Contract, out);
+                    }
+                }
+                if !old.delegates.is_empty() {
+                    return out.push(Request::Refused {
+                        reply_to: to,
+                        problem: crate::Problem::live_delegates(number, &old.delegates),
+                    });
+                }
+                match followups {
+                    ResultFollowups::Delegates(batch) => {
+                        if let Err(problem) =
+                            crate::batch::check_direct_followups(domain, &environment.limits, number, charge, batch)
+                        {
+                            return out.push(Request::Refused { reply_to: to, problem });
+                        }
+                    }
+                    ResultFollowups::Proposal(proposal) => {
+                        if !crate::proposals::check_result(domain, environment, number, proposal) {
+                            return refused(to, Some(number), Refusal::Contract, out);
+                        }
+                    }
+                }
             }
         }
         End::Parked | End::Failed(_) | End::Refused => {}
     }
-    let spent = match check_charge(domain, number, cumulative) {
-        Ok(spent) => spent,
-        Err(why) => return refused(to, Some(number), why, out),
+    let result_admitted = match &end {
+        End::FinishedWithFollowups { result, followups } => {
+            !old.narrowing
+                && crate::run::invalid_followups(&old.contract, result, followups, &environment.limits).is_none()
+        }
+        End::Finished { .. } | End::Parked | End::Failed(_) | End::Refused => false,
     };
     post(domain, environment, number, cumulative, spent, out);
-    crate::run::activation(domain, environment, to, number, attempt, end, saved, out);
+    crate::run::activation(domain, environment, to, number, attempt, end.clone(), saved, out);
+    match (&end, result_admitted) {
+        (End::FinishedWithFollowups { followups: ResultFollowups::Delegates(batch), .. }, true) => {
+            crate::domain::make_admitted(domain, environment, crate::Party::Task(number), batch.clone(), out);
+        }
+        (End::FinishedWithFollowups { followups: ResultFollowups::Proposal(proposal), .. }, true) => {
+            crate::proposals::propose_result(domain, environment, (**proposal).clone(), out);
+        }
+        (End::FinishedWithFollowups { .. }, false)
+        | (End::Finished { .. } | End::Parked | End::Failed(_) | End::Refused, _) => {}
+    }
 }

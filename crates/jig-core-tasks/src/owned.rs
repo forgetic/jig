@@ -3,8 +3,8 @@
 //! Measures existing ownership without allocating or cloning; shape admission
 //! remains with tasks and authority decisions remain with root policy checks.
 use crate::{
-    Authority, Contract, Ending, Last, Parameter, PersonProposalState, Phase, Proposal, ProposalAction, ProposalState,
-    Spec, Stored, TaskRecord, TaskResult, Was,
+    Authority, Contract, End, Ending, Last, Parameter, PersonProposalState, Phase, Proposal, ProposalAction,
+    ProposalState, ResultFollowups, Spec, Stored, TaskRecord, TaskResult, Was,
 };
 use core::mem::{size_of, size_of_val};
 
@@ -39,6 +39,35 @@ pub fn stored_bytes(record: &Stored) -> Option<u64> {
         Stored::Live(task) | Stored::Ended(task) => task_bytes(task),
         Stored::Stub(_) | Stored::Ledger(_) => Some(0),
     }
+}
+
+/// Borrowed heap bytes retained by one fenced terminal proof.
+#[must_use]
+pub fn terminal_bytes(end: &End) -> Option<u64> {
+    match end {
+        End::Finished { result, .. } => result_bytes(result),
+        End::FinishedWithFollowups { result, followups } => {
+            let result = result_bytes(result)?;
+            let followups = match followups {
+                ResultFollowups::Delegates(batch) => batch_bytes(batch)?,
+                ResultFollowups::Proposal(proposal) => proposal_bytes(proposal)?,
+            };
+            result.checked_add(followups)
+        }
+        End::Parked | End::Failed(_) | End::Refused => Some(0),
+    }
+}
+
+fn batch_bytes(batch: &[crate::New]) -> Option<u64> {
+    let mut total = bytes(size_of_val(batch))?;
+    for member in batch {
+        total = total
+            .checked_add(spec_bytes(&member.spec)?)?
+            .checked_add(authority_bytes(&member.authority)?)?
+            .checked_add(contract_bytes(&member.contract)?)?
+            .checked_add(bytes(size_of_val(&*member.dependencies))?)?;
+    }
+    Some(total)
 }
 
 fn bytes(length: usize) -> Option<u64> {

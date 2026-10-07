@@ -72,10 +72,10 @@ mod wake;
 pub use batch::{valid_authority, valid_contract, valid_spec};
 pub use boundary::{
     Accepted, Active, Cause, Closing, Contract, DelegateState, DelegationContext, End, Ending, Event, Executor, Hold,
-    Key, MessageKind, New, NewsClass, NoticeState, Parameter, Party, PersonAddress, Phase, Problem, ProcedureDecision,
-    QuestionCredit, RecurringOverlap, RecurringState, RecurringTemplate, Refusal, Request, ResultKind, ResultsWake,
-    RunContext, SavedResource, Spec, Stage, Status, Stored, Stub, Subscription, SubscriptionKind, TaskRecord,
-    TaskResult, Verdict, WakePolicy, WakeRule, Was, Word,
+    InvalidResult, Key, MessageKind, New, NewsClass, NoticeState, Parameter, Party, PersonAddress, Phase, Problem,
+    ProcedureDecision, QuestionCredit, RecurringOverlap, RecurringState, RecurringTemplate, Refusal, Request,
+    ResultFollowups, ResultKind, ResultsWake, RunContext, SavedResource, Spec, Stage, Status, Stored, Stub,
+    Subscription, SubscriptionKind, TaskRecord, TaskResult, Verdict, WakePolicy, WakeRule, Was, Word,
 };
 pub use control::{Amendment, Change, Control, History};
 pub use domain::{Domain, ViewTask, fire, max_out, step, view_phase};
@@ -84,7 +84,7 @@ pub use facts::Fact;
 pub use failures::{Class, Retries, Retry, Tries};
 pub use funders::FundingRecord;
 pub use limits::{Limits, worst_case};
-pub use owned::stored_bytes;
+pub use owned::{stored_bytes, terminal_bytes};
 pub use proposals::{
     PersonProposal, PersonProposalState, Proposal, ProposalAction, ProposalDecision, ProposalHolder, ProposalKind,
     ProposalOutcome, ProposalState,

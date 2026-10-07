@@ -286,6 +286,8 @@ pub struct Verdict {
     pub code: u32,
     /// Maximum word bytes for this choice, no greater than `Limits::result_bytes`.
     pub words: u32,
+    /// Maximum whole-batch follow-up delegates this choice permits.
+    pub followups: u32,
 }
 
 /// Root-supplied bounded result shape; tasks validates returned results against it before terminal
@@ -346,6 +348,22 @@ pub enum TaskResult {
     },
 }
 
+/// Why an agent's proposed result failed its current admitted contract.
+/// The next run receives this durable reason in its attempt summary.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum InvalidResult {
+    /// The successful result used a different contract form.
+    Form,
+    /// A verdict named a code absent from the current closed choices.
+    Verdict,
+    /// The result's words exceeded their admitted bound.
+    Words,
+    /// A change named a different connector or result kind.
+    Change,
+    /// The verdict proposed more follow-up tasks than its contract permits.
+    Followups,
+}
+
 /// Durable final outcome, or a pending closing outcome; requester notification follows actual
 /// settlement. (domain/tasks.md, sections 5.1 and 5.6).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -402,6 +420,13 @@ pub enum End {
         /** Whether to cancel live descendant work; otherwise a valid finish with live delegates is refused and its attempt remains live. */
         cancel_delegates: bool,
     },
+    /// A checked verdict whose follow-up batch is part of the result decision.
+    FinishedWithFollowups {
+        /// Verdict checked against the task's current result contract.
+        result: TaskResult,
+        /// Either immediately admitted delegates or one proposal for the whole batch.
+        followups: ResultFollowups,
+    },
     /// Successful activation park; clears retry/refusal counters and leaves the task idle until words wake it.
     Parked,
     /// Count one classified failure, then back off or hold beyond the configured retry allowance.
@@ -409,6 +434,15 @@ pub enum End {
     /// Pre-execution refusal pause using the transient delay policy, without spending a failure
     /// try.
     Refused,
+}
+
+/// Root-authorized follow-ups from one verdict, admitted with its result.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ResultFollowups {
+    /// A whole batch within the finishing task's authority and allotment.
+    Delegates(Box<[New]>),
+    /// One pending proposal for a whole batch beyond that authority.
+    Proposal(Box<crate::Proposal>),
 }
 
 /// Root-reported or task-derived reason to preserve a task's prior lifecycle while stopping its
@@ -608,6 +642,8 @@ pub struct TaskRecord {
     pub escalation: crate::Escalation,
     /// At most one pending action awaiting a holder; its terminal leaves live memory as history.
     pub proposal: Option<Box<crate::Proposal>>,
+    /// A result-created proposal keeps closing at its delegate gate until decided.
+    pub result_proposal: bool,
     /// Stable never-reused deployment task identity.
     pub number: u64,
     pub project: u32,
@@ -675,6 +711,8 @@ pub struct TaskRecord {
     pub last_answer: Option<u64>,
     /// Per-class failure history used with the configured retry policy.
     pub tries: Tries,
+    /// Last invalid result's contract reason, kept through the next preparation.
+    pub invalid_result: Option<InvalidResult>,
     /// Saturating pre-execution refusal counter used for pauses rather than failure tries.
     pub refusals: u32,
     /// Current lifecycle or the ended historical outcome.
@@ -810,12 +848,29 @@ pub enum Refusal {
 
 /// `Refusal` location and reason returned to the root; batch-wide failures may have no single task
 /// identity. (domain/tasks.md, sections 4–5).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Problem {
     /// Offending task identity when one exists; `None` denotes a batch/source/global failure.
     pub task: Option<u64>,
     /// Bounded structural, lifecycle, financial or restore admission reason.
     pub why: Refusal,
+    /// All live delegates that prevented a finish, in the requester's current order.
+    /// Absent for every other refusal.
+    pub blocked_by: Option<Box<[u64]>>,
+}
+
+impl Problem {
+    /// A refusal with no live-delegate blockers.
+    #[must_use]
+    pub const fn new(task: Option<u64>, why: Refusal) -> Self {
+        Self { task, why, blocked_by: None }
+    }
+
+    /// A finish refused until these named delegates end or are cancelled.
+    #[must_use]
+    pub fn live_delegates(task: u64, delegates: &[u64]) -> Self {
+        Self { task: Some(task), why: Refusal::LiveDelegates, blocked_by: Some(Box::from(delegates)) }
+    }
 }
 
 /// Lifecycle acknowledgement classification, not an exact payload replay proof; exact transport
@@ -1014,6 +1069,17 @@ pub enum Event {
         creator: Party,
         /// Owned nonempty batch bounded by `Limits::batch`; all graph, payload and reservation
         /// checks precede mutation.
+        batch: Box<[New]>,
+    },
+    /// Admit the accepted batch of a result-created proposal while its proposer closes.
+    MakeResultFollowups {
+        /// Destination owed one `Made` or `Refused` terminal for the whole batch.
+        reply_to: ReplyTo,
+        /// The closing task whose result made this proposal.
+        proposer: u64,
+        /// Exact still-pending result proposal being accepted in this decision.
+        proposal: u64,
+        /// Whole authorized batch with its final actual funding source.
         batch: Box<[New]>,
     },
     /// `Due`-to-`Preparing` admission, producing `Done` or `Refused`.
@@ -1312,6 +1378,8 @@ pub struct RunContext {
     pub ever_turned: bool,
     /// Failure classes seen before this preparation, for the brief's attempt summary.
     pub tries: Tries,
+    /// Contract reason given to this next run after an invalid terminal.
+    pub invalid_result: Option<InvalidResult>,
     pub project: u32,
     /// Implemented task executor, currently an agent charter selected by root.
     pub executor: Executor,

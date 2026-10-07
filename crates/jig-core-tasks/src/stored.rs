@@ -99,7 +99,26 @@ fn person_phase(phase: &Phase) -> bool {
 
 #[expect(clippy::too_many_lines, reason = "one restored proposal validates its whole action and pending holder")]
 fn valid_proposal(task: &TaskRecord, limits: &Limits) -> bool {
-    let Some(proposal) = &task.proposal else { return true };
+    if task.result_proposal {
+        let waiting = match &task.phase {
+            Phase::Closing(Closing { stage: Stage::Delegates, .. })
+            | Phase::Held { was: Was::Closing(Closing { stage: Stage::Delegates, .. }), .. } => true,
+            Phase::Waiting | Phase::Active(_) | Phase::Closing(_) | Phase::Held { .. } | Phase::Ended(_) => false,
+        };
+        if !waiting {
+            return false;
+        }
+    }
+    let Some(proposal) = &task.proposal else { return !task.result_proposal };
+    let result_batch = match proposal.action {
+        crate::ProposalAction::Batch(_) => true,
+        crate::ProposalAction::Amend { .. }
+        | crate::ProposalAction::Widen { .. }
+        | crate::ProposalAction::Release { .. } => false,
+    };
+    if task.result_proposal && (proposal.as_holder || !result_batch) {
+        return false;
+    }
     if proposal.number == 0
         || proposal.proposer != task.number
         || proposal.project != task.project
@@ -192,6 +211,11 @@ fn valid_proposal(task: &TaskRecord, limits: &Limits) -> bool {
             crate::ProposalState::Pending { .. },
             Phase::Waiting | Phase::Active(_) | Phase::Held { was: Was::Waiting | Was::Active(_), .. },
         ) => true,
+        (crate::ProposalState::Pending { .. }, Phase::Closing(_) | Phase::Held { was: Was::Closing(_), .. })
+            if task.result_proposal =>
+        {
+            true
+        }
         (
             crate::ProposalState::Pending { .. },
             Phase::Closing(_) | Phase::Held { was: Was::Closing(_), .. } | Phase::Ended(_),
@@ -571,7 +595,7 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>, stored: Stored, ou
 
 fn failed(domain: &mut Domain, task: Option<u64>, why: Refusal, out: &mut Queue<Request>) {
     domain.startup = Startup::Failed;
-    out.push(Request::RestoreRefused { problem: Problem { task, why } });
+    out.push(Request::RestoreRefused { problem: Problem { task, why, blocked_by: None } });
 }
 
 fn links(domain: &Domain, env: &Env<Limits>, task: &TaskRecord) -> bool {

@@ -39,7 +39,13 @@ fn source_live(domain: &Domain, funder: Funder) -> bool {
     false
 }
 
-pub(crate) fn can_reserve(domain: &Domain, creator: crate::Party, batch: &[crate::New]) -> bool {
+pub(crate) fn can_reserve(
+    domain: &Domain,
+    creator: crate::Party,
+    batch: &[crate::New],
+    result_proposal: Option<u64>,
+    direct_finish: Option<(u64, u64)>,
+) -> bool {
     for new in batch {
         let budget = if new.recurring.is_some() { 0 } else { new.authority.budget.spend };
         if new.numbers != (Numbers { budget, spent: 0, spent_below: 0, reserved: 0 }) {
@@ -54,10 +60,30 @@ pub(crate) fn can_reserve(domain: &Domain, creator: crate::Party, batch: &[crate
                     crate::Party::Task(requester) => below(domain, requester, number, domain.names.len()),
                     crate::Party::Person(_) | crate::Party::Deployment { .. } => false,
                 };
-                if !ancestor || funder.project != new.project || !mutable(&funder.phase) {
+                let proposal_matches = match &funder.proposal {
+                    Some(proposal) => Some(proposal.number) == result_proposal,
+                    None => false,
+                };
+                let finishing_result = result_proposal.is_some()
+                    && number
+                        == match creator {
+                            crate::Party::Task(task) => task,
+                            crate::Party::Person(_) | crate::Party::Deployment { .. } => 0,
+                        }
+                    && funder.result_proposal
+                    && proposal_matches;
+                if !ancestor || funder.project != new.project || !(mutable(&funder.phase) || finishing_result) {
                     return false;
                 }
                 let mut after = funder.numbers;
+                if let Some((finishing, charge)) = direct_finish
+                    && finishing == number
+                {
+                    let Some(reserved) = after.reserved.checked_sub(funder.run_reserved) else { return false };
+                    let Some(spent) = after.spent.checked_add(charge) else { return false };
+                    after.reserved = reserved;
+                    after.spent = spent;
+                }
                 for sibling in batch {
                     if sibling.funder == new.funder {
                         let Some(reserved) = after.reserved.checked_add(sibling.numbers.budget) else {

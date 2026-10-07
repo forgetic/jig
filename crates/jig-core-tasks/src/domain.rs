@@ -216,6 +216,18 @@ impl Domain {
         crate::proposals::context(self, proposer, number)
     }
 
+    /// Whether this exact pending proposal was made by the proposer's result.
+    #[must_use]
+    pub fn result_proposal(&self, proposer: u64, number: u64) -> bool {
+        match record(self, proposer) {
+            Some(row) => match &row.proposal {
+                Some(proposal) => row.result_proposal && proposal.number == number,
+                None => false,
+            },
+            None => false,
+        }
+    }
+
     /// Clone one pending person-origin goal proposal for the root's authority check.
     #[must_use]
     pub fn person_proposal(&self, proposer: u64, number: u64) -> Option<crate::PersonProposal> {
@@ -385,6 +397,9 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             crate::funders::resize_pool(domain, reply_to, project, person, period, budget, out);
         }
         Event::Make { reply_to, creator, batch } => make(domain, env, reply_to, creator, batch, out),
+        Event::MakeResultFollowups { reply_to, proposer, proposal, batch } => {
+            make_result_followups(domain, env, reply_to, proposer, proposal, batch, out);
+        }
         Event::Message { reply_to, project, task, word } => {
             crate::inbox::message(domain, env, reply_to, project, task, word, out);
         }
@@ -404,7 +419,14 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             crate::Cause::Priced { cumulative } => {
                 crate::admission::activation(domain, env, reply_to, task, attempt, end, saved, cumulative, out);
             }
-            crate::Cause::Unpriced => crate::run::activation(domain, env, reply_to, task, attempt, end, saved, out),
+            crate::Cause::Unpriced => match end {
+                crate::End::FinishedWithFollowups { .. } => {
+                    refused(reply_to, Some(task), Refusal::Contract, out);
+                }
+                crate::End::Finished { .. } | crate::End::Parked | crate::End::Failed(_) | crate::End::Refused => {
+                    crate::run::activation(domain, env, reply_to, task, attempt, end, saved, out);
+                }
+            },
         },
         Event::PreparationFailed { task } => crate::run::preparation_failed(domain, env, task, out),
         Event::Hold { task, why } => crate::run::hold(domain, env, task, why, out),
@@ -482,7 +504,7 @@ pub(crate) fn fact(domain: &mut Domain, observation: Fact) {
 }
 
 pub(crate) fn refused(to: ReplyTo, task: Option<u64>, why: Refusal, out: &mut Queue<Request>) {
-    out.push(Request::Refused { reply_to: to, problem: Problem { task, why } });
+    out.push(Request::Refused { reply_to: to, problem: Problem { task, why, blocked_by: None } });
 }
 
 pub(crate) fn entrance(domain: &Domain, to: ReplyTo, number: u64) -> Result<ReplyTo, (ReplyTo, Refusal)> {
@@ -552,6 +574,7 @@ pub(crate) fn activate(domain: &Domain, number: u64, out: &mut Queue<Request>) {
             previous_attempt: task.attempt,
             ever_turned: task.ever_turned,
             tries: task.tries,
+            invalid_result: task.invalid_result,
             project: task.project,
             executor: task.executor,
             spec: task.spec.clone(),
@@ -625,8 +648,6 @@ pub(crate) fn publish(domain: &mut Domain, env: &Env<Limits>, number: u64, out: 
     }
 }
 
-#[expect(clippy::manual_map, reason = "the subset uses a closed match instead of a closure")]
-#[expect(clippy::too_many_lines, reason = "one atomic batch constructor fills the durable task record")]
 pub(crate) fn make(
     domain: &mut Domain,
     env: &Env<Limits>,
@@ -641,6 +662,40 @@ pub(crate) fn make(
     if let Err(problem) = crate::batch::check(domain, &env.limits, creator, &batch) {
         return out.push(Request::Refused { reply_to: to, problem });
     }
+    let numbers = make_admitted(domain, env, creator, batch, out);
+    out.push(Request::Made { reply_to: to, tasks: numbers });
+}
+
+fn make_result_followups(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    to: ReplyTo,
+    proposer: u64,
+    proposal: u64,
+    batch: Box<[New]>,
+    out: &mut Queue<Request>,
+) {
+    if !domain.ready() {
+        return refused(to, Some(proposer), Refusal::NotReady, out);
+    }
+    if let Err(problem) =
+        crate::batch::check_result_followups(domain, &env.limits, Party::Task(proposer), proposal, &batch)
+    {
+        return out.push(Request::Refused { reply_to: to, problem });
+    }
+    let numbers = make_admitted(domain, env, Party::Task(proposer), batch, out);
+    out.push(Request::Made { reply_to: to, tasks: numbers });
+}
+
+/// Construct a whole batch after its entrance and funding were preflighted in this decision.
+#[expect(clippy::manual_map, reason = "the subset uses a closed match instead of a closure")]
+pub(crate) fn make_admitted(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    creator: Party,
+    batch: Box<[New]>,
+    out: &mut Queue<Request>,
+) -> Box<[u64]> {
     crate::funders::reserve(domain, env, &batch, out);
     let parent = match creator {
         Party::Task(number) => Some(number),
@@ -688,6 +743,7 @@ pub(crate) fn make(
                 result_position: 0,
                 escalation: crate::Escalation::Unheld { revision: 0 },
                 proposal: None,
+                result_proposal: false,
                 number,
                 project: new.project,
                 requester: creator,
@@ -727,6 +783,7 @@ pub(crate) fn make(
                 attempt: 0,
                 last_answer: None,
                 tries: Tries::NONE,
+                invalid_result: None,
                 refusals: 0,
                 phase: Phase::Waiting,
             },
@@ -739,7 +796,7 @@ pub(crate) fn make(
         publish(domain, env, number, out);
         fact(domain, Fact::Made { task: number, requester: creator });
     }
-    out.push(Request::Made { reply_to: to, tasks: numbers.into_boxed() });
+    numbers.into_boxed()
 }
 
 fn append(capacity: u32, old: &[u64], batch: &[New]) -> Box<[u64]> {

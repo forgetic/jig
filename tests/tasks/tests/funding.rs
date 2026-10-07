@@ -165,7 +165,7 @@ fn priced_invalid_terminals_charge_but_live_delegate_refusals_do_not() {
     w.claim(1, 1);
     let before = w.records.clone();
     assert!(
-        matches!(end(&mut w,1,1,End::Finished { result:TaskResult::Report { words:Box::new([1]) },cancel_delegates:false },20),Reply::Refused(problem) if problem.why==Refusal::LiveDelegates)
+        matches!(end(&mut w,1,1,End::Finished { result:TaskResult::Report { words:Box::new([1]) },cancel_delegates:false },20),Reply::Refused(problem) if problem.why==Refusal::LiveDelegates && problem.blocked_by.as_deref() == Some(&[2][..]))
     );
     assert_eq!(w.records, before);
     assert_eq!(

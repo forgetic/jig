@@ -226,7 +226,7 @@ fn filled(limits: &Limits, number: u64) -> jig_core_tasks::New {
 
     new.contract = Contract::Verdict {
         choices: (0..limits.contract_choices)
-            .map(|code| Verdict { code, words: limits.result_bytes })
+            .map(|code| Verdict { code, words: limits.result_bytes, followups: 0 })
             .collect::<Vec<_>>()
             .into_boxed_slice(),
     };

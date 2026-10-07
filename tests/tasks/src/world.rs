@@ -340,6 +340,7 @@ impl World {
             | Event::CarvePool { .. }
             | Event::ResizePool { .. }
             | Event::Make { .. }
+            | Event::MakeResultFollowups { .. }
             | Event::Prepare { .. }
             | Event::Claim { .. }
             | Event::Started { .. }
@@ -391,6 +392,7 @@ impl World {
             | Event::CarvePool { .. }
             | Event::ResizePool { .. }
             | Event::Make { .. }
+            | Event::MakeResultFollowups { .. }
             | Event::Prepare { .. }
             | Event::Claim { .. }
             | Event::Started { .. }

@@ -40,7 +40,7 @@ fn a_read_fence_takes_only_offered_words() {
         offered: Some(1),
         cumulative: 1,
     });
-    assert!(matches!(world.replies[&call], Reply::Refused(problem) if problem.why == Refusal::Read));
+    assert!(matches!(&world.replies[&call], Reply::Refused(problem) if problem.why == Refusal::Read));
     assert_eq!(world.record(1), &before);
     let call = 1002;
     world.send(Event::Turn {
@@ -148,7 +148,7 @@ fn a_person_answers_one_numbered_question_in_their_active_task() {
             eligible: false,
         },
     });
-    assert!(matches!(world.replies[&key], Reply::Refused(problem) if problem.why == Refusal::Reference));
+    assert!(matches!(&world.replies[&key], Reply::Refused(problem) if problem.why == Refusal::Reference));
     world.restart();
 }
 

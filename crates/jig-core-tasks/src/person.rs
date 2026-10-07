@@ -82,7 +82,8 @@ pub(crate) fn answer(
         return refused(to, Some(number), Refusal::State, out);
     }
     if !row.delegates.is_empty() {
-        return refused(to, Some(number), Refusal::LiveDelegates, out);
+        return out
+            .push(Request::Refused { reply_to: to, problem: crate::Problem::live_delegates(number, &row.delegates) });
     }
     if !crate::run::valid_result(&row.contract, &result, &env.limits) {
         return refused(to, Some(number), Refusal::Contract, out);

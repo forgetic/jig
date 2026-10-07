@@ -102,7 +102,7 @@ use core::mem;
 
 use skein_lib::{Env, Id, Queue, ReplyTo, Slab, Time, Token};
 
-use crate::boundary::{Answer, HostKind, Kinds, Refusal, Request, Withdrawal};
+use crate::boundary::{Answer, HostKind, Kinds, Refusal, Request, TypedAssignment, Withdrawal};
 use crate::channel::{self, Channel};
 use crate::domain::Domain;
 use crate::facts::{Fact, Facts};
@@ -119,6 +119,8 @@ pub(crate) struct Attempt {
     pub(crate) listed: bool,
     /// The contiguous committed turn prefix, restored atomically on adoption.
     pub(crate) kept: u32,
+    /// The parent's conversation state references for a typed assignment.
+    pub(crate) typed: Option<TypedAssignment>,
     pub(crate) state: State,
 }
 
@@ -247,6 +249,7 @@ pub(crate) fn start(
     attempt: Token,
     workstream: u64,
     kinds: Kinds,
+    typed: Option<TypedAssignment>,
     out: &mut Queue<Request>,
 ) {
     let refusal = if workstream == 0 {
@@ -264,7 +267,7 @@ pub(crate) fn start(
     }
     replace(domain, run, out);
     let serial = next_serial(&mut domain.serial);
-    insert(domain, run, attempt, false, State::Waiting { to, workstream, kinds, serial });
+    insert(domain, run, attempt, false, typed, State::Waiting { to, workstream, kinds, serial });
 }
 
 /// Adopt: a stray claimed, a kept answer handed over, or a claim adrift
@@ -287,7 +290,7 @@ pub(crate) fn adopt(
         }
         replace(domain, run, out);
         let until = env.now.saturating_add(env.limits.grace);
-        insert(domain, run, attempt, false, State::Adopted { to, until });
+        insert(domain, run, attempt, false, None, State::Adopted { to, until });
         let id = *domain.names.get(&(run, attempt)).expect("inserted above");
         domain.attempts.get_mut(id).expect("inserted above").kept = kept;
         return;
@@ -403,9 +406,18 @@ pub(crate) fn place(
     let before = implied(&entry.state);
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Waiting { to, workstream, kinds, serial: _ } => {
-            assigned(to, workstream, kinds, channel, names, env, &mut domain.channels, &mut domain.facts, out)
-        }
+        State::Waiting { to, workstream, kinds, serial: _ } => assigned(
+            to,
+            workstream,
+            kinds,
+            entry.typed,
+            channel,
+            names,
+            env,
+            &mut domain.channels,
+            &mut domain.facts,
+            out,
+        ),
         State::Adopted { .. }
         | State::Claimed { .. }
         | State::Cancelled { .. }
@@ -886,6 +898,7 @@ fn assigned(
     to: ReplyTo,
     workstream: u64,
     kinds: Kinds,
+    typed: Option<TypedAssignment>,
     channel: Id<Channel>,
     names: Names,
     env: &Env<Limits>,
@@ -897,7 +910,24 @@ fn assigned(
     if entry.kind == HostKind::Worker {
         channel::cache(entry, &env.limits, workstream);
     }
-    out.push(Request::Assign { channel: entry.token, kind: entry.kind, run: names.run, attempt: names.attempt });
+    match typed {
+        Some(assignment) => out.push(Request::AssignTyped {
+            channel: entry.token,
+            kind: entry.kind,
+            run: names.run,
+            attempt: names.attempt,
+            activation: names.attempt.raw(),
+            assignment,
+        }),
+        None => {
+            out.push(Request::Assign {
+                channel: entry.token,
+                kind: entry.kind,
+                run: names.run,
+                attempt: names.attempt,
+            });
+        }
+    }
     out.push(Request::Placed { run: names.run, attempt: names.attempt });
     facts.push(Fact::Placed);
     State::Claimed { to, at: Where::On(channel), workstream, kinds }
@@ -953,14 +983,14 @@ fn found(
         let until = if domain.loaded { Some(env.now.saturating_add(env.limits.grace)) } else { None };
         State::Stray { at, until }
     };
-    insert(domain, names.run, names.attempt, true, state);
+    insert(domain, names.run, names.attempt, true, None, state);
 }
 
 // What a state implies, in one place.
 
 /// Tracks a new attempt in `state`. The entrance checked there is room.
-fn insert(domain: &mut Domain, run: Token, attempt: Token, listed: bool, state: State) {
-    let Ok(id) = domain.attempts.insert(Attempt { run, token: attempt, listed, kept: 0, state }) else {
+fn insert(domain: &mut Domain, run: Token, attempt: Token, listed: bool, typed: Option<TypedAssignment>, state: State) {
+    let Ok(id) = domain.attempts.insert(Attempt { run, token: attempt, listed, kept: 0, typed, state }) else {
         unreachable!("the entrance checks there is room for an attempt");
     };
     let named = domain.names.insert((run, attempt), id);

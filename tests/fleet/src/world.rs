@@ -25,6 +25,7 @@ pub const LIMITS: Limits = Limits {
     workstreams: 3,
     attempts: 16,
     calls: 8,
+    call_name_bytes: 64,
     turns: 0,
     grace: Duration::from_secs(20),
     facts: 64,
@@ -925,8 +926,16 @@ impl World {
 
     fn request(&mut self, request: Request) {
         match request {
-            Request::Turned { .. } | Request::AcknowledgeTurn { .. } | Request::TurnBusy { .. } => {
-                unreachable!("the first-version world sends no turns")
+            Request::AssignTyped { .. }
+            | Request::InboundTyped { .. }
+            | Request::RelayTyped { .. }
+            | Request::RelayedTyped { .. }
+            | Request::DropTyped { .. }
+            | Request::UndeliveredTyped { .. }
+            | Request::Turned { .. }
+            | Request::AcknowledgeTurn { .. }
+            | Request::TurnBusy { .. } => {
+                unreachable!("the first-version world sends no typed records or turns")
             }
             Request::Grant { .. } | Request::Rejected { .. } | Request::Exhausted { .. } => {}
             Request::Assign { channel, kind: _, run, attempt } => {
@@ -1269,7 +1278,10 @@ fn describe(event: &Event) -> String {
         Event::Hello { channel, hello } => {
             format!("Hello {} slots {} hosting {:?}", channel.raw(), hello.slots, hello.hosting)
         }
-        Event::Grant { .. }
+        Event::StartTyped { .. }
+        | Event::InboundTyped { .. }
+        | Event::RelayTyped { .. }
+        | Event::Grant { .. }
         | Event::Rejected { .. }
         | Event::Exhausted { .. }
         | Event::Turn { .. }

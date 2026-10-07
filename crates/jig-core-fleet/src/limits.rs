@@ -30,6 +30,8 @@ pub struct Limits {
     /// Relayed calls the parent serves at once. A call beyond them is
     /// dropped, and its run withdraws it past its own deadline.
     pub calls: u32,
+    /// Maximum bytes of a run's opaque call name retained for each typed relay.
+    pub call_name_bytes: u64,
     /// Turns awaiting adoption or the parent's commitment, across all
     /// attempts. Bodies are the parent's tokens, never bytes held here.
     pub turns: u32,
@@ -75,7 +77,8 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(Map::<Token, Run>::worst_case(tracked)?)?
         .checked_add(Map::<u64, Id<Attempt>>::worst_case(tracked)?)?
         .checked_add(Deadlines::<Id<Attempt>>::worst_case(tracked)?)?;
-    let calls = Slab::<Call>::worst_case(limits.calls)?;
+    let calls = Slab::<Call>::worst_case(limits.calls)?
+        .checked_add(u64::from(limits.calls).checked_mul(limits.call_name_bytes)?)?;
     let turns = Map::<(Id<Attempt>, u32), Pending>::worst_case(limits.turns)?;
     let facts = Queue::<Fact>::worst_case(limits.facts)?;
     channels

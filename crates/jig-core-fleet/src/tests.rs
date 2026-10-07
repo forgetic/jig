@@ -5,8 +5,8 @@ use alloc::boxed::Box;
 use skein_lib::{Duration, Env, List, Queue, ReplyTo, Time, Token, Wall};
 
 use crate::{
-    Answer, Bounce, Domain, Event, Fact, Hello, HostKind, Hosted, Kinds, Limits, Phase, Refusal, Request, Undelivered,
-    Withdrawal, fire, max_out, resume, step, worst_case,
+    Answer, Bounce, Domain, Event, Fact, Hello, HostKind, Hosted, Kinds, Limits, Phase, Refusal, Request,
+    TypedAssignment, TypedCall, TypedMessage, Undelivered, Withdrawal, fire, max_out, resume, step, worst_case,
 };
 
 const LIMITS: Limits = Limits {
@@ -16,6 +16,7 @@ const LIMITS: Limits = Limits {
     workstreams: 2,
     attempts: 6,
     calls: 2,
+    call_name_bytes: 64,
     turns: 0,
     grace: Duration::from_secs(10),
     facts: 64,
@@ -209,6 +210,78 @@ fn assign(channel: Token, run: Token, attempt: Token) -> Request {
 
 fn placed(run: Token, attempt: Token) -> Request {
     Request::Placed { run, attempt }
+}
+
+#[test]
+fn a_typed_assignment_keeps_its_turn_and_answer_references_through_placement() {
+    let mut h = Harness::new(LIMITS);
+    h.hello(C1, 1, &[], &[]);
+    let assignment = TypedAssignment { turns: payload(1), answered: payload(2) };
+    assert!(
+        h.step(Event::StartTyped {
+            reply_to: to(A1),
+            run: R1,
+            attempt: A1,
+            workstream: 1,
+            kinds: Kinds::Workers,
+            assignment,
+        })
+        .is_empty()
+    );
+    assert_eq!(
+        &*h.settle(),
+        &[
+            Request::AssignTyped {
+                channel: C1,
+                kind: HostKind::Worker,
+                run: R1,
+                attempt: A1,
+                activation: A1.raw(),
+                assignment
+            },
+            placed(R1, A1),
+        ]
+    );
+}
+
+#[test]
+fn a_typed_message_and_host_call_keep_their_fields_across_the_fleet() {
+    let mut h = Harness::new(LIMITS);
+    h.hello(C1, 1, &[], &[]);
+    h.place(R1, A1, 1);
+    let message = TypedMessage { name: Token::new(4), sender: payload(5), words: payload(6) };
+    assert_eq!(
+        &*h.step(Event::InboundTyped { run: R1, attempt: A1, message }),
+        &[Request::InboundTyped { channel: C1, run: R1, attempt: A1, message }]
+    );
+    let call = TypedCall {
+        name: Box::from(&b"call-one"[..]),
+        tool: Box::from(&b"inspect"[..]),
+        writes: true,
+        input: Box::from(&b"input words"[..]),
+        deadline: Duration::from_secs(3),
+    };
+    let mut emitted = h.step(Event::RelayTyped { channel: C1, run: R1, attempt: A1, call }).into_iter();
+    let Some(Request::RelayTyped { reply_to, run, attempt, call }) = emitted.next() else {
+        panic!("the typed call is relayed")
+    };
+    assert!(emitted.next().is_none());
+    assert_eq!((run, attempt), (R1, A1));
+    assert_eq!(&*call.name, b"call-one");
+    assert_eq!(&*call.tool, b"inspect");
+    assert!(call.writes);
+    assert_eq!(&*call.input, b"input words");
+    assert_eq!(call.deadline, Duration::from_secs(3));
+    assert_eq!(
+        &*h.step(Event::Relayed { to: reply_to, answer: payload(7) }),
+        &[Request::RelayedTyped {
+            channel: C1,
+            run: R1,
+            attempt: A1,
+            call: Box::from(&b"call-one"[..]),
+            answer: payload(7)
+        }]
+    );
 }
 
 fn lost(run: Token, attempt: Token) -> Request {

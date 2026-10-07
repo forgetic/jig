@@ -175,8 +175,15 @@ impl Domain {
 /// Handles one event, emitting at most [`max_out`] requests.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
+        Event::StartTyped { reply_to, run, attempt, workstream, kinds, assignment } => {
+            attempt::start(domain, env, reply_to, run, attempt, workstream, kinds, Some(assignment), out);
+        }
+        Event::InboundTyped { run, attempt, message } => call::inbound_typed(domain, run, attempt, message, out),
+        Event::RelayTyped { channel, run, attempt, call } => {
+            call::relay_typed(domain, env, channel, run, attempt, call, out);
+        }
         Event::Start { reply_to, run, attempt, workstream, kinds } => {
-            attempt::start(domain, env, reply_to, run, attempt, workstream, kinds, out);
+            attempt::start(domain, env, reply_to, run, attempt, workstream, kinds, None, out);
         }
         Event::Adopt { reply_to, run, attempt, kept, kind, worked } => match kind {
             HostKind::Engine => {

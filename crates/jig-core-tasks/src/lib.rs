@@ -38,8 +38,8 @@
 //! or rejected reason. Root authenticates its actual read/decision route, resolves
 //! eligibility and owns immutable transport history; this child accepts/rejects/
 //! passes only the authorized exact revision.
-//! Agent and procedure executors are routed; nonempty historical inputs and
-//! person executor routes are added in later increments.
+//! Agent and procedure executors are routed. The root checks historical inputs
+//! before delegation; person executor routes are added in later increments.
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 extern crate alloc;

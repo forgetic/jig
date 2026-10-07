@@ -32,8 +32,7 @@ pub struct Limits {
     /// Maximum immutable dependency identities per task; also bounds its remaining live
     /// `waiting_on` subset.
     pub dependencies: u32,
-    /// Shape bound for typed input identities; current `Make` and live restore require
-    /// `Spec::inputs` to be empty because no historical-input route is implemented.
+    /// Shape bound for typed historical input identities checked by the root before delegation.
     pub inputs: u32,
     /// Maximum combined specification words and byte-valued parameter bytes per task.
     pub spec_bytes: u32,

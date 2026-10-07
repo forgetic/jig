@@ -343,6 +343,9 @@ pub(crate) fn preparation_failed(domain: &mut Domain, env: &Env<Limits>, number:
 }
 
 pub(crate) fn hold(domain: &mut Domain, env: &Env<Limits>, number: u64, why: Hold, out: &mut Queue<Request>) {
+    if !why.valid() {
+        return;
+    }
     if !domain.ready() {
         return;
     }

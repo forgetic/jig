@@ -42,6 +42,11 @@ fn valid_stage(task: &TaskRecord, closing: &Closing, limits: &Limits) -> bool {
 }
 
 fn valid_phase(task: &TaskRecord, limits: &Limits) -> bool {
+    if let Phase::Held { why, .. } = task.phase
+        && !why.valid()
+    {
+        return false;
+    }
     match task.executor {
         Executor::Person(_) if !person_phase(&task.phase) => return false,
         Executor::Person(_) | Executor::Agent { .. } | Executor::Procedure { .. } => {}

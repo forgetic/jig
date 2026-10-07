@@ -417,18 +417,53 @@ pub enum End {
 pub enum Hold {
     /// Configured retry allowance was exhausted.
     Failures(/** Failure class whose retry allowance was exhausted. */ Class),
+    /// Executor made no progress within its configured stall bound.
+    Stalled,
     /// A required dependency failed or was cancelled.
     Dependency(/** `Dependency` that ended failed or cancelled, causing this dependent to be held. */ u64),
     /// Root reports a person's stop or another authorized stop decision.
     Stopped,
+    /// The numbered party stopped this task.
+    StoppedBy { party: u64 },
     /// Root reports resource drift requiring a decision; tasks owns no connector drift detection.
     Drift,
     /// Root reports a permanently failed effect requiring a decision.
     Effects,
+    /// A connector effect failed for good.
+    EffectFailed,
+    /// An unrecoverable effect may or may not have reached its system.
+    Uncertain { entry: u64 },
     /// Available funding is too small for another run or effect.
     Budget,
     /// Root reports that the permitted deadline prevents another activation.
     Deadline,
+    /// A task waited beyond the bound for its required resource holds.
+    HoldsWaited,
+    /// The numbered pool lost its allocation while this task held or awaited it.
+    PoolLost { pool: u64 },
+    /// A procedure asked its requester for a decision.
+    Procedure,
+}
+
+impl Hold {
+    pub(crate) const fn valid(self) -> bool {
+        match self {
+            Hold::Dependency(task) => task != 0,
+            Hold::StoppedBy { party } => party != 0,
+            Hold::Uncertain { entry } => entry != 0,
+            Hold::PoolLost { pool } => pool != 0,
+            Hold::Failures(_)
+            | Hold::Stalled
+            | Hold::Stopped
+            | Hold::Drift
+            | Hold::Effects
+            | Hold::EffectFailed
+            | Hold::Budget
+            | Hold::Deadline
+            | Hold::HoldsWaited
+            | Hold::Procedure => true,
+        }
+    }
 }
 
 /// Current agent-task activation phase; task and attempt identity fence every external transition.

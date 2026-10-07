@@ -208,6 +208,95 @@ fn every_failure_class_holds_after_its_retry_budget() {
 }
 
 #[test]
+fn a_delegate_failing_past_its_tries_is_held_and_released_finishes() {
+    let mut w = World::new(105, LIMITS);
+    w.make(Party::Person(1), vec![task(1, &[])]);
+    w.make(Party::Task(1), vec![task(2, &[])]);
+    for attempt in 1..=3 {
+        w.claim(2, attempt);
+        w.terminal(2, End::Failed(Class::Run));
+        if attempt < 3 {
+            w.advance();
+        }
+    }
+    assert_eq!(w.record(2).phase, Phase::Held { was: Was::Active(Active::Due), why: Hold::Failures(Class::Run) });
+    assert_eq!(w.record(2).tries.run, 3);
+    w.restart();
+    let reply_to = w.to();
+    let call = reply_to.into_token().raw();
+    w.send(Event::Control {
+        reply_to: skein_lib::ReplyTo::new(skein_lib::Token::new(call)),
+        by: Party::Task(1),
+        task: 2,
+        control: jig_core_tasks::Control::Release,
+    });
+    assert_eq!(w.replies[&call], Reply::Done);
+    assert_eq!(w.record(2).tries, jig_core_tasks::Tries::NONE);
+    w.claim(2, 4);
+    w.finish(2);
+    w.settle(2);
+    assert!(matches!(w.results.get(&2), Some(Ending::Done(_))));
+    w.claim(1, 5);
+    w.finish(1);
+    w.settle(1);
+}
+
+#[test]
+fn typed_hold_reasons_survive_restart_and_release_without_losing_task_state() {
+    let reasons = [
+        Hold::Stalled,
+        Hold::EffectFailed,
+        Hold::Uncertain { entry: 7 },
+        Hold::HoldsWaited,
+        Hold::PoolLost { pool: 8 },
+        Hold::Procedure,
+        Hold::StoppedBy { party: 1 },
+    ];
+    for (index, reason) in reasons.into_iter().enumerate() {
+        let mut w = World::new(106 + u64::try_from(index).expect("bounded reason index"), LIMITS);
+        w.make(Party::Person(1), vec![task(1, &[])]);
+        w.send(Event::Hold { task: 1, why: reason });
+        assert_eq!(w.record(1).phase, Phase::Held { was: Was::Active(Active::Due), why: reason });
+        w.restart();
+        assert_eq!(w.record(1).phase, Phase::Held { was: Was::Active(Active::Due), why: reason });
+        let reply_to = w.to();
+        let call = reply_to.into_token().raw();
+        w.send(Event::Control {
+            reply_to: skein_lib::ReplyTo::new(skein_lib::Token::new(call)),
+            by: Party::Person(1),
+            task: 1,
+            control: jig_core_tasks::Control::Release,
+        });
+        assert_eq!(w.replies[&call], Reply::Done);
+        assert_eq!(w.record(1).phase, Phase::Active(Active::Due));
+    }
+}
+
+#[test]
+fn releasing_a_held_closing_task_retries_its_unsettled_effects() {
+    let mut w = World::new(114, LIMITS);
+    w.make(Party::Person(1), vec![task(1, &[])]);
+    w.claim(1, 1);
+    w.finish(1);
+    w.send(Event::Hold { task: 1, why: Hold::EffectFailed });
+    assert!(matches!(w.record(1).phase, Phase::Held { was: Was::Closing(_), why: Hold::EffectFailed }));
+    w.restart();
+    let reply_to = w.to();
+    let call = reply_to.into_token().raw();
+    w.send(Event::Control {
+        reply_to: skein_lib::ReplyTo::new(skein_lib::Token::new(call)),
+        by: Party::Person(1),
+        task: 1,
+        control: jig_core_tasks::Control::Release,
+    });
+    assert_eq!(w.replies[&call], Reply::Done);
+    assert!(matches!(w.record(1).phase, Phase::Closing(jig_core_tasks::Closing { stage: Stage::Effects, .. })));
+    assert!(w.closing.contains(&1), "the close obligation is reissued after release");
+    w.settle(1);
+    assert!(matches!(w.results.get(&1), Some(Ending::Done(_))));
+}
+
+#[test]
 fn refusals_and_preparation_failure_do_not_spend_tries() {
     let mut w = World::new(5, LIMITS);
     w.make(Party::Person(1), vec![task(1, &[])]);

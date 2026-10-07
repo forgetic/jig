@@ -371,6 +371,15 @@ pub(crate) fn apply(
             if record(domain, number).expect("released task live").phase == Phase::Active(Active::Due) {
                 crate::domain::activate(domain, number, out);
             }
+            if let Phase::Closing(closing) = &record(domain, number).expect("released task live").phase {
+                match closing.stage {
+                    crate::Stage::Effects => out.push(Request::Close { task: number, ending: closing.ending.clone() }),
+                    crate::Stage::Releases => {
+                        out.push(Request::Release { task: number, ending: closing.ending.clone() });
+                    }
+                    crate::Stage::Run { .. } | crate::Stage::Delegates | crate::Stage::Settled => {}
+                }
+            }
             out.push(Request::Done { reply_to: to });
         }
     }

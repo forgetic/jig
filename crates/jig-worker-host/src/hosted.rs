@@ -341,9 +341,8 @@ fn start_prepared(domain: &mut Domain, owner: Token, workspace: Option<Token>, o
     let Domain { hosted, facts, .. } = domain;
     let id = Id::<Hosted>::from_token(owner);
     let entry = hosted.get_mut(id).expect("a run lives until its prepare has settled");
-    match workspace {
-        Some(_) => facts.push(Fact::Prepared { run: entry.run, attempt: entry.attempt }),
-        None => {}
+    if workspace.is_some() {
+        facts.push(Fact::Prepared { run: entry.run, attempt: entry.attempt });
     }
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
@@ -832,9 +831,8 @@ fn release(
     saved: Option<Token>,
     out: &mut Queue<Request>,
 ) -> State {
-    match workspace {
-        Some(workspace) => out.push(Request::Release { workspace }),
-        None => {}
+    if let Some(workspace) = workspace {
+        out.push(Request::Release { workspace });
     }
     answer(entry, facts, reply_to, ending, saved, out)
 }

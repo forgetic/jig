@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use skein_lib::{List, Token, Wall};
+use skein_lib::{Duration, List, Token, Wall};
 
 /// Whether an effect creates, changes or sets its target.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -170,6 +170,8 @@ pub struct Looked {
 /// Calls sent down to the fake system after a decision's commit.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SystemRequest {
+    /// Refresh one fact used by requirements and procedures.
+    ReadFact { resource: Path, observed: Wall },
     /// Apply one committed outbox attempt.
     Apply { entry: u64, attempt: u32, key: Key, effect: Effect, form: Form, recovery: Recovery },
     /// Look for the result of an uncertain attempt.
@@ -268,6 +270,145 @@ pub struct TopicSpec {
     pub topic: u16,
 }
 
+/// A connector-owned judge on the state of a named resource.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct RequirementSpec {
+    /// Connector-local requirement number.
+    pub number: u16,
+    /// The effect's system checks this state while applying the write.
+    pub guarded: bool,
+    /// Maximum age of an observed fact. The world configures this value.
+    pub freshness: Duration,
+}
+
+/// A fact read from the system, rather than inferred from a write request.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Fact {
+    /// Last observed state, or none when the resource was absent.
+    pub state: Option<u64>,
+    /// Wall time of that observation.
+    pub observed: Wall,
+    /// An outstanding system update makes this fact undecided.
+    pub pending: bool,
+}
+
+/// A requirement's verdict for the exact state in the question.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Verdict {
+    /// The named state held on a sufficiently fresh fact.
+    Met { state: u64, observed: Wall, guarded: bool },
+    /// No sufficiently fresh final fact exists yet.
+    Wait,
+    /// A sufficiently fresh fact names a different state.
+    Refuse { actual: Option<u64> },
+}
+
+/// One action in a seeded procedure's bounded program.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum ProcedureAction {
+    /// Ask for a checked effect with this kind and purpose.
+    Effect { kind: u16, purpose: u64, target: u64 },
+    /// Make a bounded batch of child tasks.
+    Delegate { kinds: Box<[u16]> },
+    /// Ask a person to approve the named proposal.
+    Propose { number: u64 },
+    /// Wait for a named fact to reach the state, no longer than the configured stall.
+    Wait { state: u64 },
+    /// Remain stalled until the caller delivers another message.
+    Stall,
+    /// Hold the task with a connector-owned reason.
+    Hold { reason: u16 },
+    /// Finish in jig's terms or with a connector-owned result.
+    Finish { result: ProcedureResult },
+}
+
+/// A result a procedure hands to its task.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ProcedureResult {
+    /// A generic success, carried directly to jig.
+    Succeeded,
+    /// Connector-owned result, kept by this connector for the task's brief.
+    Local { code: u16 },
+}
+
+/// A seeded procedure program with a bound on decisions and waits.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct ProcedureSpec {
+    /// Connector-local procedure number.
+    pub number: u16,
+    /// Its decisions in order.
+    pub actions: Box<[ProcedureAction]>,
+    /// Maximum number of steps before the task is held.
+    pub max_steps: u16,
+    /// Maximum time to wait for a fact.
+    pub stall: Duration,
+}
+
+/// Durable procedure parameters and progress.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct ProcedureState {
+    /// Task executing this procedure.
+    pub task: u64,
+    /// Configured procedure program.
+    pub number: u16,
+    /// Resource from which it reads its facts.
+    pub resource: Path,
+    /// Next action in that program.
+    pub index: u16,
+    /// Decisions committed so far.
+    pub steps: u16,
+    /// An effect or delegate was decided and awaits an answer.
+    pub awaiting: bool,
+    /// Absolute deadline while waiting for a fact.
+    pub deadline: Option<Wall>,
+}
+
+/// What reached a procedure task; the next step reads state and current facts.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ProcedureSignal {
+    Activate,
+    Message,
+    Settled,
+    DelegateDone,
+    ProposalDone,
+    Cancel,
+}
+
+/// One decision of a procedure, sent through the root for authority checks.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum StepDecision {
+    Effect(Effect),
+    Delegate { kinds: Box<[u16]> },
+    Propose { number: u64 },
+    Wait { deadline: Wall },
+    Stall,
+    Hold { reason: u16 },
+    Finish { result: ProcedureResult },
+}
+
+/// A read or brief section has a caller-supplied byte budget.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Read {
+    pub resource: Path,
+    pub size: u32,
+}
+
+/// One connector-owned workspace preparation instruction.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Item {
+    pub resource: Path,
+    pub writable: bool,
+    pub state: Option<u64>,
+}
+
+/// The three ordered restart phases supplied by the root.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum RestartStep {
+    Records,
+    FreshRead { resource: Path },
+    SettleOutbox,
+}
+
 /// Configuration generated by a world from its seed.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Config {
@@ -283,6 +424,10 @@ pub struct Config {
     pub topics: Box<[TopicSpec]>,
     /// Effect kinds and their recovery classes.
     pub kinds: Box<[KindSpec]>,
+    /// Requirements judged from this connector's facts.
+    pub requirements: Box<[RequirementSpec]>,
+    /// Bounded procedure programs.
+    pub procedures: Box<[ProcedureSpec]>,
 }
 
 /// News a subscribed task should hear.
@@ -315,6 +460,8 @@ pub enum Origin {
 /// An event from the fake system beneath the connector.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum SystemEvent {
+    /// A fresh system read or hint for one resource.
+    Fact { resource: Path, fact: Fact, origin: Origin },
     /// A pool changed size; named allocations no longer present drift.
     Pool { path: Path, slots: u32, lost: Box<[u64]> },
     /// A hint on a topic, with importance on a configured scale.
@@ -328,6 +475,22 @@ pub enum SystemEvent {
 /// What the root tells the connector for this part of its contract.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Event {
+    /// Ask the connector to judge the named state on its facts.
+    Judge { token: Token, requirement: u16, resources: Box<[Path]>, state: u64 },
+    /// Create, wake or answer a connector-owned procedure task.
+    Procedure { task: u64, number: u16, resource: Path, signal: ProcedureSignal },
+    /// Serve an ephemeral read.
+    Read { token: Token, read: Read },
+    /// Gather a brief section for one task.
+    Gather { token: Token, task: u64, budget: u32 },
+    /// Cut a gathered section to a smaller size.
+    Cut { token: Token, size: u32 },
+    /// Gather workspace items for an assignment.
+    Items { token: Token, task: u64 },
+    /// Transfer a staged section or items exactly once.
+    HandOver { token: Token },
+    /// The root asks for one ordered recovery phase.
+    Restart(RestartStep),
     /// A live task names resources.
     Names { task: u64, project: u32, resources: Box<[Path]> },
     /// A task no longer names resources.
@@ -381,6 +544,10 @@ pub enum Adoption {
 /// Stable identity of one connector record.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum RecordKey {
+    /// One procedure task's progress.
+    Procedure(u64),
+    /// Connector-owned result retained for a dependent's brief.
+    Result(u64),
     /// Resources named by a live task.
     Task(u64),
     /// One project's adopted resource.
@@ -398,6 +565,10 @@ pub enum RecordKey {
 /// Data owned by this connector and committed by its root.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Record {
+    /// Parameters and state of one procedure task.
+    Procedure(ProcedureState),
+    /// A completed connector-owned result.
+    Result { task: u64, code: u16 },
     /// A live task's names and project.
     Task { task: u64, project: u32, resources: Box<[Path]> },
     /// A project's resource role.
@@ -417,6 +588,8 @@ impl Record {
     #[must_use]
     pub fn key(&self) -> RecordKey {
         match self {
+            Record::Procedure(state) => RecordKey::Procedure(state.task),
+            Record::Result { task, .. } => RecordKey::Result(*task),
             Record::Task { task, .. } => RecordKey::Task(*task),
             Record::Adoption { project, path, .. } => RecordKey::Adoption { project: *project, path: path.clone() },
             Record::Subscription { topic, task, .. } => RecordKey::Subscription { topic: *topic, task: *task },
@@ -430,6 +603,24 @@ impl Record {
 /// What the connector asks its root to route or commit.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Request {
+    /// An exact verdict, including the fact's observed time when met.
+    Verdict { token: Token, verdict: Verdict },
+    /// One bounded procedure decision.
+    Step { task: u64, decision: StepDecision },
+    /// A read answer leaves the connector immediately.
+    Answer { token: Token, bytes: Box<[u8]> },
+    /// A staged section's current byte size.
+    Ready { token: Token, size: u32 },
+    /// A section transferred to its brief once.
+    Section { token: Token, bytes: Box<[u8]> },
+    /// Workspace items transferred to an assignment once.
+    Workspace { token: Token, items: Box<[Item]> },
+    /// One observed change to an owned resource.
+    DriftResource { tasks: Box<[u64]>, resource: Path },
+    /// A changed fact may wake procedures that read this resource.
+    Changed { resource: Path },
+    /// Ordered restart phases have reached their final step.
+    RestartDone,
     /// Description for the core's authority check.
     Described { token: Token, description: Description },
     /// A staged effect was refused by this connector.

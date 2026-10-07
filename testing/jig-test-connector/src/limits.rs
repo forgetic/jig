@@ -19,6 +19,20 @@ pub struct Limits {
     pub topics: u32,
     /// Maximum configured effect kinds.
     pub kinds: u32,
+    /// Configured requirement judges.
+    pub requirements: u32,
+    /// Configured procedure programs and live states.
+    pub procedures: u32,
+    /// Maximum actions in one procedure program.
+    pub actions_per_procedure: u32,
+    /// Working-set facts read from the system.
+    pub facts: u32,
+    /// Outstanding verdicts awaiting a fact change (at most four).
+    pub judges: u32,
+    /// Staged sections or workspace item sets.
+    pub values: u32,
+    /// Maximum bytes in one read answer or staged section.
+    pub value_bytes: u32,
     /// Maximum effects awaiting an authority decision.
     pub staged: u32,
     /// Maximum unsettled outbox entries.
@@ -48,7 +62,7 @@ pub struct Limits {
 /// The maximum heap used by the connector's tables and their owned paths.
 #[must_use]
 pub fn worst_case(limits: &Limits) -> Option<u64> {
-    if limits.path_segments == 0 || limits.segment_bytes == 0 || limits.max_attempts == 0 {
+    if limits.path_segments == 0 || limits.segment_bytes == 0 || limits.max_attempts == 0 || limits.judges > 4 {
         return None;
     }
     let path_bytes = u64::from(limits.path_segments).checked_mul(u64::from(limits.segment_bytes).checked_add(16)?)?;
@@ -68,6 +82,17 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(u64::from(limits.resources).checked_mul(path_bytes)?)?
         .checked_add(List::<crate::TopicSpec>::worst_case(limits.topics)?)?
         .checked_add(List::<crate::KindSpec>::worst_case(limits.kinds)?)?
+        .checked_add(List::<crate::RequirementSpec>::worst_case(limits.requirements)?)?
+        .checked_add(List::<crate::ProcedureSpec>::worst_case(limits.procedures)?)?
+        .checked_add(
+            u64::from(limits.procedures).checked_mul(u64::from(limits.actions_per_procedure))?.checked_mul(64)?,
+        )?
+        .checked_add(Map::<Path, crate::Fact>::worst_case(limits.facts)?)?
+        .checked_add(Map::<Token, crate::requirements::Question>::worst_case(limits.judges)?)?
+        .checked_add(Map::<u64, crate::ProcedureState>::worst_case(limits.procedures)?)?
+        .checked_add(Map::<u64, u16>::worst_case(limits.procedures)?)?
+        .checked_add(Map::<Token, crate::values::Payload>::worst_case(limits.values)?)?
+        .checked_add(u64::from(limits.values).checked_mul(u64::from(limits.value_bytes))?)?
         .checked_add(Map::<Token, crate::Effect>::worst_case(limits.staged)?)?
         .checked_add(Map::<u64, crate::OutboxEntry>::worst_case(limits.entries)?)?
         .checked_add(Map::<u64, crate::outbox::Runtime>::worst_case(limits.entries)?)?

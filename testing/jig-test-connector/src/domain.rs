@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use skein_lib::{Env, List, Map, Queue, Wall};
+use skein_lib::{Env, List, Map, Queue, Token, Wall};
 
 use crate::outbox::Outbox;
 use crate::{
@@ -7,17 +7,22 @@ use crate::{
     ResourceRole, ResourceSpec, SystemEvent,
 };
 
-/// A pool change or effect settlement can make up to three requests.
-pub const MAX_OUT: u32 = 3;
+/// Four pending judges plus a fact change, drift and a procedure save fit.
+pub const MAX_OUT: u32 = 8;
 
 /// A connector's live working set and records.
 #[derive(Debug)]
 pub struct Domain {
     pub(crate) config: Config,
-    tasks: Map<u64, Record>,
-    adoptions: Map<(u32, Path), ResourceRole>,
+    pub(crate) tasks: Map<u64, Record>,
+    pub(crate) adoptions: Map<(u32, Path), ResourceRole>,
     subscriptions: Map<(u16, u64), (u16, u16)>,
     pools: Map<Path, u32>,
+    pub(crate) facts: Map<Path, crate::Fact>,
+    pub(crate) judges: Map<Token, crate::requirements::Question>,
+    pub(crate) procedures: Map<u64, crate::ProcedureState>,
+    pub(crate) results: Map<u64, u16>,
+    pub(crate) values: Map<Token, crate::values::Payload>,
     pub(crate) outbox: Outbox,
 }
 
@@ -33,6 +38,34 @@ impl Domain {
         );
         assert!(u32::try_from(config.topics.len()).unwrap_or(u32::MAX) <= limits.topics, "topic configuration fits");
         assert!(u32::try_from(config.kinds.len()).unwrap_or(u32::MAX) <= limits.kinds, "kind configuration fits");
+        assert!(
+            u32::try_from(config.requirements.len()).unwrap_or(u32::MAX) <= limits.requirements,
+            "requirements fit"
+        );
+        assert!(u32::try_from(config.procedures.len()).unwrap_or(u32::MAX) <= limits.procedures, "procedures fit");
+        for program in &config.procedures {
+            assert!(
+                u32::try_from(program.actions.len()).unwrap_or(u32::MAX) <= limits.actions_per_procedure,
+                "procedure actions fit"
+            );
+            assert!(u16::try_from(program.actions.len()).is_ok(), "procedure index fits");
+            let mut same = 0_u32;
+            for other in &config.procedures {
+                if other.number == program.number {
+                    same = same.checked_add(1).expect("procedure count fits");
+                }
+            }
+            assert!(same == 1, "procedure numbers are unique");
+        }
+        for requirement in &config.requirements {
+            let mut same = 0_u32;
+            for other in &config.requirements {
+                if other.number == requirement.number {
+                    same = same.checked_add(1).expect("requirement count fits");
+                }
+            }
+            assert!(same == 1, "requirement numbers are unique");
+        }
         assert!(valid_path(&config.prefix, limits), "deployment prefix fits");
         for resource in &config.resources {
             assert!(resource.path.under(&config.prefix), "resource uses the deployment prefix");
@@ -75,6 +108,11 @@ impl Domain {
             adoptions: Map::with_capacity(limits.adoptions),
             subscriptions: Map::with_capacity(limits.subscriptions),
             pools,
+            facts: Map::with_capacity(limits.facts),
+            judges: Map::with_capacity(limits.judges),
+            procedures: Map::with_capacity(limits.procedures),
+            results: Map::with_capacity(limits.procedures),
+            values: Map::with_capacity(limits.values),
             outbox: Outbox::new(limits),
         }
     }
@@ -96,6 +134,27 @@ impl Domain {
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     assert!(out.room() >= MAX_OUT, "parent reserved the connector's maximum output");
     match event {
+        Event::Judge { token, requirement, resources, state } => {
+            crate::requirements::judge(domain, env, token, requirement, &resources, state, out);
+        }
+        Event::Procedure { task, number, resource, signal } => {
+            crate::procedures::step(domain, env, task, number, resource, signal, out);
+        }
+        Event::Read { token, read } => crate::values::read(domain, env, token, read, out),
+        Event::Gather { token, task, budget } => crate::values::gather(domain, env, token, task, budget, out),
+        Event::Cut { token, size } => crate::values::cut(domain, token, size, out),
+        Event::Items { token, task } => crate::values::items(domain, env, token, task, out),
+        Event::HandOver { token } => crate::values::hand_over(domain, token, out),
+        Event::Restart(crate::RestartStep::Records) => {}
+        Event::Restart(crate::RestartStep::FreshRead { resource }) => {
+            out.push(Request::System(crate::SystemRequest::ReadFact { resource, observed: env.wall }));
+        }
+        Event::Restart(crate::RestartStep::SettleOutbox) => {
+            crate::outbox::fire(domain, env, out);
+            if out.is_empty() {
+                out.push(Request::RestartDone);
+            }
+        }
         Event::Names { task, project, resources } => names(domain, env, task, project, resources, out),
         Event::Unnamed { task } => unnamed(domain, task, out),
         Event::Adopt { project, resource, role } => adopt(domain, env, project, resource, role, out),
@@ -105,7 +164,11 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::Unsubscribe { task, topic } => unsubscribe(domain, task, topic, out),
         Event::Describe { token, effect } => crate::outbox::describe(domain, env, token, effect, out),
         Event::Keep { token, entry, task, key } => crate::outbox::keep(domain, env, token, entry, task, key, out),
-        Event::Drop { token } => crate::outbox::drop_staged(domain, token),
+        Event::Drop { token } => {
+            crate::outbox::drop_staged(domain, token);
+            crate::values::drop_value(domain, token);
+            domain.judges.remove(&token);
+        }
         Event::Make { entry } => crate::outbox::make(domain, env, entry, out),
         Event::Withdraw { entry } => crate::outbox::withdraw(domain, entry, out),
         Event::Restore { record } => restore(domain, record),
@@ -116,7 +179,13 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
 /// The earliest absolute retry deadline of an unsettled entry.
 #[must_use]
 pub fn next_deadline(domain: &Domain) -> Option<Wall> {
-    crate::outbox::next_deadline(domain)
+    let first = crate::outbox::next_deadline(domain);
+    let other = crate::procedures::next_deadline(domain);
+    match (first, other) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), None) => Some(left),
+        (None, right) => right,
+    }
 }
 
 /// Advances at most one due outbox entry after the root reserved output room.
@@ -208,6 +277,12 @@ fn unnamed(domain: &mut Domain, task: u64, out: &mut Queue<Request>) {
     if domain.tasks.remove(&task).is_some() {
         out.push(Request::Erase { key: RecordKey::Task(task) });
     }
+    if domain.procedures.remove(&task).is_some() {
+        out.push(Request::Erase { key: RecordKey::Procedure(task) });
+    }
+    if domain.results.remove(&task).is_some() {
+        out.push(Request::Erase { key: RecordKey::Result(task) });
+    }
 }
 
 fn adopt(
@@ -281,6 +356,12 @@ fn unsubscribe(domain: &mut Domain, task: u64, topic: u16, out: &mut Queue<Reque
 
 fn restore(domain: &mut Domain, record: Record) {
     match record {
+        Record::Procedure(state) => {
+            domain.procedures.insert(state.task, state).expect("restored procedure fits");
+        }
+        Record::Result { task, code } => {
+            domain.results.insert(task, code).expect("restored result fits");
+        }
         Record::Task { task, project, resources } => {
             domain.tasks.insert(task, Record::Task { task, project, resources }).expect("restored task fits");
         }
@@ -300,6 +381,9 @@ fn restore(domain: &mut Domain, record: Record) {
 
 fn system_event(domain: &mut Domain, env: &Env<Limits>, event: SystemEvent, out: &mut Queue<Request>) {
     match event {
+        SystemEvent::Fact { resource, fact, origin } => {
+            crate::requirements::fact(domain, env, resource, fact, origin, out);
+        }
         SystemEvent::Pool { path, slots, lost } => {
             if u32::try_from(lost.len()).unwrap_or(u32::MAX) > env.limits.lost_per_pool
                 || !domain.pools.contains_key(&path)

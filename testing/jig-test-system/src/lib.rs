@@ -8,7 +8,9 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use jig_test_connector::{ApplyResult, Effect, Form, Key, Looked, Path, Recovery, SystemEvent, SystemRequest};
+use jig_test_connector::{
+    ApplyResult, Effect, Fact, Form, Key, Looked, Origin, Path, Recovery, SystemEvent, SystemRequest,
+};
 
 /// A resource name recorded as bytes by this fake system.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -158,6 +160,14 @@ impl System {
     pub fn answer(&mut self, request: SystemRequest, fault: Fault) -> SystemEvent {
         self.calls = self.calls.checked_add(1).expect("test call count fits");
         match request {
+            SystemRequest::ReadFact { resource, observed } => {
+                let value = self.values.get(&Name::from_path(&resource));
+                SystemEvent::Fact {
+                    resource,
+                    fact: Fact { state: value.map(|row| row.state), observed, pending: false },
+                    origin: if value.is_some_and(|row| row.owner.is_some()) { Origin::Own } else { Origin::Other },
+                }
+            }
             SystemRequest::Apply { entry, attempt, key, effect, form, recovery } => {
                 if fault == Fault::BeforeSend {
                     return SystemEvent::Applied { entry, attempt, result: ApplyResult::Transient };

@@ -14,6 +14,13 @@ const LIMITS: Limits = Limits {
     resources: 2,
     topics: 1,
     kinds: 0,
+    requirements: 1,
+    procedures: 1,
+    actions_per_procedure: 5,
+    facts: 2,
+    judges: 2,
+    values: 2,
+    value_bytes: 18,
     staged: 0,
     entries: 0,
     made: 0,
@@ -60,6 +67,23 @@ fn domain() -> Domain {
             topics: Box::from([TopicSpec { topic: 7 }]),
             deployment: 1,
             kinds: Box::from([]),
+            requirements: Box::from([crate::RequirementSpec {
+                number: 4,
+                guarded: true,
+                freshness: skein_lib::Duration::from_nanos(5),
+            }]),
+            procedures: Box::from([crate::ProcedureSpec {
+                number: 3,
+                actions: Box::from([
+                    crate::ProcedureAction::Effect { kind: 1, purpose: 9, target: 3 },
+                    crate::ProcedureAction::Delegate { kinds: Box::from([2]) },
+                    crate::ProcedureAction::Propose { number: 7 },
+                    crate::ProcedureAction::Wait { state: 3 },
+                    crate::ProcedureAction::Finish { result: crate::ProcedureResult::Local { code: 8 } },
+                ]),
+                max_steps: 5,
+                stall: skein_lib::Duration::from_nanos(10),
+            }]),
         },
         &LIMITS,
     )
@@ -74,6 +98,197 @@ fn run(domain: &mut Domain, event: Event) -> Box<[Request]> {
         requests.push(request).expect("the request came from this queue");
     }
     requests.into_boxed()
+}
+
+fn run_at(domain: &mut Domain, wall: u64, event: Event) -> Box<[Request]> {
+    let env = Env { now: Time::ZERO, wall: Wall::from_nanos(wall), limits: LIMITS };
+    let mut out = Queue::with_capacity(MAX_OUT);
+    step(domain, &env, event, &mut out);
+    let mut requests = List::with_capacity(MAX_OUT);
+    while let Some(request) = out.pop() {
+        requests.push(request).expect("the request came from this queue");
+    }
+    requests.into_boxed()
+}
+
+fn procedure_event(signal: crate::ProcedureSignal) -> Event {
+    Event::Procedure { task: 9, number: 3, resource: service(), signal }
+}
+
+#[test]
+fn verdict_waits_for_a_fresh_fact_and_reanswers_for_the_exact_state() {
+    let mut connector = domain();
+    let token = skein_lib::Token::new(5);
+    let old = crate::Fact { state: Some(3), observed: Wall::from_nanos(10), pending: false };
+    drop(run_at(
+        &mut connector,
+        10,
+        Event::System(SystemEvent::Fact { resource: service(), fact: old, origin: Origin::Own }),
+    ));
+    assert_eq!(
+        run_at(&mut connector, 20, Event::Judge { token, requirement: 4, resources: Box::from([service()]), state: 3 }),
+        Box::from([
+            Request::Verdict { token, verdict: crate::Verdict::Wait },
+            Request::System(crate::SystemRequest::ReadFact { resource: service(), observed: Wall::from_nanos(20) }),
+        ])
+    );
+    let fresh = crate::Fact { state: Some(3), observed: Wall::from_nanos(20), pending: false };
+    assert_eq!(
+        run_at(
+            &mut connector,
+            20,
+            Event::System(SystemEvent::Fact { resource: service(), fact: fresh, origin: Origin::Own })
+        ),
+        Box::from([
+            Request::Changed { resource: service() },
+            Request::Verdict {
+                token,
+                verdict: crate::Verdict::Met { state: 3, observed: Wall::from_nanos(20), guarded: true },
+            },
+        ])
+    );
+    assert_eq!(
+        run_at(&mut connector, 20, Event::Judge { token, requirement: 4, resources: Box::from([service()]), state: 4 }),
+        Box::from([Request::Verdict { token, verdict: crate::Verdict::Refuse { actual: Some(3) } }])
+    );
+}
+
+#[test]
+fn procedure_commits_each_decision_once_and_waits_on_a_fact_not_a_wake() {
+    let mut connector = domain();
+    let first = run_at(&mut connector, 10, procedure_event(crate::ProcedureSignal::Activate));
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        first.get(1),
+        Some(&Request::Step {
+            task: 9,
+            decision: crate::StepDecision::Effect(crate::Effect {
+                kind: 1,
+                resources: Box::from([service()]),
+                purpose: 9,
+                condition: None,
+                target: 3,
+                state: 3,
+            }),
+        })
+    );
+    assert!(run_at(&mut connector, 10, procedure_event(crate::ProcedureSignal::Message)).is_empty());
+    let delegated = run_at(&mut connector, 11, procedure_event(crate::ProcedureSignal::Settled));
+    assert_eq!(
+        delegated.get(1),
+        Some(&Request::Step { task: 9, decision: crate::StepDecision::Delegate { kinds: Box::from([2]) } })
+    );
+    let proposed = run_at(&mut connector, 12, procedure_event(crate::ProcedureSignal::DelegateDone));
+    assert_eq!(proposed.get(1), Some(&Request::Step { task: 9, decision: crate::StepDecision::Propose { number: 7 } }));
+    let waiting = run_at(&mut connector, 13, procedure_event(crate::ProcedureSignal::ProposalDone));
+    assert_eq!(
+        waiting.get(1),
+        Some(&Request::Step { task: 9, decision: crate::StepDecision::Wait { deadline: Wall::from_nanos(23) } })
+    );
+    assert_eq!(
+        run_at(&mut connector, 14, procedure_event(crate::ProcedureSignal::Message)),
+        Box::from([Request::Step { task: 9, decision: crate::StepDecision::Wait { deadline: Wall::from_nanos(23) } }])
+    );
+    let fact = crate::Fact { state: Some(3), observed: Wall::from_nanos(15), pending: false };
+    drop(run_at(
+        &mut connector,
+        15,
+        Event::System(SystemEvent::Fact { resource: service(), fact, origin: Origin::Own }),
+    ));
+    let finished = run_at(&mut connector, 15, procedure_event(crate::ProcedureSignal::Message));
+    assert_eq!(finished.len(), 3);
+    assert_eq!(
+        finished.get(2),
+        Some(&Request::Step {
+            task: 9,
+            decision: crate::StepDecision::Finish { result: crate::ProcedureResult::Local { code: 8 } }
+        })
+    );
+    assert!(run_at(&mut connector, 16, procedure_event(crate::ProcedureSignal::Message)).is_empty());
+}
+
+#[test]
+fn sections_and_workspace_items_have_one_handover_and_drop_with_their_token() {
+    let mut connector = domain();
+    drop(run(&mut connector, Event::Adopt { project: 1, resource: service(), role: ResourceRole::Owned }));
+    drop(run(&mut connector, Event::Names { task: 4, project: 1, resources: Box::from([service()]) }));
+    let token = skein_lib::Token::new(1);
+    assert_eq!(
+        run(&mut connector, Event::Read { token, read: crate::Read { resource: service(), size: 8 } }),
+        Box::from([Request::Answer { token, bytes: Box::from(0_u64.to_be_bytes()) }])
+    );
+    assert_eq!(
+        run(&mut connector, Event::Gather { token, task: 4, budget: 18 }),
+        Box::from([Request::Ready { token, size: 18 }])
+    );
+    assert_eq!(run(&mut connector, Event::Cut { token, size: 10 }), Box::from([Request::Ready { token, size: 10 }]));
+    assert_eq!(run(&mut connector, Event::HandOver { token }).len(), 1);
+    assert!(run(&mut connector, Event::HandOver { token }).is_empty());
+    assert_eq!(run(&mut connector, Event::Items { token, task: 4 }), Box::from([Request::Ready { token, size: 1 }]));
+    assert_eq!(
+        run(&mut connector, Event::HandOver { token }),
+        Box::from([Request::Workspace {
+            token,
+            items: Box::from([crate::Item { resource: service(), writable: true, state: None }]),
+        }])
+    );
+    drop(run(&mut connector, Event::Gather { token, task: 4, budget: 8 }));
+    assert!(run(&mut connector, Event::Drop { token }).is_empty());
+    assert!(run(&mut connector, Event::HandOver { token }).is_empty());
+}
+
+#[test]
+fn owned_drift_is_reported_and_restart_refreshes_before_procedures_resume() {
+    let mut connector = domain();
+    drop(run(&mut connector, Event::Adopt { project: 1, resource: service(), role: ResourceRole::Owned }));
+    drop(run(&mut connector, Event::Names { task: 4, project: 1, resources: Box::from([service()]) }));
+    let old = crate::Fact { state: Some(1), observed: Wall::from_nanos(3), pending: false };
+    drop(run_at(
+        &mut connector,
+        3,
+        Event::System(SystemEvent::Fact { resource: service(), fact: old, origin: Origin::Own }),
+    ));
+    let changed = crate::Fact { state: Some(2), observed: Wall::from_nanos(4), pending: false };
+    assert_eq!(
+        run_at(
+            &mut connector,
+            4,
+            Event::System(SystemEvent::Fact { resource: service(), fact: changed, origin: Origin::Other })
+        ),
+        Box::from([
+            Request::Changed { resource: service() },
+            Request::DriftResource { tasks: Box::from([4]), resource: service() },
+        ])
+    );
+    assert!(run_at(&mut connector, 5, Event::Restart(crate::RestartStep::Records)).is_empty());
+    assert_eq!(
+        run_at(&mut connector, 5, Event::Restart(crate::RestartStep::FreshRead { resource: service() })),
+        Box::from([Request::System(crate::SystemRequest::ReadFact {
+            resource: service(),
+            observed: Wall::from_nanos(5)
+        })])
+    );
+    assert_eq!(
+        run_at(&mut connector, 5, Event::Restart(crate::RestartStep::SettleOutbox)),
+        Box::from([Request::RestartDone])
+    );
+}
+
+#[test]
+fn restored_procedure_waits_for_its_outstanding_effect_answer() {
+    let mut original = domain();
+    let first = run_at(&mut original, 10, procedure_event(crate::ProcedureSignal::Activate));
+    let Some(Request::Save { record }) = first.first() else {
+        panic!("procedure state was saved before its effect");
+    };
+    let mut cold = domain();
+    assert!(run_at(&mut cold, 11, Event::Restore { record: record.clone() }).is_empty());
+    assert!(run_at(&mut cold, 11, procedure_event(crate::ProcedureSignal::Message)).is_empty());
+    let resumed = run_at(&mut cold, 12, procedure_event(crate::ProcedureSignal::Settled));
+    assert_eq!(
+        resumed.get(1),
+        Some(&Request::Step { task: 9, decision: crate::StepDecision::Delegate { kinds: Box::from([2]) } })
+    );
 }
 
 #[test]
@@ -120,6 +335,8 @@ fn context_resources_cannot_be_upgraded_to_a_write_role() {
         topics: Box::from([]),
         deployment: 1,
         kinds: Box::from([]),
+        requirements: Box::from([]),
+        procedures: Box::from([]),
     };
     let mut connector = Domain::new(config.clone(), &LIMITS);
     assert_eq!(
@@ -202,7 +419,16 @@ fn restored_records_rebuild_adoptions_names_topics_and_pool_slots() {
                 | Request::Slots { .. }
                 | Request::Drift { .. }
                 | Request::News { .. }
-                | Request::Erase { .. } => {}
+                | Request::Erase { .. }
+                | Request::Verdict { .. }
+                | Request::Step { .. }
+                | Request::Answer { .. }
+                | Request::Ready { .. }
+                | Request::Section { .. }
+                | Request::Workspace { .. }
+                | Request::DriftResource { .. }
+                | Request::Changed { .. }
+                | Request::RestartDone => {}
             }
         }
     }

@@ -16,6 +16,13 @@ const LIMITS: Limits = Limits {
     resources: 2,
     topics: 0,
     kinds: 4,
+    requirements: 0,
+    procedures: 0,
+    actions_per_procedure: 0,
+    facts: 0,
+    judges: 0,
+    values: 0,
+    value_bytes: 0,
     staged: 2,
     entries: 2,
     made: 3,
@@ -59,6 +66,8 @@ fn config() -> Config {
             KindSpec { kind: 3, form: Form::Set, recovery: Recovery::Idempotent, price: None },
             KindSpec { kind: 4, form: Form::Transition, recovery: Recovery::Unrecoverable, price: Some(2) },
         ]),
+        requirements: Box::from([]),
+        procedures: Box::from([]),
     }
 }
 

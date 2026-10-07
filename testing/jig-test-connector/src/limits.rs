@@ -1,4 +1,4 @@
-use skein_lib::{List, Map};
+use skein_lib::{Duration, List, Map, Token};
 
 use crate::{Named, Path, Record, RecordKey, ResourceRole};
 
@@ -17,6 +17,22 @@ pub struct Limits {
     pub resources: u32,
     /// Maximum configured topics.
     pub topics: u32,
+    /// Maximum configured effect kinds.
+    pub kinds: u32,
+    /// Maximum effects awaiting an authority decision.
+    pub staged: u32,
+    /// Maximum unsettled outbox entries.
+    pub entries: u32,
+    /// Maximum live objects this deployment made by key.
+    pub made: u32,
+    /// Maximum resources in one effect.
+    pub resources_per_effect: u32,
+    /// Maximum attempts before an entry is held.
+    pub max_attempts: u32,
+    /// Lifetime of a system write before retry is allowed.
+    pub write_lifetime: Duration,
+    /// Margin for a wall clock that moved forward.
+    pub clock_margin: Duration,
     /// Maximum resources named by one task.
     pub resources_per_task: u32,
     /// Maximum subscribers delivered by one news event.
@@ -32,7 +48,7 @@ pub struct Limits {
 /// The maximum heap used by the connector's tables and their owned paths.
 #[must_use]
 pub fn worst_case(limits: &Limits) -> Option<u64> {
-    if limits.path_segments == 0 || limits.segment_bytes == 0 {
+    if limits.path_segments == 0 || limits.segment_bytes == 0 || limits.max_attempts == 0 {
         return None;
     }
     let path_bytes = u64::from(limits.path_segments).checked_mul(u64::from(limits.segment_bytes).checked_add(16)?)?;
@@ -51,5 +67,19 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(u64::from(limits.pools).checked_mul(path_bytes)?)?
         .checked_add(u64::from(limits.resources).checked_mul(path_bytes)?)?
         .checked_add(List::<crate::TopicSpec>::worst_case(limits.topics)?)?
+        .checked_add(List::<crate::KindSpec>::worst_case(limits.kinds)?)?
+        .checked_add(Map::<Token, crate::Effect>::worst_case(limits.staged)?)?
+        .checked_add(Map::<u64, crate::OutboxEntry>::worst_case(limits.entries)?)?
+        .checked_add(Map::<u64, crate::outbox::Runtime>::worst_case(limits.entries)?)?
+        .checked_add(Map::<crate::Key, crate::outbox::Made>::worst_case(limits.made)?)?
+        .checked_add(
+            u64::from(limits.staged).checked_mul(u64::from(limits.resources_per_effect))?.checked_mul(path_bytes)?,
+        )?
+        .checked_add(
+            u64::from(limits.entries).checked_mul(u64::from(limits.resources_per_effect))?.checked_mul(path_bytes)?,
+        )?
+        .checked_add(
+            u64::from(limits.made).checked_mul(u64::from(limits.resources_per_effect))?.checked_mul(path_bytes)?,
+        )?
         .checked_add(path_bytes)
 }

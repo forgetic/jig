@@ -13,6 +13,14 @@ const LIMITS: Limits = Limits {
     pools: 1,
     resources: 2,
     topics: 1,
+    kinds: 0,
+    staged: 0,
+    entries: 0,
+    made: 0,
+    resources_per_effect: 0,
+    max_attempts: 1,
+    write_lifetime: skein_lib::Duration::from_secs(1),
+    clock_margin: skein_lib::Duration::from_secs(1),
     resources_per_task: 2,
     subscribers_per_topic: 2,
     lost_per_pool: 2,
@@ -50,6 +58,8 @@ fn domain() -> Domain {
             ]),
             pools: Box::from([PoolSpec { path: pool(), slots: 2 }]),
             topics: Box::from([TopicSpec { topic: 7 }]),
+            deployment: 1,
+            kinds: Box::from([]),
         },
         &LIMITS,
     )
@@ -108,6 +118,8 @@ fn context_resources_cannot_be_upgraded_to_a_write_role() {
         resources: Box::from([ResourceSpec { path: service(), hold: Hold::None, writable: false }]),
         pools: Box::from([]),
         topics: Box::from([]),
+        deployment: 1,
+        kinds: Box::from([]),
     };
     let mut connector = Domain::new(config.clone(), &LIMITS);
     assert_eq!(
@@ -179,6 +191,11 @@ fn restored_records_rebuild_adoptions_names_topics_and_pool_slots() {
             match request {
                 Request::Save { record } => records.push(record).expect("four changes made four records"),
                 Request::Named { .. }
+                | Request::Described { .. }
+                | Request::EffectRefused { .. }
+                | Request::Make { .. }
+                | Request::Outcome { .. }
+                | Request::System(..)
                 | Request::Unknown { .. }
                 | Request::Refused { .. }
                 | Request::Adopted { .. }

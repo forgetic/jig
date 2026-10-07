@@ -1,22 +1,24 @@
 use alloc::boxed::Box;
-use skein_lib::{Env, List, Map, Queue};
+use skein_lib::{Env, List, Map, Queue, Wall};
 
+use crate::outbox::Outbox;
 use crate::{
     Adoption, Class, Classed, Config, Event, Hold, Limits, Named, Origin, Path, Record, RecordKey, Request,
     ResourceRole, ResourceSpec, SystemEvent,
 };
 
-/// A pool change can save, announce slots and report allocations lost.
+/// A pool change or effect settlement can make up to three requests.
 pub const MAX_OUT: u32 = 3;
 
 /// A connector's live working set and records.
 #[derive(Debug)]
 pub struct Domain {
-    config: Config,
+    pub(crate) config: Config,
     tasks: Map<u64, Record>,
     adoptions: Map<(u32, Path), ResourceRole>,
     subscriptions: Map<(u16, u64), (u16, u16)>,
     pools: Map<Path, u32>,
+    pub(crate) outbox: Outbox,
 }
 
 impl Domain {
@@ -30,6 +32,7 @@ impl Domain {
             "resource configuration fits"
         );
         assert!(u32::try_from(config.topics.len()).unwrap_or(u32::MAX) <= limits.topics, "topic configuration fits");
+        assert!(u32::try_from(config.kinds.len()).unwrap_or(u32::MAX) <= limits.kinds, "kind configuration fits");
         assert!(valid_path(&config.prefix, limits), "deployment prefix fits");
         for resource in &config.resources {
             assert!(resource.path.under(&config.prefix), "resource uses the deployment prefix");
@@ -51,6 +54,15 @@ impl Domain {
             }
             assert!(same == 1, "topic numbers are unique");
         }
+        for kind in &config.kinds {
+            let mut same = 0_u32;
+            for other in &config.kinds {
+                if other.kind == kind.kind {
+                    same = same.checked_add(1).expect("kind count fits");
+                }
+            }
+            assert!(same == 1, "effect kinds are unique");
+        }
         let mut pools = Map::with_capacity(limits.pools);
         for pool in &config.pools {
             assert!(pool.path.under(&config.prefix), "pool uses the deployment prefix");
@@ -63,6 +75,7 @@ impl Domain {
             adoptions: Map::with_capacity(limits.adoptions),
             subscriptions: Map::with_capacity(limits.subscriptions),
             pools,
+            outbox: Outbox::new(limits),
         }
     }
 
@@ -90,12 +103,29 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             subscribe(domain, env, task, topic, wake_at, keep_at, out);
         }
         Event::Unsubscribe { task, topic } => unsubscribe(domain, task, topic, out),
+        Event::Describe { token, effect } => crate::outbox::describe(domain, env, token, effect, out),
+        Event::Keep { token, entry, task, key } => crate::outbox::keep(domain, env, token, entry, task, key, out),
+        Event::Drop { token } => crate::outbox::drop_staged(domain, token),
+        Event::Make { entry } => crate::outbox::make(domain, env, entry, out),
+        Event::Withdraw { entry } => crate::outbox::withdraw(domain, entry, out),
         Event::Restore { record } => restore(domain, record),
         Event::System(system) => system_event(domain, env, system, out),
     }
 }
 
-fn valid_path(path: &Path, limits: &Limits) -> bool {
+/// The earliest absolute retry deadline of an unsettled entry.
+#[must_use]
+pub fn next_deadline(domain: &Domain) -> Option<Wall> {
+    crate::outbox::next_deadline(domain)
+}
+
+/// Advances at most one due outbox entry after the root reserved output room.
+pub fn fire(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>) {
+    assert!(out.room() >= MAX_OUT, "parent reserved the connector's maximum output");
+    crate::outbox::fire(domain, env, out);
+}
+
+pub(crate) fn valid_path(path: &Path, limits: &Limits) -> bool {
     if u32::try_from(path.segments().len()).unwrap_or(u32::MAX) > limits.path_segments {
         return false;
     }
@@ -108,7 +138,7 @@ fn valid_path(path: &Path, limits: &Limits) -> bool {
 }
 
 #[expect(clippy::manual_find, reason = "step code uses no closures")]
-fn resource_spec<'a>(config: &'a Config, path: &Path) -> Option<&'a ResourceSpec> {
+pub(crate) fn resource_spec<'a>(config: &'a Config, path: &Path) -> Option<&'a ResourceSpec> {
     for spec in &config.resources {
         if spec.path == *path {
             return Some(spec);
@@ -263,6 +293,8 @@ fn restore(domain: &mut Domain, record: Record) {
         Record::Pool { path, slots } => {
             domain.pools.insert(path, slots).expect("restored pool fits");
         }
+        Record::Outbox(entry) => crate::outbox::restore_entry(domain, entry),
+        Record::Made { key, resources, state } => crate::outbox::restore_made(domain, key, resources, state),
     }
 }
 
@@ -310,5 +342,7 @@ fn system_event(domain: &mut Domain, env: &Env<Limits>, event: SystemEvent, out:
                 }
             }
         },
+        SystemEvent::Applied { entry, attempt, result } => crate::outbox::applied(domain, entry, attempt, result, out),
+        SystemEvent::Looked { entry, looked } => crate::outbox::looked(domain, env, entry, looked, out),
     }
 }

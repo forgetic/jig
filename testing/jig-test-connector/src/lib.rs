@@ -24,12 +24,14 @@ extern crate alloc;
 mod boundary;
 mod domain;
 mod limits;
+mod outbox;
 
 pub use boundary::{
-    Adoption, Class, Classed, Config, Event, Hold, HoldMode, Named, Origin, Path, PoolSpec, Record, RecordKey, Request,
-    ResourceRole, ResourceSpec, SystemEvent, TopicSpec,
+    Adoption, ApplyResult, Attempt, Class, Classed, Config, Description, Effect, EffectPhase, Event, Form, Hold,
+    HoldMode, Key, KindSpec, Looked, Named, Origin, OutboxEntry, Outcome, Path, PoolSpec, Record, RecordKey, Recovery,
+    Request, ResourceRole, ResourceSpec, SystemEvent, SystemRequest, TopicSpec,
 };
-pub use domain::{Domain, MAX_OUT, step};
+pub use domain::{Domain, MAX_OUT, fire, next_deadline, step};
 pub use limits::{Limits, worst_case};
 
 #[cfg(test)]

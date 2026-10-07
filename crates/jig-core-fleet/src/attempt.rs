@@ -102,7 +102,7 @@ use core::mem;
 
 use skein_lib::{Env, Id, Queue, ReplyTo, Slab, Time, Token};
 
-use crate::boundary::{Answer, Refusal, Request, Withdrawal};
+use crate::boundary::{Answer, HostKind, Kinds, Refusal, Request, Withdrawal};
 use crate::channel::{self, Channel};
 use crate::domain::Domain;
 use crate::facts::{Fact, Facts};
@@ -137,14 +137,14 @@ pub(crate) struct Run {
 pub(crate) enum State {
     /// Started, or refused as busy: waits for a slot, and for no worker to
     /// host another attempt of its run. `serial` is its place in the queue.
-    Waiting { to: ReplyTo, workstream: u64, serial: u64 },
+    Waiting { to: ReplyTo, workstream: u64, kinds: Kinds, serial: u64 },
     /// Adopted after a restart, no worker having listed it yet: until the
     /// grace passes.
     Adopted { to: ReplyTo, until: Time },
     /// The parent's live claim, on a worker or adrift, with its workstream to
     /// be placed again if its worker refuses it as busy (empty when
     /// adopted).
-    Claimed { to: ReplyTo, at: Where, workstream: u64 },
+    Claimed { to: ReplyTo, at: Where, workstream: u64, kinds: Kinds },
     /// Cancelled by the parent: its answer still ends the call.
     Cancelled { to: ReplyTo, at: Where },
     /// Its answer handed to the parent, which has yet to acknowledge it: its
@@ -245,6 +245,7 @@ pub(crate) fn start(
     run: Token,
     attempt: Token,
     workstream: u64,
+    kinds: Kinds,
     out: &mut Queue<Request>,
 ) {
     let refusal = if workstream == 0 {
@@ -262,7 +263,7 @@ pub(crate) fn start(
     }
     replace(domain, run, out);
     let serial = next_serial(&mut domain.serial);
-    insert(domain, run, attempt, false, State::Waiting { to, workstream, serial });
+    insert(domain, run, attempt, false, State::Waiting { to, workstream, kinds, serial });
 }
 
 /// Adopt: a stray claimed, a kept answer handed over, or a claim adrift
@@ -316,7 +317,7 @@ pub(crate) fn adopt(
     let before = implied(&entry.state);
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Stray { at, until: _ } => located(to, at, 0, names, &mut domain.facts, out),
+        State::Stray { at, until: _ } => located(to, at, 0, Kinds::Workers, names, &mut domain.facts, out),
         State::Kept { answer, payload, at, until: _ } => handed(to, answer, payload, at, names, &mut domain.facts, out),
         State::Waiting { .. }
         | State::Adopted { .. }
@@ -342,9 +343,9 @@ pub(crate) fn cancel(domain: &mut Domain, run: Token, attempt: Token, out: &mut 
     let before = implied(&entry.state);
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Waiting { to, workstream: _, serial: _ } => withdrawn(to, Withdrawal::Cancelled, names, out),
+        State::Waiting { to, workstream: _, kinds: _, serial: _ } => withdrawn(to, Withdrawal::Cancelled, names, out),
         State::Adopted { to, until } => State::Cancelled { to, at: Where::Adrift { until } },
-        State::Claimed { to, at, workstream: _ } => cancelled(to, at, names, &domain.channels, out),
+        State::Claimed { to, at, workstream: _, kinds: _ } => cancelled(to, at, names, &domain.channels, out),
         State::Cancelled { to, at } => State::Cancelled { to, at },
         State::Handed { at } => State::Handed { at },
         State::Acknowledged { until } => State::Acknowledged { until },
@@ -401,8 +402,8 @@ pub(crate) fn place(
     let before = implied(&entry.state);
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Waiting { to, workstream, serial: _ } => {
-            assigned(to, workstream, channel, names, env, &mut domain.channels, &mut domain.facts, out)
+        State::Waiting { to, workstream, kinds, serial: _ } => {
+            assigned(to, workstream, kinds, channel, names, env, &mut domain.channels, &mut domain.facts, out)
         }
         State::Adopted { .. }
         | State::Claimed { .. }
@@ -438,11 +439,11 @@ pub(crate) fn listed(
     let before = implied(&entry.state);
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Waiting { to, workstream, serial: _ } => {
-            hosted(to, workstream, channel, names, env, &mut domain.channels, &mut domain.facts, out)
+        State::Waiting { to, workstream, kinds, serial: _ } => {
+            hosted(to, workstream, kinds, channel, names, env, &mut domain.channels, &mut domain.facts, out)
         }
-        State::Adopted { to, until: _ } => located(to, on, 0, names, &mut domain.facts, out),
-        State::Claimed { to, at, workstream } => moved(to, at, workstream, channel, &mut domain.facts),
+        State::Adopted { to, until: _ } => located(to, on, 0, Kinds::Workers, names, &mut domain.facts, out),
+        State::Claimed { to, at, workstream, kinds } => moved(to, at, workstream, kinds, channel, &mut domain.facts),
         State::Cancelled { to, at: _ } => {
             again(on, answered, names, &domain.channels, out);
             State::Cancelled { to, at: on }
@@ -492,9 +493,9 @@ pub(crate) fn answer(
     let before = implied(&entry.state);
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Waiting { to, workstream, serial } => {
+        State::Waiting { to, workstream, kinds, serial } => {
             resent(payload, &mut domain.facts, out);
-            State::Waiting { to, workstream, serial }
+            State::Waiting { to, workstream, kinds, serial }
         }
         State::Adopted { to, until } => match answer {
             Answer::Busy => {
@@ -505,11 +506,11 @@ pub(crate) fn answer(
                 handed(to, answer, payload, on, names, &mut domain.facts, out)
             }
         },
-        State::Claimed { to, at: _, workstream } => match answer {
+        State::Claimed { to, at: _, workstream, kinds } => match answer {
             Answer::Busy => {
                 refused(payload, &mut domain.facts, out);
                 let serial = next_serial(&mut domain.serial);
-                State::Waiting { to, workstream, serial }
+                State::Waiting { to, workstream, kinds, serial }
             }
             Answer::Ended | Answer::Parked | Answer::Failed | Answer::Invalid => {
                 handed(to, answer, payload, on, names, &mut domain.facts, out)
@@ -557,7 +558,7 @@ pub(crate) fn adrift(domain: &mut Domain, id: Id<Attempt>, until: Time) {
     let state = mem::replace(&mut entry.state, State::Closed);
     let at = Where::Adrift { until };
     entry.state = match state {
-        State::Claimed { to, at: _, workstream } => State::Claimed { to, at, workstream },
+        State::Claimed { to, at: _, workstream, kinds } => State::Claimed { to, at, workstream, kinds },
         State::Cancelled { to, at: _ } => State::Cancelled { to, at },
         State::Handed { at: _ } => State::Handed { at },
         State::Stray { at: _, until } => State::Stray { at, until },
@@ -667,7 +668,11 @@ pub(crate) fn resume(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Req
             | State::Fenced { .. }
             | State::Closed => unreachable!("only a waiting attempt is queued for a slot"),
         };
-        if let Some(channel) = channel::choose(domain, *workstream) {
+        let kinds = match &entry.state {
+            State::Waiting { kinds, .. } => *kinds,
+            _ => unreachable!("only a waiting attempt is queued"),
+        };
+        if let Some(channel) = channel::choose(domain, *workstream, kinds) {
             chosen = Some((id, channel));
             break;
         }
@@ -715,9 +720,9 @@ fn replace(domain: &mut Domain, run: Token, out: &mut Queue<Request>) {
     let before = implied(&entry.state);
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Waiting { to, workstream: _, serial: _ } => withdrawn(to, Withdrawal::Replaced, names, out),
+        State::Waiting { to, workstream: _, kinds: _, serial: _ } => withdrawn(to, Withdrawal::Replaced, names, out),
         State::Adopted { to, until } => superseded(to, Where::Adrift { until }, names, out),
-        State::Claimed { to, at, workstream: _ } => {
+        State::Claimed { to, at, workstream: _, kinds: _ } => {
             again(at, false, names, &domain.channels, out);
             superseded(to, at, names, out)
         }
@@ -844,22 +849,23 @@ fn located(
     to: ReplyTo,
     at: Where,
     workstream: u64,
+    kinds: Kinds,
     names: Names,
     facts: &mut Facts,
     out: &mut Queue<Request>,
 ) -> State {
     facts.push(Fact::Found);
     out.push(Request::Placed { run: names.run, attempt: names.attempt });
-    State::Claimed { to, at, workstream }
+    State::Claimed { to, at, workstream, kinds }
 }
 
 /// A claim listed again: on its worker's channel from now on.
-fn moved(to: ReplyTo, at: Where, workstream: u64, channel: Id<Channel>, facts: &mut Facts) -> State {
+fn moved(to: ReplyTo, at: Where, workstream: u64, kinds: Kinds, channel: Id<Channel>, facts: &mut Facts) -> State {
     match at {
         Where::On(_) => {}
         Where::Adrift { .. } => facts.push(Fact::Found),
     }
-    State::Claimed { to, at: Where::On(channel), workstream }
+    State::Claimed { to, at: Where::On(channel), workstream, kinds }
 }
 
 /// Waiting, placed: assigned to the worker of `channel`, which holds its
@@ -868,6 +874,7 @@ fn moved(to: ReplyTo, at: Where, workstream: u64, channel: Id<Channel>, facts: &
 fn assigned(
     to: ReplyTo,
     workstream: u64,
+    kinds: Kinds,
     channel: Id<Channel>,
     names: Names,
     env: &Env<Limits>,
@@ -876,11 +883,13 @@ fn assigned(
     out: &mut Queue<Request>,
 ) -> State {
     let entry = channels.get_mut(channel).expect("a worker chosen is in contact");
-    channel::cache(entry, &env.limits, workstream);
-    out.push(Request::Assign { channel: entry.token, run: names.run, attempt: names.attempt });
+    if entry.kind == HostKind::Worker {
+        channel::cache(entry, &env.limits, workstream);
+    }
+    out.push(Request::Assign { channel: entry.token, kind: entry.kind, run: names.run, attempt: names.attempt });
     out.push(Request::Placed { run: names.run, attempt: names.attempt });
     facts.push(Fact::Placed);
-    State::Claimed { to, at: Where::On(channel), workstream }
+    State::Claimed { to, at: Where::On(channel), workstream, kinds }
 }
 
 /// Waiting, listed: a worker hosts it already, so it is not assigned again.
@@ -888,6 +897,7 @@ fn assigned(
 fn hosted(
     to: ReplyTo,
     workstream: u64,
+    kinds: Kinds,
     channel: Id<Channel>,
     names: Names,
     env: &Env<Limits>,
@@ -897,7 +907,7 @@ fn hosted(
 ) -> State {
     let entry = channels.get_mut(channel).expect("a worker saying hello is in contact");
     channel::cache(entry, &env.limits, workstream);
-    located(to, Where::On(channel), workstream, names, facts, out)
+    located(to, Where::On(channel), workstream, kinds, names, facts, out)
 }
 
 /// Listed, and not tracked: fenced off at once if its run is claimed by

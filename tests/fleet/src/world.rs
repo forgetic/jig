@@ -20,6 +20,7 @@ const MAX_WIRE: usize = 20_000;
 /// The fleet's limits in the calm world.
 pub const LIMITS: Limits = Limits {
     workers: 4,
+    engine_slots: 0,
     slots: 3,
     workstreams: 3,
     attempts: 16,
@@ -925,7 +926,7 @@ impl World {
                 unreachable!("the first-version world sends no turns")
             }
             Request::Grant { .. } | Request::Rejected { .. } | Request::Exhausted { .. } => {}
-            Request::Assign { channel, run, attempt } => {
+            Request::Assign { channel, kind: _, run, attempt } => {
                 self.stats.assigned += 1;
                 self.sent(run, attempt, Down::Assign);
                 self.down(channel, Message::Assign { run: run.raw(), attempt: attempt.raw() });
@@ -968,6 +969,7 @@ impl World {
                 self.ended(to, run, attempt, End::Answered(said));
             }
             Request::Listed { .. } => self.end("listed"),
+            Request::NotStarted { .. } => panic!("worker-only world cannot lose an engine slot"),
             Request::Lost { to, run, attempt } => self.ended(to, run, attempt, End::Lost),
             Request::Withdrawn { to, run, attempt, withdrawal } => {
                 let end = match withdrawal {
@@ -1066,6 +1068,7 @@ impl World {
             run: Token::new(run),
             attempt: Token::new(attempt),
             workstream: run,
+            kinds: fleet::Kinds::Workers,
         });
         let at = self.now.saturating_add(self.settings.timeout);
         self.send(at, Delivery::Timeout { item, attempt });
@@ -1232,7 +1235,14 @@ impl World {
                 self.adopting.push(attempt);
                 self.calls.open(attempt, ());
                 let token = Token::new(attempt);
-                self.stage.push(Event::Adopt { reply_to: ReplyTo::new(token), run, attempt: token, kept: 0 });
+                self.stage.push(Event::Adopt {
+                    reply_to: ReplyTo::new(token),
+                    run,
+                    attempt: token,
+                    kept: 0,
+                    kind: fleet::HostKind::Worker,
+                    worked: false,
+                });
                 if cancelled {
                     self.observe(Seen::Cancelled { run: run.raw(), attempt });
                     self.stage.push(Event::Cancel { run, attempt: token });

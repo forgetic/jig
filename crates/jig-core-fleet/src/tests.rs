@@ -5,12 +5,13 @@ use alloc::boxed::Box;
 use skein_lib::{Duration, Env, List, Queue, ReplyTo, Time, Token, Wall};
 
 use crate::{
-    Answer, Bounce, Domain, Event, Fact, Hello, Hosted, Limits, Phase, Refusal, Request, Undelivered, Withdrawal, fire,
-    max_out, resume, step, worst_case,
+    Answer, Bounce, Domain, Event, Fact, Hello, HostKind, Hosted, Kinds, Limits, Phase, Refusal, Request, Undelivered,
+    Withdrawal, fire, max_out, resume, step, worst_case,
 };
 
 const LIMITS: Limits = Limits {
     workers: 3,
+    engine_slots: 0,
     slots: 2,
     workstreams: 2,
     attempts: 6,
@@ -123,11 +124,11 @@ impl Harness {
     }
 
     fn start(&mut self, run: Token, attempt: Token, workstream: u64) -> Box<[Request]> {
-        self.step(Event::Start { reply_to: to(attempt), run, attempt, workstream })
+        self.step(Event::Start { reply_to: to(attempt), run, attempt, workstream, kinds: Kinds::Workers })
     }
 
     fn adopt(&mut self, run: Token, attempt: Token) -> Box<[Request]> {
-        self.step(Event::Adopt { reply_to: to(attempt), run, attempt, kept: 0 })
+        self.step(Event::Adopt { reply_to: to(attempt), run, attempt, kept: 0, kind: HostKind::Worker, worked: false })
     }
 
     /// Starts `run`'s `attempt` and has it placed, on the worker the fleet
@@ -135,8 +136,10 @@ impl Harness {
     fn place(&mut self, run: Token, attempt: Token, workstream: u64) -> Token {
         assert!(self.start(run, attempt, workstream).is_empty(), "a start waits for placement");
         let placed = self.settle();
-        let [Request::Assign { channel, run: assigned, attempt: of }, Request::Placed { run: told, attempt: told_of }] =
-            &*placed
+        let [
+            Request::Assign { channel, kind: _, run: assigned, attempt: of },
+            Request::Placed { run: told, attempt: told_of },
+        ] = &*placed
         else {
             panic!("placed: {placed:?}");
         };
@@ -196,7 +199,7 @@ fn cancel(channel: Token, run: Token, attempt: Token) -> Request {
 }
 
 fn assign(channel: Token, run: Token, attempt: Token) -> Request {
-    Request::Assign { channel, run, attempt }
+    Request::Assign { channel, kind: HostKind::Worker, run, attempt }
 }
 
 fn placed(run: Token, attempt: Token) -> Request {
@@ -1032,7 +1035,7 @@ fn adoption_restores_the_prefix_before_releasing_stray_turns() {
     assert!(turn(&mut h, C1, 1, 1).is_empty());
     assert!(turn(&mut h, C1, 2, 2).is_empty());
     assert_eq!(&*turn(&mut h, C1, 2, 3), &[drop(3)]);
-    h.step(Event::Adopt { reply_to: to(A1), run: R1, attempt: A1, kept: 1 });
+    h.step(Event::Adopt { reply_to: to(A1), run: R1, attempt: A1, kept: 1, kind: HostKind::Worker, worked: false });
     assert_eq!(
         &*h.settle(),
         &[turn_ack(C1, 1), drop(1), Request::Turned { run: R1, attempt: A1, turn: 2, body: payload(2) }]
@@ -1043,7 +1046,7 @@ fn adoption_restores_the_prefix_before_releasing_stray_turns() {
 #[test]
 fn a_restart_restores_committed_turns_before_the_worker_replays() {
     let mut h = Harness::new(Limits { turns: 2, ..LIMITS });
-    h.step(Event::Adopt { reply_to: to(A1), run: R1, attempt: A1, kept: 7 });
+    h.step(Event::Adopt { reply_to: to(A1), run: R1, attempt: A1, kept: 7, kind: HostKind::Worker, worked: false });
     h.hello(C1, 2, &[], &[hosted(R1, A1, Phase::Active)]);
     assert_eq!(&*turn(&mut h, C1, 7, 1), &[turn_ack(C1, 7), drop(1)]);
     assert_eq!(&*turn(&mut h, C1, 8, 2), &[Request::Turned { run: R1, attempt: A1, turn: 8, body: payload(2) }]);

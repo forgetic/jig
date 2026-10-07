@@ -14,6 +14,7 @@ static HEAP: heap::Counting = heap::Counting;
 
 const LIMITS: Limits = Limits {
     workers: 3,
+    engine_slots: 0,
     slots: 3,
     workstreams: 3,
     attempts: 12,
@@ -106,7 +107,13 @@ impl Measured {
     fn start(&mut self) -> (Token, Token) {
         let (run, attempt) = (self.name(), self.name());
         let workstream = run.raw();
-        let asked = self.step(Event::Start { reply_to: ReplyTo::new(attempt), run, attempt, workstream });
+        let asked = self.step(Event::Start {
+            reply_to: ReplyTo::new(attempt),
+            run,
+            attempt,
+            workstream,
+            kinds: jig_core_fleet::Kinds::Workers,
+        });
         assert!(asked.is_empty(), "a start waits for placement: {asked:?}");
         (run, attempt)
     }
@@ -121,7 +128,7 @@ fn channel(nth: u32) -> Token {
 fn placed(requests: &[Request]) -> Vec<(Token, Token, Token)> {
     let mut placed = Vec::new();
     for request in requests {
-        if let Request::Assign { channel, run, attempt } = request {
+        if let Request::Assign { channel, kind: _, run, attempt } = request {
             placed.push((*channel, *run, *attempt));
         }
     }
@@ -165,7 +172,13 @@ fn a_fleet_full_to_its_limits_stays_within_its_worst_case() {
     // One more is refused, at the entrance.
     let (run, attempt) = (fleet.name(), fleet.name());
     let workstream = run.raw();
-    let refused = fleet.step(Event::Start { reply_to: ReplyTo::new(attempt), run, attempt, workstream });
+    let refused = fleet.step(Event::Start {
+        reply_to: ReplyTo::new(attempt),
+        run,
+        attempt,
+        workstream,
+        kinds: jig_core_fleet::Kinds::Workers,
+    });
     assert!(matches!(refused[..], [Request::Refused { .. }]), "{refused:?}");
     let up = fleet.step(Event::Relay {
         channel: placed[5].0,
@@ -210,9 +223,23 @@ fn every_entry_point_stays_within_the_worst_case() {
         Event::Answer { channel: channel(0), run: r2, attempt: a2, answer: Answer::Ended, payload: Token::new(1) };
     fleet.step(answer);
     fleet.step(Event::Loaded);
-    fleet.step(Event::Adopt { reply_to: ReplyTo::new(a2), run: r2, attempt: a2, kept: 0 });
+    fleet.step(Event::Adopt {
+        reply_to: ReplyTo::new(a2),
+        run: r2,
+        attempt: a2,
+        kept: 0,
+        kind: jig_core_fleet::HostKind::Worker,
+        worked: false,
+    });
     fleet.step(Event::Acknowledge { run: r2, attempt: a2 });
-    fleet.step(Event::Adopt { reply_to: ReplyTo::new(a1), run: r1, attempt: a1, kept: 0 });
+    fleet.step(Event::Adopt {
+        reply_to: ReplyTo::new(a1),
+        run: r1,
+        attempt: a1,
+        kept: 0,
+        kind: jig_core_fleet::HostKind::Worker,
+        worked: false,
+    });
     let (r3, a3) = fleet.start();
     let placed = placed(&fleet.settle());
     assert_eq!(placed.len(), 1);
@@ -277,7 +304,14 @@ fn held_and_handed_turn_admissions_stay_within_the_worst_case() {
     }
     let refused = fleet.step(Event::Turn { channel: channel(0), run, attempt, turn: 9, body: Token::new(9) });
     assert!(matches!(refused[..], [Request::TurnBusy { .. }, Request::Drop { .. }]));
-    fleet.step(Event::Adopt { reply_to: ReplyTo::new(attempt), run, attempt, kept: 3 });
+    fleet.step(Event::Adopt {
+        reply_to: ReplyTo::new(attempt),
+        run,
+        attempt,
+        kept: 3,
+        kind: jig_core_fleet::HostKind::Worker,
+        worked: false,
+    });
     let released = fleet.settle();
     assert_eq!(released.iter().filter(|request| matches!(request, Request::Turned { .. })).count(), 5);
     for turn in 4..=limits.turns {
@@ -292,4 +326,14 @@ fn held_and_handed_turn_admissions_stay_within_the_worst_case() {
     fleet.step(Event::Acknowledge { run, attempt });
     fleet.settle();
     assert_eq!(fleet.domain.attempts(), 0);
+}
+
+#[test]
+fn engine_slots_stay_within_the_fleets_worst_case() {
+    let limits = Limits { workers: 0, engine_slots: 2, ..LIMITS };
+    let mut fleet = Measured::new(limits);
+    for _ in 0..2 {
+        fleet.start();
+        fleet.settle();
+    }
 }

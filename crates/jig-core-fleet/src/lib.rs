@@ -1,10 +1,12 @@
 //! The fleet child domain of the core
 //! (programming-model.md, 4.5; domain/engine.md, sections 3 and 8): the
-//! engine's knowledge of the workers and the runs they host. Workers dial in,
+//! core's knowledge of hosts and the runs they hold. Workers dial in,
 //! and each says hello first on its channel: its slots, the workstreams it
 //! holds workspaces for, and the runs it hosts with where each is
-//! (domain/hosts.md, section 2). The fleet places each run the parent starts
-//! on a worker with a free slot, preferring one that holds its workstream,
+//! (domain/hosts.md, section 2). The engine's own configured slots are a
+//! second host, present from construction and lost only on restart. The fleet
+//! places each run on a permitted host with a free slot, preferring a worker
+//! that holds its workstream,
 //! and the run waits, bounded, while none has one; never two attempts of a
 //! run's workstream at once. It fences attempts: once an attempt is
 //! cancelled or replaced, what its worker still sends is dropped, its answer
@@ -29,9 +31,8 @@
 //!
 //! Sans-io: [`step`], [`fire`] and [`resume`] turn events into requests and
 //! change nothing but the [`Domain`] they are given. Every effect is a
-//! [`Request`] that its parent, the engine's root domain
-//! , routes on: to a worker's channel through the
-//! protocol layer, or to the parent's own state. Their outcomes come back
+//! [`Request`] that its parent routes to a worker's channel, the local host,
+//! or its own state. Their outcomes come back
 //! later through the parent as an [`Event`]. The fleet owns its timers: the
 //! grace of a lost channel, and that of an adoption.
 //!
@@ -61,7 +62,9 @@ mod limits;
 mod tests;
 mod turn;
 
-pub use boundary::{Answer, Bounce, Event, Grant, Hello, Hosted, Phase, Refusal, Request, Undelivered, Withdrawal};
+pub use boundary::{
+    Answer, Bounce, Event, Grant, Hello, HostKind, Hosted, Kinds, Phase, Refusal, Request, Undelivered, Withdrawal,
+};
 pub use domain::{Domain, fire, max_out, resume, step};
 pub use facts::Fact;
 pub use limits::{Limits, worst_case};

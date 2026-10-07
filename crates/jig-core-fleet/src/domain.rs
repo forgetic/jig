@@ -3,7 +3,7 @@
 use skein_lib::{Deadlines, Env, Id, Map, Queue, Slab, Time, Token};
 
 use crate::attempt::{self, Attempt, Run};
-use crate::boundary::{Event, Request};
+use crate::boundary::{Event, HostKind, Request};
 use crate::call::{self, Call};
 use crate::channel::{self, Channel};
 use crate::facts::{Fact, Facts};
@@ -60,9 +60,26 @@ impl Domain {
     #[must_use]
     pub fn new(limits: &Limits) -> Domain {
         let tracked = limits::tracked(limits).expect("worst_case accepted the limits");
+        let channels_count =
+            limits.workers.checked_add(u32::from(limits.engine_slots > 0)).expect("worst_case accepted the limits");
+        let mut channels = Slab::with_capacity(channels_count);
+        let mut tokens = Map::with_capacity(channels_count);
+        if limits.engine_slots > 0 {
+            let engine = Channel {
+                kind: HostKind::Engine,
+                token: Token::new(0),
+                slots: limits.engine_slots,
+                draining: false,
+                hosts: skein_lib::Set::with_capacity(limits.engine_slots),
+                workstreams: Map::with_capacity(0),
+                uses: 0,
+            };
+            let id = channels.insert(engine).expect("engine slot reserved");
+            tokens.insert(Token::new(0), id).expect("engine token reserved");
+        }
         Domain {
-            channels: Slab::with_capacity(limits.workers),
-            tokens: Map::with_capacity(limits.workers),
+            channels,
+            tokens,
             attempts: Slab::with_capacity(tracked),
             names: Map::with_capacity(tracked),
             runs: Map::with_capacity(tracked),
@@ -82,7 +99,7 @@ impl Domain {
     /// Workers in contact.
     #[must_use]
     pub fn workers(&self) -> u32 {
-        self.tokens.len()
+        self.tokens.len() - u32::from(self.tokens.contains_key(&Token::new(0)))
     }
 
     /// Attempts tracked, closed ones included until they are reclaimed.
@@ -158,10 +175,19 @@ impl Domain {
 /// Handles one event, emitting at most [`max_out`] requests.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
-        Event::Start { reply_to, run, attempt, workstream } => {
-            attempt::start(domain, env, reply_to, run, attempt, workstream, out);
+        Event::Start { reply_to, run, attempt, workstream, kinds } => {
+            attempt::start(domain, env, reply_to, run, attempt, workstream, kinds, out);
         }
-        Event::Adopt { reply_to, run, attempt, kept } => attempt::adopt(domain, env, reply_to, run, attempt, kept, out),
+        Event::Adopt { reply_to, run, attempt, kept, kind, worked } => match kind {
+            HostKind::Engine => {
+                if worked {
+                    out.push(Request::Lost { to: reply_to, run, attempt });
+                } else {
+                    out.push(Request::NotStarted { to: reply_to, run, attempt });
+                }
+            }
+            HostKind::Worker => attempt::adopt(domain, env, reply_to, run, attempt, kept, out),
+        },
         Event::Cancel { run, attempt } => attempt::cancel(domain, run, attempt, out),
         Event::Inbound { run, attempt, event } => call::inbound(domain, run, attempt, event, out),
         Event::Relayed { to, answer } => call::relayed(domain, to, answer, out),

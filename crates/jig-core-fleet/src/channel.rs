@@ -1,5 +1,6 @@
-//! The workers in contact (domain/engine.md, sections 2 and 8): each known by
-//! its channel, from the hello it says first on it until the channel is lost.
+//! The hosts with slots (domain/engine.md, section 8): workers are known by
+//! their channel, from the hello they say first until the channel is lost.
+//! The engine host uses reserved local token zero and never dials or loses contact.
 //! A worker that comes back dials a new channel, and is known again by what
 //! its hello lists: the fleet needs no other name for it.
 //!
@@ -31,7 +32,7 @@ use core::mem;
 use skein_lib::{Env, Id, Map, Queue, Set, Slab, Token};
 
 use crate::attempt::{self, Attempt};
-use crate::boundary::{Hello, Hosted, Phase, Request};
+use crate::boundary::{Hello, HostKind, Hosted, Kinds, Phase, Request};
 use crate::domain::Domain;
 use crate::facts::Fact;
 use crate::limits::Limits;
@@ -39,6 +40,8 @@ use crate::limits::Limits;
 /// A worker in contact.
 #[derive(Debug)]
 pub(crate) struct Channel {
+    /// Which kind of host owns these slots.
+    pub(crate) kind: HostKind,
     /// The protocol's name for its channel.
     pub(crate) token: Token,
     /// How many runs it hosts at once, as its hello said, within the limits.
@@ -95,6 +98,11 @@ pub(crate) fn cache(channel: &mut Channel, limits: &Limits, workstream: u64) {
 /// Hello, on a new channel: the worker is in contact, or turned away.
 pub(crate) fn hello(domain: &mut Domain, env: &Env<Limits>, channel: Token, hello: Hello, out: &mut Queue<Request>) {
     let limits = &env.limits;
+    if channel == Token::new(0) {
+        domain.facts.push(Fact::TurnedAway);
+        out.push(Request::Refuse { channel });
+        return;
+    }
     if domain.tokens.contains_key(&channel) {
         domain.facts.push(Fact::Dropped);
         return;
@@ -110,6 +118,7 @@ pub(crate) fn hello(domain: &mut Domain, env: &Env<Limits>, channel: Token, hell
     }
     let Hello { slots, workstreams, hosting, graces: _ } = hello;
     let mut worker = Channel {
+        kind: HostKind::Worker,
         token: channel,
         slots: slots.min(limits.slots),
         draining: false,
@@ -154,6 +163,9 @@ pub(crate) fn hello(domain: &mut Domain, env: &Env<Limits>, channel: Token, hell
 /// Lost: the worker's attempts are kept for the grace, adrift. A channel
 /// the fleet does not know never said hello, or was turned away.
 pub(crate) fn lost(domain: &mut Domain, env: &Env<Limits>, channel: Token) {
+    if channel == Token::new(0) {
+        return;
+    }
     let Some(id) = domain.tokens.remove(&channel) else {
         return;
     };
@@ -175,15 +187,15 @@ pub(crate) fn drain(domain: &mut Domain, channel: Id<Channel>) {
 
 /// The worker to place an attempt of `workstream` on: one with a free slot
 /// that holds its workspace, or else the one with the most free slots.
-pub(crate) fn choose(domain: &Domain, workstream: u64) -> Option<Id<Channel>> {
+pub(crate) fn choose(domain: &Domain, workstream: u64, kinds: Kinds) -> Option<Id<Channel>> {
     let mut best: Option<(Id<Channel>, u32)> = None;
     for (_, &id) in &domain.tokens {
         let channel = domain.channels.get(id).expect("a named channel is in contact");
         let free = channel.slots.saturating_sub(channel.hosts.len());
-        if channel.draining || free == 0 {
+        if channel.draining || free == 0 || !kinds.allows(channel.kind) {
             continue;
         }
-        if holds(channel, workstream).is_some() {
+        if channel.kind == HostKind::Worker && holds(channel, workstream).is_some() {
             return Some(id);
         }
         best = match best {

@@ -53,6 +53,38 @@ use alloc::boxed::Box;
 
 use skein_lib::{Duration, ReplyTo, Token};
 
+/// A kind of host that can run an attempt.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HostKind {
+    /// A worker connected on a channel.
+    Worker,
+    /// The engine's own local host.
+    Engine,
+}
+
+/// The kinds a run's charter permits.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Kinds {
+    /// Only workers may host the run.
+    Workers,
+    /// Only the engine may host the run.
+    Engine,
+    /// Either kind may host the run.
+    Both,
+}
+
+impl Kinds {
+    /// Whether a host kind is allowed by the charter.
+    #[must_use]
+    pub const fn allows(self, kind: HostKind) -> bool {
+        match self {
+            Kinds::Workers => matches!(kind, HostKind::Worker),
+            Kinds::Engine => matches!(kind, HostKind::Engine),
+            Kinds::Both => true,
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Grant {
     pub account: u32,
@@ -73,16 +105,21 @@ pub enum Event {
         run: Token,
         attempt: Token,
         workstream: u64,
+        /// Host kinds the charter permits.
+        kinds: Kinds,
     },
-    /// From the parent, a call: the attempt `attempt` of the run `run` was
-    /// claimed before the engine restarted. A worker is to say it hosts it
-    /// within the grace, or it is presumed lost; answer once it has ended.
+    /// From the parent, a claim restored after restart. A worker may report
+    /// it within the grace; an engine-hosted claim is settled at once.
     Adopt {
         reply_to: ReplyTo,
         run: Token,
         attempt: Token,
         /// The committed prefix restored with the claim; zero before its first turn.
         kept: u32,
+        /// Kind of host that held the claim before restart.
+        kind: HostKind,
+        /// Whether a turn or call was committed for this attempt.
+        worked: bool,
     },
     /// From the parent: cancel the attempt `attempt` of the run `run`. Its
     /// call is still ended by its answer, unless it was never placed.
@@ -207,10 +244,11 @@ pub enum Event {
 /// fleet -> parent
 #[derive(PartialEq, Eq, Debug)]
 pub enum Request {
-    /// To a worker, a call: host the attempt `attempt` of the run `run`, with
-    /// the assignment the parent keeps for it.
+    /// To the chosen host, a call to run an attempt. Engine slots use the
+    /// reserved local token zero; workers use their channel tokens.
     Assign {
         channel: Token,
+        kind: HostKind,
         run: Token,
         attempt: Token,
     },
@@ -313,6 +351,13 @@ pub enum Request {
         attempt: Token,
         answer: Answer,
         payload: Token,
+    },
+    /// To the parent, terminal for an engine-hosted adoption with no committed work.
+    /// It consumes no try of the task.
+    NotStarted {
+        to: ReplyTo,
+        run: Token,
+        attempt: Token,
     },
     /// To the parent, terminal for `Start` and `Adopt`: the attempt is
     /// presumed lost, its worker out of contact past the grace or none

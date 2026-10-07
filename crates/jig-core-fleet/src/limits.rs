@@ -13,6 +13,8 @@ pub struct Limits {
     /// Workers in contact at once. A worker beyond them is turned away at
     /// its hello.
     pub workers: u32,
+    /// Slots hosted inside the engine; zero in applications using only workers.
+    pub engine_slots: u32,
     /// The most runs a worker hosts at once: slots a hello says beyond them
     /// are not used, and a hello listing more runs is turned away.
     pub slots: u32,
@@ -56,12 +58,17 @@ pub(crate) fn tracked(limits: &Limits) -> Option<u32> {
 /// rest is its sender's to count.
 #[must_use]
 pub fn worst_case(limits: &Limits) -> Option<u64> {
-    let channels = Slab::<Channel>::worst_case(limits.workers)?
-        .checked_add(Map::<Token, Id<Channel>>::worst_case(limits.workers)?)?;
+    let count = limits.workers.checked_add(u32::from(limits.engine_slots > 0))?;
+    let channels = Slab::<Channel>::worst_case(count)?.checked_add(Map::<Token, Id<Channel>>::worst_case(count)?)?;
     // Each worker: the attempts it hosts, and the workstream keys it holds.
     let hosts = Set::<Id<Attempt>>::worst_case(limits.slots)?;
     let keys = Map::<u64, u64>::worst_case(limits.workstreams)?;
     let workers = u64::from(limits.workers).checked_mul(hosts.checked_add(keys)?)?;
+    let engine = if limits.engine_slots > 0 {
+        Set::<Id<Attempt>>::worst_case(limits.engine_slots)?.checked_add(Map::<u64, u64>::worst_case(0)?)?
+    } else {
+        0
+    };
     let tracked = tracked(limits)?;
     let attempts = Slab::<Attempt>::worst_case(tracked)?
         .checked_add(Map::<(Token, Token), Id<Attempt>>::worst_case(tracked)?)?
@@ -71,5 +78,11 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     let calls = Slab::<Call>::worst_case(limits.calls)?;
     let turns = Map::<(Id<Attempt>, u32), Pending>::worst_case(limits.turns)?;
     let facts = Queue::<Fact>::worst_case(limits.facts)?;
-    channels.checked_add(workers)?.checked_add(attempts)?.checked_add(calls)?.checked_add(turns)?.checked_add(facts)
+    channels
+        .checked_add(workers)?
+        .checked_add(engine)?
+        .checked_add(attempts)?
+        .checked_add(calls)?
+        .checked_add(turns)?
+        .checked_add(facts)
 }

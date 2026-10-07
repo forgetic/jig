@@ -255,6 +255,7 @@ impl World {
                 | Request::Exhausted { .. }
                 | Request::Inbound { .. }
                 | Request::Relayed { .. }
+                | Request::NotStarted { .. }
                 | Request::Lost { .. }
                 | Request::Withdrawn { .. }
                 | Request::Refused { .. }
@@ -297,7 +298,14 @@ impl World {
     }
 
     fn adopt(&mut self) {
-        self.step(Event::Adopt { reply_to: ReplyTo::new(ATTEMPT), run: RUN, attempt: ATTEMPT, kept: self.kept });
+        self.step(Event::Adopt {
+            reply_to: ReplyTo::new(ATTEMPT),
+            run: RUN,
+            attempt: ATTEMPT,
+            kept: self.kept,
+            kind: fleet::HostKind::Worker,
+            worked: self.kept > 0,
+        });
         self.step(Event::Loaded);
         self.loaded = true;
     }

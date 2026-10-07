@@ -348,7 +348,20 @@ impl Request {
             Request::Reply { agent, call, reply } => Ok(ToAgent::Answer { agent, call, reply }),
             Request::Grant { agent, grant } => Ok(ToAgent::Grant { agent, grant }),
             Request::Stop { agent } => Ok(ToAgent::Cancel { agent }),
-            other => Err(other),
+            other @ (Request::RelayV2 { .. }
+            | Request::AnswerV2 { .. }
+            | Request::Turn { .. }
+            | Request::DeliverV2 { .. }
+            | Request::Answer { .. }
+            | Request::Relay { .. }
+            | Request::CancelRelay { .. }
+            | Request::Bounced { .. }
+            | Request::Hosting { .. }
+            | Request::Prepare { .. }
+            | Request::Abort { .. }
+            | Request::DeliverWorkspace { .. }
+            | Request::Save { .. }
+            | Request::Release { .. }) => Err(other),
         }
     }
 }

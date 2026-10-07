@@ -1,5 +1,5 @@
 use jig_core_people::{RequestKey, Role};
-use jig_people_world::referee::{People, Seen};
+use jig_people_world::referee::{People, RouteKind, Seen};
 use skein_lib::Time;
 use skein_world::domain::{Referee, Verdict};
 
@@ -23,7 +23,22 @@ fn rejects_a_repeated_reply() {
 
 #[test]
 fn rejects_an_observer_routed() {
-    fails(&[Seen::Routed { role: Role::Observer }]);
+    fails(&[Seen::Routed { role: Role::Observer, kind: RouteKind::Goal, service: false }]);
+}
+
+#[test]
+fn rejects_a_service_chat_or_an_unauthorized_service_creation() {
+    fails(&[Seen::Routed { role: Role::Member, kind: RouteKind::Chat, service: true }]);
+    fails(&[Seen::Routed { role: Role::Member, kind: RouteKind::Service, service: false }]);
+}
+
+#[test]
+fn rejects_a_role_entry_that_does_not_leave_every_inbox() {
+    fails(&[Seen::RoleWaitingOpened { task: 9, both_present: false }]);
+    fails(&[
+        Seen::RoleWaitingOpened { task: 9, both_present: true },
+        Seen::RoleWaitingResolved { task: 9, both_absent: false },
+    ]);
 }
 
 #[test]

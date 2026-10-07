@@ -1,7 +1,7 @@
-use crate::referee::{People, Seen, Stimulus};
+use crate::referee::{People, RouteKind, Seen, Stimulus};
 use jig_core_people::{
-    self as people, Ask, Domain, Event, Holding, Identity, IdentityKey, InitialOwner, Key, Limits, Outcome, Refusal,
-    Reply, Request, RequestKey, Role, Stored,
+    self as people, Ask, Domain, Entry, Event, Holding, Identity, IdentityKey, InitialOwner, Key, Limits, Outcome,
+    ProposalChoice, ProposalDecision, Refusal, Reply, Request, RequestKey, Role, Seed, Stored,
 };
 use skein_lib::{Duration, Env, Queue, ReplyTo, Rng, Time, Token, Wall};
 use skein_world::domain::{Referee, Trace};
@@ -86,6 +86,8 @@ struct Commit {
     number: u64,
     changes: Vec<Change>,
     tasks: Vec<(RequestKey, u64)>,
+    proposals: Vec<((u64, u64), (u64, ProposalChoice))>,
+    cleared_waiting: Vec<u64>,
 }
 
 #[derive(Debug)]
@@ -110,6 +112,7 @@ pub struct World {
     owners: Box<[InitialOwner]>,
     records: BTreeMap<Key, Stored>,
     durable_tasks: BTreeMap<RequestKey, u64>,
+    proposals: BTreeMap<(u64, u64), (u64, ProposalChoice)>,
     commits: VecDeque<Commit>,
     held: VecDeque<Held>,
     calls: BTreeSet<u64>,
@@ -152,6 +155,7 @@ impl World {
             owners,
             records: BTreeMap::new(),
             durable_tasks: BTreeMap::new(),
+            proposals: BTreeMap::new(),
             commits: VecDeque::new(),
             held: VecDeque::new(),
             calls: BTreeSet::new(),
@@ -219,6 +223,23 @@ impl World {
         call
     }
 
+    pub fn signin_service(&mut self, sign_in: u64, person: u64) -> u64 {
+        let (call, reply_to) = self.call();
+        let candidate = self.name();
+        self.send(Event::SignedIn {
+            reply_to,
+            person: candidate,
+            sign_in,
+            identity: Identity {
+                key: IdentityKey { provider: 1, subject: person.to_be_bytes().into() },
+                login: Box::new([]),
+                name: Box::new([]),
+            },
+            kind: people::Kind::Service,
+        });
+        call
+    }
+
     pub fn signout(&mut self, sign_in: u64) -> u64 {
         let (call, reply_to) = self.call();
         self.send(Event::SignOut { reply_to, sign_in });
@@ -229,7 +250,39 @@ impl World {
         self.send(Event::Roles { project, holdings });
     }
 
+    pub fn seed(&mut self, project: u32, collaborators: Box<[Seed]>) {
+        assert!(self.domain.can_seed(&self.env.limits, project, &collaborators));
+        self.send(Event::Seed { project, collaborators });
+    }
+
+    #[must_use]
+    pub fn role_for_identity(&self, identity: IdentityKey, project: u32) -> Option<(u64, Role)> {
+        self.domain.role_for_identity(identity, project)
+    }
+
+    pub fn waiting(&mut self, task: u64, entries: Box<[Entry]>) {
+        self.send(Event::Waiting { task, entries });
+    }
+
+    #[must_use]
+    pub fn inbox(&self, person: u64) -> Box<[Entry]> {
+        self.domain.cached_waiting(&self.env.limits, person).expect("known person")
+    }
+
+    pub fn check_role_waiting(&mut self, task: u64, holders: [u64; 2], open: bool) {
+        let present = holders.map(|person| self.inbox(person).iter().any(|entry| entry.task == task));
+        if open {
+            self.observe(Seen::RoleWaitingOpened { task, both_present: present == [true, true] });
+        } else {
+            self.observe(Seen::RoleWaitingResolved { task, both_absent: present == [false, false] });
+        }
+    }
+
     pub fn ask(&mut self, sign_in: u64, key: [u8; 16], words: &[u8]) -> u64 {
+        self.request(sign_in, key, Ask::StartChat { project: 1, words: words.to_vec().into_boxed_slice() })
+    }
+
+    pub fn request(&mut self, sign_in: u64, key: [u8; 16], ask: Ask) -> u64 {
         let (call, reply_to) = self.call();
         let person = self
             .records
@@ -251,12 +304,7 @@ impl World {
             })
             .unwrap_or(0);
         self.context = Some(RequestKey { person, key });
-        self.send(Event::Ask {
-            reply_to,
-            sign_in,
-            key,
-            ask: Ask::StartChat { project: 1, words: words.to_vec().into_boxed_slice() },
-        });
+        self.send(Event::Ask { reply_to, sign_in, key, ask });
         self.context = None;
         call
     }
@@ -287,9 +335,12 @@ impl World {
         self.send_inner(event, None);
     }
 
+    #[expect(clippy::too_many_lines, reason = "the scripted parent drains one complete people step and its follow-up")]
     fn send_inner(&mut self, event: Event, task: Option<(RequestKey, u64)>) {
         let mut changes = Vec::new();
         let mut tasks = Vec::new();
+        let mut proposals = Vec::new();
+        let mut cleared_waiting = Vec::new();
         if !self.settings.authority_refuses {
             tasks.extend(task);
         }
@@ -304,34 +355,141 @@ impl World {
                 Request::Reply { to, reply } => replies.push((to.into_token().raw(), reply)),
                 Request::Route { request, person, project, role, ask } => {
                     assert_eq!(project, 1);
-                    assert!(matches!(*ask, Ask::StartChat { .. }));
                     let key = self.context.expect("a routed call carries the client's key");
                     assert_eq!(person, key.person);
                     self.stats.routes += 1;
-                    self.observe(Seen::Routed { role: role.expect("chat requires project membership") });
+                    let kind = match ask.as_ref() {
+                        Ask::StartChat { .. } => RouteKind::Chat,
+                        Ask::SetGoal { .. } => RouteKind::Goal,
+                        Ask::MakeService { .. } => RouteKind::Service,
+                        Ask::DecideProposal { .. } => RouteKind::Proposal,
+                        Ask::TakePerson { .. } => RouteKind::TakePerson,
+                        Ask::Watch { .. }
+                        | Ask::EditNote { .. }
+                        | Ask::Adopt { .. }
+                        | Ask::Stop { .. }
+                        | Ask::Cancel { .. }
+                        | Ask::Release { .. }
+                        | Ask::HandBackPerson { .. }
+                        | Ask::AnswerPerson { .. }
+                        | Ask::Move { .. }
+                        | Ask::Say { .. }
+                        | Ask::AnswerQuestion { .. }
+                        | Ask::Prioritise { .. }
+                        | Ask::Amend { .. }
+                        | Ask::SetRoles { .. }
+                        | Ask::ChangePolicy { .. }
+                        | Ask::SetPool { .. }
+                        | Ask::DecideEscalation { .. } => {
+                            panic!("the scripted parent handles only the named people stories")
+                        }
+                    };
+                    let service = match self.records.get(&Key::Person(person)) {
+                        Some(Stored::Person { identity, .. }) => identity.key.provider == 1,
+                        Some(_) | None => false,
+                    };
+                    self.observe(Seen::Routed {
+                        role: role.expect("scripted request requires project membership"),
+                        kind,
+                        service,
+                    });
                     if self.defer_route {
+                        assert_eq!(kind, RouteKind::Chat, "only chats use the deferred script");
                         self.deferred.push((request, key));
                     } else {
-                        let outcome = if self.settings.authority_refuses {
-                            Outcome::Refused(Refusal::Authority)
-                        } else {
-                            let number = self.name();
-                            tasks.push((key, number));
-                            Outcome::Started { task: number }
-                        };
-                        people::step(&mut self.domain, &self.env, Event::Decided { request, outcome }, &mut self.out);
+                        match *ask {
+                            Ask::MakeService { .. } => {
+                                let candidate = self.name();
+                                people::step(
+                                    &mut self.domain,
+                                    &self.env,
+                                    Event::MakeService { request, person: candidate },
+                                    &mut self.out,
+                                );
+                            }
+                            Ask::StartChat { .. } | Ask::SetGoal { .. } => {
+                                let goal = kind == RouteKind::Goal;
+                                let outcome = if self.settings.authority_refuses {
+                                    Outcome::Refused(Refusal::Authority)
+                                } else {
+                                    let number = self.name();
+                                    tasks.push((key, number));
+                                    if goal {
+                                        Outcome::GoalStarted { task: number }
+                                    } else {
+                                        Outcome::Started { task: number }
+                                    }
+                                };
+                                people::step(
+                                    &mut self.domain,
+                                    &self.env,
+                                    Event::Decided { request, outcome },
+                                    &mut self.out,
+                                );
+                            }
+                            Ask::DecideProposal { proposer, proposal, decision, .. } => {
+                                let name = (proposer, proposal);
+                                let (by, choice) = if let Some(&winner) = self.proposals.get(&name) {
+                                    winner
+                                } else {
+                                    let choice = match decision {
+                                        ProposalDecision::Accept => ProposalChoice::Accepted,
+                                        ProposalDecision::Reject { .. } => ProposalChoice::Rejected,
+                                        ProposalDecision::Pass => ProposalChoice::Passed,
+                                    };
+                                    proposals.push((name, (person, choice)));
+                                    (person, choice)
+                                };
+                                let outcome = Outcome::ProposalDecided { proposer, proposal, by, choice };
+                                people::step(
+                                    &mut self.domain,
+                                    &self.env,
+                                    Event::Decided { request, outcome },
+                                    &mut self.out,
+                                );
+                            }
+                            Ask::TakePerson { task, .. } => {
+                                let outcome = Outcome::PersonTaken { task };
+                                cleared_waiting.push(task);
+                                people::step(
+                                    &mut self.domain,
+                                    &self.env,
+                                    Event::Decided { request, outcome },
+                                    &mut self.out,
+                                );
+                            }
+                            Ask::Watch { .. }
+                            | Ask::EditNote { .. }
+                            | Ask::Adopt { .. }
+                            | Ask::Stop { .. }
+                            | Ask::Cancel { .. }
+                            | Ask::Release { .. }
+                            | Ask::HandBackPerson { .. }
+                            | Ask::AnswerPerson { .. }
+                            | Ask::Move { .. }
+                            | Ask::Say { .. }
+                            | Ask::AnswerQuestion { .. }
+                            | Ask::Prioritise { .. }
+                            | Ask::Amend { .. }
+                            | Ask::SetRoles { .. }
+                            | Ask::ChangePolicy { .. }
+                            | Ask::SetPool { .. }
+                            | Ask::DecideEscalation { .. } => unreachable!("scripted route kind was checked"),
+                        }
                     }
                 }
                 Request::RolesApplied { .. } | Request::RolesRefused { .. } => {
                     self.ending("busy");
                 }
-                Request::ServiceMade { .. } => unreachable!("the scripted parent routes chats only"),
+                Request::ServiceMade { request, outcome } => {
+                    people::step(&mut self.domain, &self.env, Event::Decided { request, outcome }, &mut self.out);
+                }
                 Request::RestoreRefused { .. } => panic!("valid world records must restore"),
             }
         }
-        if !changes.is_empty() || !tasks.is_empty() {
+        if !changes.is_empty() || !tasks.is_empty() || !proposals.is_empty() || !cleared_waiting.is_empty() {
             self.issued += 1;
-            self.commits.push_back(Commit { number: self.issued, changes, tasks });
+            self.commits.push_back(Commit { number: self.issued, changes, tasks, proposals, cleared_waiting });
         }
         for (call, reply) in replies {
             self.held.push_back(Held { commit: self.issued, call, reply });
@@ -361,6 +519,12 @@ impl World {
                 assert!(self.durable_tasks.insert(key, task).is_none(), "same key cannot make another task");
                 self.stats.tasks += 1;
                 self.observe(Seen::Created { key });
+            }
+            for (name, winner) in commit.proposals {
+                assert!(self.proposals.insert(name, winner).is_none(), "first proposal decision wins");
+            }
+            for task in commit.cleared_waiting {
+                self.waiting(task, Box::new([]));
             }
             self.release();
         }

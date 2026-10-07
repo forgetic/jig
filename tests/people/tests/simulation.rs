@@ -1,4 +1,7 @@
-use jig_core_people::{Holding, IdentityKey, InitialOwner, Outcome, Refusal, Reply, Role};
+use jig_core_people::{
+    Ask, Entry, EntryKind, Holding, IdentityKey, InitialOwner, Outcome, ProposalChoice, ProposalDecision, Refusal,
+    Reply, Role, Seed, Whom,
+};
 use jig_people_world::{Settings, World};
 use skein_lib::Duration;
 use skein_world::domain::assert_replays;
@@ -54,7 +57,7 @@ fn a_commit_failed_or_lost_releases_no_reply_and_the_retry_makes_one_task() {
 }
 
 #[test]
-fn a_durable_decision_with_its_reply_lost_is_replayed_after_restart() {
+fn a_request_sent_twice_is_made_once_across_a_restart() {
     let mut world = World::new(Settings::calm(6));
     member(&mut world);
     world.hold_replies(true);
@@ -70,6 +73,160 @@ fn a_durable_decision_with_its_reply_lost_is_replayed_after_restart() {
     assert!(world.reply(retry).is_some());
     assert_eq!(world.stats().routes, routes);
     assert_eq!(world.tasks(), 1);
+    world.assert_settled();
+}
+
+#[test]
+fn an_observer_is_refused_a_request_and_told_why() {
+    let mut world = World::new(Settings::calm(13));
+    let call = world.signin(10, 1);
+    world.commit_all();
+    let Reply::SignedIn { person, .. } = world.reply(call).expect("person signed in") else { panic!("signed in") };
+    world.roles(1, Box::new([Holding { person, role: Role::Observer }]));
+    world.commit_all();
+    let before = world.stats().routes;
+    let call = world.request(
+        10,
+        [3; 16],
+        Ask::SetGoal { project: 1, spec: b"goal".to_vec().into_boxed_slice(), charter: 1, budget: 1, priority: 1 },
+    );
+    assert!(world.reply(call).is_none(), "refusal waits for its answer commit");
+    world.commit_all();
+    assert_eq!(world.reply(call), Some(Reply::Outcome(Outcome::Refused(Refusal::Role))));
+    assert_eq!(world.stats().routes, before);
+    world.assert_settled();
+}
+
+#[test]
+fn a_service_sets_a_goal_its_role_allows_and_is_refused_a_chat() {
+    let owners = Box::new([InitialOwner {
+        project: 1,
+        identity: IdentityKey { provider: 0, subject: 1_u64.to_be_bytes().into() },
+    }]);
+    let mut world = World::with_owners(Settings::calm(14), owners);
+    world.roles(1, Box::new([]));
+    world.commit_all();
+    let owner = world.signin(10, 1);
+    world.commit_all();
+    assert!(matches!(world.reply(owner), Some(Reply::SignedIn { .. })));
+    let made = world.request(
+        10,
+        [1; 16],
+        Ask::MakeService { project: 1, name: b"build".to_vec().into_boxed_slice(), role: Role::Member },
+    );
+    world.commit_all();
+    let Some(Reply::Outcome(Outcome::ServiceMade { person })) = world.reply(made) else { panic!("service made") };
+    let signed_in = world.signin_service(11, person);
+    world.commit_all();
+    assert!(matches!(world.reply(signed_in), Some(Reply::SignedIn { person: found, .. }) if found == person));
+    let goal = world.request(
+        11,
+        [2; 16],
+        Ask::SetGoal { project: 1, spec: b"goal".to_vec().into_boxed_slice(), charter: 1, budget: 1, priority: 1 },
+    );
+    world.commit_all();
+    assert!(matches!(world.reply(goal), Some(Reply::Outcome(Outcome::GoalStarted { .. }))));
+    let routes = world.stats().routes;
+    let chat = world.ask(11, [3; 16], b"hello");
+    world.commit_all();
+    assert_eq!(world.reply(chat), Some(Reply::Outcome(Outcome::Refused(Refusal::Role))));
+    assert_eq!(world.stats().routes, routes);
+    assert_eq!(world.tasks(), 1);
+    world.assert_settled();
+}
+
+#[test]
+fn two_maintainers_decide_one_proposal_and_the_second_is_told() {
+    let mut world = World::new(Settings::calm(15));
+    let first = world.signin(10, 1);
+    let second = world.signin(11, 2);
+    world.commit_all();
+    let Some(Reply::SignedIn { person: first_person, .. }) = world.reply(first) else { panic!("first signed in") };
+    let Some(Reply::SignedIn { person: second_person, .. }) = world.reply(second) else { panic!("second signed in") };
+    world.roles(
+        1,
+        Box::new([
+            Holding { person: first_person, role: Role::Maintainer },
+            Holding { person: second_person, role: Role::Maintainer },
+        ]),
+    );
+    world.commit_all();
+    let first = world.request(
+        10,
+        [1; 16],
+        Ask::DecideProposal { project: 1, proposer: 7, proposal: 8, decision: ProposalDecision::Accept },
+    );
+    world.commit_all();
+    let expected = Some(Reply::Outcome(Outcome::ProposalDecided {
+        proposer: 7,
+        proposal: 8,
+        by: first_person,
+        choice: ProposalChoice::Accepted,
+    }));
+    assert_eq!(world.reply(first), expected);
+    let second = world.request(
+        11,
+        [2; 16],
+        Ask::DecideProposal {
+            project: 1,
+            proposer: 7,
+            proposal: 8,
+            decision: ProposalDecision::Reject { reason: b"no".to_vec().into_boxed_slice() },
+        },
+    );
+    world.commit_all();
+    assert_eq!(world.reply(second), expected);
+    world.assert_settled();
+}
+
+#[test]
+fn roles_are_seeded_from_an_adopted_resources_parties() {
+    let mut world = World::new(Settings::calm(16));
+    world.roles(1, Box::new([]));
+    world.commit_all();
+    let identity = IdentityKey { provider: 0, subject: 77_u64.to_be_bytes().into() };
+    world.seed(1, Box::new([Seed { identity: identity.clone(), candidate: 42, role: Role::Maintainer }]));
+    world.commit_all();
+    assert_eq!(world.role_for_identity(identity.clone(), 1), Some((42, Role::Maintainer)));
+    let call = world.signin(10, 77);
+    world.commit_all();
+    assert!(matches!(world.reply(call), Some(Reply::SignedIn { person: 42, .. })));
+    assert_eq!(world.role_for_identity(identity, 1), Some((42, Role::Maintainer)));
+    world.assert_settled();
+}
+
+#[test]
+fn a_role_task_leaves_every_inbox_after_one_holder_takes_it() {
+    let mut world = World::new(Settings::calm(17));
+    let first = world.signin(10, 1);
+    let second = world.signin(11, 2);
+    world.commit_all();
+    let Some(Reply::SignedIn { person: first_person, .. }) = world.reply(first) else { panic!("first signed in") };
+    let Some(Reply::SignedIn { person: second_person, .. }) = world.reply(second) else { panic!("second signed in") };
+    world.roles(
+        1,
+        Box::new([
+            Holding { person: first_person, role: Role::Maintainer },
+            Holding { person: second_person, role: Role::Maintainer },
+        ]),
+    );
+    world.commit_all();
+    let task = 99;
+    world.waiting(
+        task,
+        Box::new([Entry {
+            task,
+            project: 1,
+            whom: Whom::Role { project: 1, role: 1 },
+            kind: EntryKind::PersonTask,
+            at: skein_lib::Wall::EPOCH,
+        }]),
+    );
+    world.check_role_waiting(task, [first_person, second_person], true);
+    let call = world.request(10, [3; 16], Ask::TakePerson { project: 1, task });
+    world.commit_all();
+    assert_eq!(world.reply(call), Some(Reply::Outcome(Outcome::PersonTaken { task })));
+    world.check_role_waiting(task, [first_person, second_person], false);
     world.assert_settled();
 }
 

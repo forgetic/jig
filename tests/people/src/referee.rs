@@ -5,10 +5,21 @@ use skein_world::domain::{Expectations, Judge};
 use std::collections::BTreeSet;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RouteKind {
+    Chat,
+    Goal,
+    Service,
+    Proposal,
+    TakePerson,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Seen {
     Called { call: u64 },
     Abandoned { call: u64 },
-    Routed { role: Role },
+    Routed { role: Role, kind: RouteKind, service: bool },
+    RoleWaitingOpened { task: u64, both_present: bool },
+    RoleWaitingResolved { task: u64, both_absent: bool },
     Durable { commit: u64 },
     Created { key: RequestKey },
     Replied { call: u64, after: u64 },
@@ -29,6 +40,7 @@ pub struct People {
     durable: u64,
     replied: BTreeSet<u64>,
     created: BTreeSet<RequestKey>,
+    role_waiting: BTreeSet<u64>,
 }
 
 impl Expectations for People {
@@ -44,9 +56,26 @@ impl Expectations for People {
             Seen::Abandoned { call } => {
                 judge.meet(&Name::Reply(call));
             }
-            Seen::Routed { role } => {
-                if role == Role::Observer {
+            Seen::Routed { role, kind, service } => match kind {
+                RouteKind::Chat if service || role == Role::Observer => judge.fail("chat beyond party role or kind"),
+                RouteKind::Goal | RouteKind::Proposal | RouteKind::TakePerson if role == Role::Observer => {
                     judge.fail("observer request routed");
+                }
+                RouteKind::Service if role != Role::Owner => judge.fail("service creation beyond owner role"),
+                RouteKind::Chat
+                | RouteKind::Goal
+                | RouteKind::Service
+                | RouteKind::Proposal
+                | RouteKind::TakePerson => {}
+            },
+            Seen::RoleWaitingOpened { task, both_present } => {
+                if !both_present || !self.role_waiting.insert(task) {
+                    judge.fail("role request was not in every holder inbox");
+                }
+            }
+            Seen::RoleWaitingResolved { task, both_absent } => {
+                if !both_absent || !self.role_waiting.remove(&task) {
+                    judge.fail("acted role request remained in a holder inbox");
                 }
             }
             Seen::Durable { commit } => self.durable = commit,

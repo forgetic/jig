@@ -183,7 +183,9 @@ waiting ──► active ──► closing ──► done, failed or cancelled
   cancelled, and it is settling before it ends. In order:
   1. its run, if one is live, has ended: cancelled, and its answer
      heard;
-  2. its delegates have closed and ended, deepest first;
+  2. its delegates have closed and ended, deepest first, the follow-ups
+     its result made among them, and the proposal its result made, if
+     any, has been decided (5.6);
   3. every effect it asked for that went out has settled, made or
      failed, and those not sent are withdrawn if it was cancelled
      (connectors.md, 4.2);
@@ -288,8 +290,16 @@ which may amend, cancel or re-address it.
   reason given to the next run.
 - **What a result may carry** beyond its words: effects, through the
   tools that ask for them; follow-up tasks its verdict's contract allows,
-  as one batch. Follow-ups beyond the task's authority become one
-  proposal, made as the result commits; the result stands.
+  as one batch of the task's own delegates, made in the commit that takes
+  the result. Follow-ups beyond the task's authority become one
+  proposal, made as the result commits; the result stands either way.
+- **Follow-ups are waited for.** The task, closing, waits for its
+  follow-ups as for any delegate (5.1), and for the proposal its result
+  made to be decided: accepted, its tasks are delegates like the others;
+  rejected, there is nothing more to wait for. Closing does not withdraw
+  that proposal (section 9); cancelling the task does. So its requester
+  hears its result, and its dependents start, once what the result asked
+  for has been done or refused.
 - **A task ends after its delegates.** An executor that finishes while
   delegates of its task are live is refused, naming them, unless its
   finish asks for them to be cancelled, so a task that depends on another
@@ -566,7 +576,9 @@ action needs, and what an acceptance funds.
   for the parties the policy names.
 - **Withdrawn** when the proposer withdraws it, closes, or when the state
   it was made against has changed so that it no longer applies (a batch
-  naming a task since ended); an escalation ends with its hold.
+  naming a task since ended); an escalation ends with its hold. The
+  proposal a task's result made is the exception: its closing waits for
+  it to be decided (5.6), and only a cancel of the task withdraws it.
 
 ## 10. Core procedures
 
@@ -626,7 +638,10 @@ a pool, the second waiting and taking it as the first closes; two tasks
 each wanting two holds the other wants, neither waiting in a circle; a
 pool shrinking while its slots are held and a task waits, admitting
 nobody until it drains; a standing task making delegates across many
-periods, its allotment renewed each time.
+periods, its allotment renewed each time; a verdict whose follow-ups
+go beyond its task's authority, their proposal accepted and the
+follow-ups run before the result reaches the requester, and another
+whose proposal is rejected, its result delivered at once.
 
 Its referee: a task starts only after its dependencies are done and its
 holds taken; batches are made whole or not at all; one run at most per

@@ -7,7 +7,7 @@ use crate::{
     TaskRecord, Was,
 };
 use alloc::boxed::Box;
-use skein_lib::{Env, Queue};
+use skein_lib::{Env, List, Queue};
 
 /// Key for one connector-defined resource kind.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -476,9 +476,79 @@ pub(crate) fn release(domain: &mut Domain, number: u64) {
     domain.hold_alarms.cancel(number);
 }
 
+/// A connector's failed-resource cleanup can leave its resource for the tree root.
+/// Transfer ownership before the failed task ends, so admission still sees a holder.
+pub(crate) fn retained(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    task: u64,
+    root: u64,
+    holding: &Holding,
+    out: &mut Queue<Request>,
+) {
+    if !domain.ready() || task == root || !valid_name(&env.limits, name(holding)) {
+        return;
+    }
+    let Some(child) = record(domain, task) else { return };
+    if child.root != root || !child.holds_taken {
+        return;
+    }
+    let closing = match &child.phase {
+        Phase::Closing(closing) | Phase::Held { was: Was::Closing(closing), .. } => closing,
+        Phase::Waiting | Phase::Active(_) | Phase::Held { .. } | Phase::Ended(_) => return,
+    };
+    if closing.stage != crate::Stage::Releases {
+        return;
+    }
+    match closing.ending {
+        crate::Ending::Failed { .. } => {}
+        crate::Ending::Done(_) | crate::Ending::Cancelled { .. } => return,
+    }
+    let Some(parent) = record(domain, root) else { return };
+    if parent.root != root || !parent.holds_taken {
+        return;
+    }
+    for held in &parent.holdings {
+        if same(held, holding) {
+            return;
+        }
+    }
+    let capacity = env.limits.tasks.checked_mul(env.limits.holdings).expect("bounded live holds");
+    if parent.holdings.len() >= usize::try_from(capacity).expect("u32 fits usize") {
+        return;
+    }
+    let mut kept = List::with_capacity(capacity);
+    let mut found = false;
+    for held in &child.holdings {
+        if same(held, holding) {
+            found = true;
+        } else {
+            kept.push(held.clone()).expect("child holds bounded");
+        }
+    }
+    if !found {
+        return;
+    }
+    let mut owned = List::with_capacity(capacity);
+    for held in &parent.holdings {
+        owned.push(held.clone()).expect("root holds bounded");
+    }
+    owned.push(holding.clone()).expect("tree holds bounded");
+    task_mut(domain, task).expect("retained child live").record.holdings = kept.into_boxed();
+    task_mut(domain, root).expect("retaining root live").record.holdings = owned.into_boxed();
+    publish(domain, env, task, out);
+    publish(domain, env, root, out);
+    out.push(Request::Taken { task: root, holdings: Box::new([holding.clone()]) });
+}
+
 /// Validate one live row against the configured kinds and prior restored rows.
 pub(crate) fn valid_record(domain: &Domain, limits: &Limits, row: &TaskRecord) -> bool {
-    if row.holdings.len() > usize::try_from(limits.holdings).expect("u32 fits usize") {
+    let bound = if row.root == row.number {
+        limits.tasks.checked_mul(limits.holdings).expect("validated live hold bound")
+    } else {
+        limits.holdings
+    };
+    if row.holdings.len() > usize::try_from(bound).expect("u32 fits usize") {
         return false;
     }
     for (at, holding) in row.holdings.iter().enumerate() {

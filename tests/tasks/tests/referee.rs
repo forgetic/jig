@@ -140,6 +140,42 @@ fn result_before_durable() {
 }
 
 #[test]
+fn resource_referee_rejects_duplicate_holds_partial_holds_pool_overadmission_and_writers() {
+    use jig_core_tasks::{Holding, Name as ResourceName, PoolSlots, Writer, WriterSlot};
+    use jig_tasks_world::{LIMITS, World, task};
+    let resource = ResourceName { connector: 1, path: Box::new([Box::new([1])]) };
+    let holding = Holding::Write { resource: resource.clone(), kind: 1 };
+    let mut world = World::new(500, LIMITS);
+    world.make(Party::Person(1), vec![task(1, &[]), task(2, &[])]);
+    let mut first = world.record(1).clone();
+    first.holdings = Box::new([holding.clone()]);
+    first.holds_taken = true;
+    let mut second = world.record(2).clone();
+    second.holdings = Box::new([holding]);
+    second.holds_taken = true;
+    rejects(vec![Seen::Resources { live: vec![first.clone(), second.clone()], pools: vec![], writers: vec![] }]);
+    second.phase = jig_core_tasks::Phase::Waiting;
+    rejects(vec![Seen::Resources { live: vec![second], pools: vec![], writers: vec![] }]);
+
+    let pool = ResourceName { connector: 1, path: Box::new([Box::new([2])]) };
+    let slot = Holding::Slot { pool: pool.clone(), kind: 2 };
+    first.holdings = Box::new([slot.clone()]);
+    let mut second = world.record(2).clone();
+    second.holdings = Box::new([slot]);
+    second.holds_taken = true;
+    let slots = vec![PoolSlots { number: 1, pool, slots: 1 }];
+    rejects(vec![
+        Seen::Resources { live: vec![first.clone()], pools: slots.clone(), writers: vec![] },
+        Seen::Resources { live: vec![first, second], pools: slots, writers: vec![] },
+    ]);
+
+    let writer =
+        WriterSlot { number: 1, resource: resource.clone(), writer: Writer::Run { task: 1, attempt: 1 }, lost: false };
+    let other = WriterSlot { number: 2, resource, writer: Writer::Effect { entry: 2 }, lost: false };
+    rejects(vec![Seen::Resources { live: vec![], pools: vec![], writers: vec![writer, other] }]);
+}
+
+#[test]
 fn each_initial_invariant_catches_an_independent_violation() {
     dependency_cycle();
     cycle_through_delegate();

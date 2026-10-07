@@ -753,7 +753,7 @@ pub struct TaskRecord {
     /// per dependency end in the same decision. `Restore` checks count/uniqueness/subset before
     /// retention and complete live coverage after all pages.
     pub waiting_on: Box<[u64]>,
-    /// Immutable resources needed before activation.
+    /// Resources currently held or awaited; a connector may pass a failed delegate's hold to its tree root during release.
     pub holdings: Box<[Holding]>,
     /// True only after the whole requested set has been taken.
     pub holds_taken: bool,
@@ -1259,6 +1259,8 @@ pub enum Event {
         /// Closing task whose prior effects have settled.
         task: u64,
     },
+    /// A connector kept one failed task's resource for its tree root until that root closes.
+    Retained { task: u64, root: u64, holding: Holding },
     /// Root notification after cleanup finishes; matching `Releases` stages advance,
     /// including held prior closing, without lifting a hold.
     Settled {

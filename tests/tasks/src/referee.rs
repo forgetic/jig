@@ -1,4 +1,7 @@
-use jig_core_tasks::{Contract, Ending, Last, Limits, Parameter, Party, Phase, Status, TaskRecord, TaskResult, Was};
+use jig_core_tasks::{
+    Contract, Ending, Holding, Last, Limits, Name as ResourceName, Parameter, Party, Phase, PoolSlots, Status,
+    TaskRecord, TaskResult, Was, WriterSlot,
+};
 use skein_lib::Duration;
 use skein_world::domain::{Expectations, Judge};
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,6 +20,7 @@ pub enum Seen {
     Cancelled { task: u64 },
     Limit { live: usize, cap: u32 },
     Stored { live: Vec<TaskRecord>, limits: Box<Limits> },
+    Resources { live: Vec<TaskRecord>, pools: Vec<PoolSlots>, writers: Vec<WriterSlot> },
     Finished,
 }
 
@@ -42,9 +46,68 @@ pub struct Tasks {
     settled: BTreeSet<u64>,
     ended: BTreeMap<u64, Status>,
     cancelled: BTreeSet<u64>,
+    pool_counts: Vec<(ResourceName, usize)>,
 }
 
 impl Tasks {
+    fn resources(
+        &mut self,
+        live: &[TaskRecord],
+        pools: &[PoolSlots],
+        writers: &[WriterSlot],
+        judge: &mut Judge<Name, Stimulus>,
+    ) {
+        for row in live {
+            if row.holds_taken && matches!(row.phase, Phase::Waiting | Phase::Held { was: Was::Waiting, .. }) {
+                judge.fail("task waits while holding a resource");
+            }
+            if !row.holds_taken {
+                continue;
+            }
+            for holding in &row.holdings {
+                if let Holding::Write { resource, .. } = holding {
+                    let holders = live
+                        .iter()
+                        .filter(|other| other.holds_taken)
+                        .flat_map(|other| &other.holdings)
+                        .filter(|other| matches!(other, Holding::Write { resource: name, .. } if name == resource))
+                        .count();
+                    if holders != 1 {
+                        judge.fail("resource has multiple holders");
+                    }
+                }
+            }
+        }
+        let mut counts = Vec::new();
+        for row in live.iter().filter(|row| row.holds_taken) {
+            for holding in &row.holdings {
+                if let Holding::Slot { pool, .. } = holding {
+                    if counts.iter().any(|(name, _)| name == pool) {
+                        continue;
+                    }
+                    let current = live
+                        .iter()
+                        .filter(|other| other.holds_taken)
+                        .flat_map(|other| &other.holdings)
+                        .filter(|other| matches!(other, Holding::Slot { pool: name, .. } if name == pool))
+                        .count();
+                    let before = self.pool_counts.iter().find(|(name, _)| name == pool).map_or(0, |(_, count)| *count);
+                    let slots = pools.iter().find(|row| row.pool == *pool).map_or(0, |row| row.slots);
+                    if current > before && current > usize::try_from(slots).expect("u32 fits usize") {
+                        judge.fail("pool admitted beyond known slots");
+                    }
+                    counts.push((pool.clone(), current));
+                }
+            }
+        }
+        self.pool_counts = counts;
+        for (at, writer) in writers.iter().enumerate() {
+            if writers.iter().skip(at + 1).any(|other| other.resource == writer.resource) {
+                judge.fail("resource has multiple writers");
+            }
+        }
+    }
+
     #[must_use]
     pub fn has_task(&self, task: u64) -> bool {
         self.parents.contains_key(&task)
@@ -228,6 +291,7 @@ impl Expectations for Tasks {
                 }
             }
             Seen::Stored { live, limits } => stored(&live, &limits, judge),
+            Seen::Resources { live, pools, writers } => self.resources(&live, &pools, &writers, judge),
             Seen::Finished => {
                 if self.cancelled.iter().any(|task| !self.ended.contains_key(task)) {
                     judge.fail("cancelled task did not end");

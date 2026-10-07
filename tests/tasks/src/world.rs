@@ -377,6 +377,7 @@ impl World {
             | Event::PreparationFailed { .. }
             | Event::Hold { .. }
             | Event::EffectsSettled { .. }
+            | Event::Retained { .. }
             | Event::Settled { .. }
             | Event::Restore { .. }
             | Event::Restored
@@ -435,6 +436,7 @@ impl World {
             | Event::PreparationFailed { .. }
             | Event::Hold { .. }
             | Event::EffectsSettled { .. }
+            | Event::Retained { .. }
             | Event::Settled { .. }
             | Event::Restore { .. }
             | Event::Restored
@@ -696,6 +698,22 @@ impl World {
             })
             .collect();
         self.observe(Seen::Stored { live, limits: Box::new(self.env.limits) });
+        let mut live = Vec::new();
+        let mut pools = Vec::new();
+        let mut writers = Vec::new();
+        for record in self.records.values() {
+            match record {
+                Stored::Live(row) => live.push(*row.clone()),
+                Stored::Pool(row) => pools.push(row.clone()),
+                Stored::Writer(row) => writers.push(row.clone()),
+                Stored::Ended(_)
+                | Stored::Stub(_)
+                | Stored::Ledger(_)
+                | Stored::History(_)
+                | Stored::PersonProposal(_) => {}
+            }
+        }
+        self.observe(Seen::Resources { live, pools, writers });
         self.domain.reclaim();
     }
 

@@ -464,6 +464,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::PreparationFailed { task } => crate::run::preparation_failed(domain, env, task, out),
         Event::Hold { task, why } => crate::run::hold(domain, env, task, why, out),
         Event::EffectsSettled { task } => crate::closing::effects_settled(domain, env, task, out),
+        Event::Retained { task, root, holding } => crate::holds::retained(domain, env, task, root, &holding, out),
         Event::Settled { task } => crate::closing::settled(domain, env, task, out),
         Event::Restore { record } => crate::stored::restore(domain, env, record, out),
         Event::Restored => {
@@ -754,7 +755,8 @@ pub(crate) fn make_admitted(
         let creator = record(domain, number).expect("creator admitted");
         let creator_holds = creator.holds_taken;
         let held = creator.holdings.clone();
-        let mut remaining = List::with_capacity(env.limits.holdings);
+        let mut remaining =
+            List::with_capacity(env.limits.tasks.checked_mul(env.limits.holdings).expect("bounded live holds"));
         for holding in &held {
             let mut to = None;
             for new in &batch {

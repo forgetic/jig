@@ -242,3 +242,71 @@ fn a_connector_effect_waits_for_a_run_and_owns_the_writer_until_it_settles() {
     world.send(Event::EffectSettled { resource: name.clone(), entry: 99 });
     assert!(!world.records.values().any(|row| matches!(row, Stored::Writer(slot) if slot.resource == name)));
 }
+
+#[test]
+fn a_failed_child_keeps_its_resource_held_until_its_tree_root_closes() {
+    let mut world = configured(311);
+    assert_eq!(world.make(Party::Person(1), vec![task(1, &[])]), Reply::Made(vec![1]));
+    let held = resource(7);
+    let mut child = task(2, &[]);
+    child.holdings = Box::new([held.clone()]);
+    assert_eq!(world.make(Party::Task(1), vec![child]), Reply::Made(vec![2]));
+    let mut waiter = task(3, &[]);
+    waiter.holdings = Box::new([held.clone()]);
+    assert_eq!(world.make(Party::Person(1), vec![waiter]), Reply::Made(vec![3]));
+    assert!(!world.record(3).holds_taken);
+
+    world.claim(2, 1);
+    assert_eq!(
+        world.terminal(
+            2,
+            End::Finished {
+                result: jig_core_tasks::TaskResult::Failure { reason: Box::new([1]) },
+                cancel_delegates: false
+            }
+        ),
+        Reply::Acknowledged(jig_core_tasks::Accepted::New)
+    );
+    world.settle_effects(2);
+    world.send(Event::Retained { task: 2, root: 1, holding: held.clone() });
+    assert!(world.record(1).holdings.contains(&held));
+    assert!(world.record(2).holdings.is_empty());
+    world.release(2);
+    assert!(!world.record(3).holds_taken);
+    world.restart();
+    assert!(world.record(1).holdings.contains(&held));
+    assert!(!world.record(3).holds_taken);
+
+    world.claim(1, 2);
+    world.finish(1);
+    world.settle(1);
+    assert!(world.record(3).holds_taken);
+}
+
+#[test]
+fn a_tree_root_can_retain_more_than_one_childs_per_task_hold_limit() {
+    let mut limits = LIMITS;
+    limits.holdings = 1;
+    let mut world = World::new(312, limits);
+    world.configure_holds(1, vec![Kind { connector: 1, kind: 1, hold: HoldKind::Exclusive { taken: Taken::Waits } }]);
+    assert_eq!(world.make(Party::Person(1), vec![task(1, &[])]), Reply::Made(vec![1]));
+    for (task_number, held) in [(2, resource(8)), (3, resource(9))] {
+        let mut child = task(task_number, &[]);
+        child.holdings = Box::new([held.clone()]);
+        assert_eq!(world.make(Party::Task(1), vec![child]), Reply::Made(vec![task_number]));
+        world.claim(task_number, task_number);
+        world.terminal(
+            task_number,
+            End::Finished {
+                result: jig_core_tasks::TaskResult::Failure { reason: Box::new([1]) },
+                cancel_delegates: false,
+            },
+        );
+        world.settle_effects(task_number);
+        world.send(Event::Retained { task: task_number, root: 1, holding: held });
+        world.release(task_number);
+    }
+    assert_eq!(world.record(1).holdings.len(), 2);
+    world.restart();
+    assert_eq!(world.record(1).holdings.len(), 2);
+}

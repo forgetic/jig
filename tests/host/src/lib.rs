@@ -32,6 +32,7 @@
 //! read credit, answer order, and best-effort agent facts (hosts.md, 11).
 
 pub mod engine;
+pub mod inline_world;
 pub mod parent;
 pub mod turn_world;
 mod world;

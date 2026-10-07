@@ -9,7 +9,16 @@ publish.workspace = true
 [dependencies]
 skein-lib.workspace = true
 jig-host.workspace = true
+jig-inline-agent.workspace = true
+jig-charter.workspace = true
 skein-world.workspace = true
+skein-fake-llm-domain.workspace = true
+smith-domain.workspace = true
+smith-host-domain.workspace = true
+smith-protocol-channel.workspace = true
+smith-charter.workspace = true
+smith-transcript.workspace = true
+smith-agent-world.workspace = true
 
 # Ordinary Rust (programming-model.md, 10.2), so not the step crates' lints.
 # tests/clippy.toml bans what would make a run unrepeatable.

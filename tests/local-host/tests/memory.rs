@@ -20,10 +20,13 @@ fn assignment(task: u64) -> Assignment {
             tools: Box::new([]),
             wait: true,
             agents: false,
+            workspace: host::WorkspaceTools { inspect: false, modify: false, shell: false },
+            conventions: None,
             contract: Contract {
                 report: Some(TextRule { max: 128, fields: Box::new([]) }),
                 failure: None,
                 verdicts: Box::new([]),
+                change: None,
             },
             budget: Budget { turns: 4, spend: 1, time: Duration::from_secs(60) },
             model: Model {

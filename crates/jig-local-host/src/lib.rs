@@ -22,7 +22,7 @@ mod tests;
 
 pub use boundary::{
     Assignment, Budget, Charter, Completion, Contract, Event, FieldRule, Grant, ItemRule, Items, MessageRefusal, Model,
-    Prices, Refusal, Request, Section, TextRule, Tool, ToolEffect, VerdictRule,
+    Prices, Refusal, Request, Section, TextRule, Tool, ToolEffect, VerdictRule, WorkspaceTools,
 };
 pub use domain::{Host, fire, max_out, next_deadline, reclaim, resume, step};
 pub use limits::{Limits, worst_case};

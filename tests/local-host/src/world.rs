@@ -160,10 +160,13 @@ impl World {
                 tools,
                 wait: true,
                 agents: false,
+                workspace: host::WorkspaceTools { inspect: false, modify: false, shell: false },
+                conventions: None,
                 contract: host::Contract {
                     report: Some(host::TextRule { max: 128, fields: Box::new([]) }),
                     failure: None,
                     verdicts: Box::new([]),
+                    change: None,
                 },
                 budget,
                 model: host::Model {

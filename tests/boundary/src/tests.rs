@@ -171,15 +171,34 @@ fn core_and_children_use_only_the_kit_and_foundation_even_when_empty() {
 }
 
 #[test]
-fn hosts_use_no_core_crates_even_when_empty() {
+fn hosts_and_translation_use_no_core_crates_even_when_empty() {
     let failures: Vec<_> = manifests()
         .into_iter()
-        .filter(|manifest| manifest.name == "jig-local-host" || manifest.name == "jig-host")
+        .filter(|manifest| {
+            matches!(manifest.name.as_str(), "jig-local-host" | "jig-host" | "jig-inline-agent" | "jig-charter")
+        })
         .flat_map(|manifest| {
             manifest
                 .dependencies
                 .iter()
                 .filter(|name| name.starts_with("jig-core"))
+                .map(|name| format!("{}: {name}", manifest.path.display()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn host_hub_links_only_skein() {
+    let failures: Vec<_> = manifests()
+        .into_iter()
+        .filter(|manifest| manifest.name == "jig-host")
+        .flat_map(|manifest| {
+            manifest
+                .dependencies
+                .iter()
+                .filter(|name| name.as_str() != "skein-lib")
                 .map(|name| format!("{}: {name}", manifest.path.display()))
                 .collect::<Vec<_>>()
         })

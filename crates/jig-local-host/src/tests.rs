@@ -29,10 +29,13 @@ fn assignment(task: u64, attempt: u32) -> Assignment {
             tools: Box::new([]),
             wait: true,
             agents: false,
+            workspace: crate::WorkspaceTools { inspect: false, modify: false, shell: false },
+            conventions: None,
             contract: Contract {
                 report: Some(TextRule { max: 128, fields: Box::new([]) }),
                 failure: Some(TextRule { max: 128, fields: Box::new([]) }),
                 verdicts: Box::new([]),
+                change: None,
             },
             budget: Budget { turns: 4, spend: 1, time: Duration::from_secs(100) },
             model: Model {

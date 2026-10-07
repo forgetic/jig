@@ -1,0 +1,23 @@
+[package]
+name = "jig-inline-agent"
+description = "Smith domains composed as in-process agent capabilities"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+skein-lib.workspace = true
+smith-domain.workspace = true
+smith-domain-run.workspace = true
+smith-host-domain.workspace = true
+smith-protocol-channel.workspace = true
+smith-charter.workspace = true
+smith-transcript.workspace = true
+
+[dev-dependencies]
+jig-charter.workspace = true
+smith-agent-world.workspace = true
+
+[lints]
+workspace = true

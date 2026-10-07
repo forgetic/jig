@@ -1,0 +1,15 @@
+[package]
+name = "jig-charter"
+description = "Core charter translation into Smith's run vocabulary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+skein-lib.workspace = true
+smith-domain-run.workspace = true
+smith-charter.workspace = true
+
+[lints]
+workspace = true

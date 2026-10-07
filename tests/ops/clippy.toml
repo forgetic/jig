@@ -1,0 +1,11 @@
+# The fake is ordinary deterministic test code, rather than step code.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "ordered maps replay from a seed" },
+    { path = "std::collections::HashSet", reason = "ordered sets replay from a seed" },
+    { path = "std::time::Instant", reason = "the world owns time" },
+    { path = "std::time::SystemTime", reason = "the world owns time" },
+]
+
+disallowed-methods = [
+    { path = "std::thread::spawn", reason = "one replayable world thread" },
+]

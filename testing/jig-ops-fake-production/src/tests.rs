@@ -148,3 +148,28 @@ fn one_key_cannot_create_two_environments_or_restart_two_services() {
     assert_eq!(production.restart(&x, 77), ResultValue::Made);
     assert_eq!(production.restart(&y, 77), ResultValue::Conflict);
 }
+
+#[test]
+fn a_keyed_silence_suppresses_alerts_and_can_be_found_after_its_answer_is_lost() {
+    let mut production = Production::new(0, Backend::Fake);
+    let name = ServiceName::new("production", "checkout");
+    production.add_service(name.clone(), "v1", 2);
+    production.add_alert_rule("checkout-errors", name.clone());
+    production.queue_fault(Fault::LostAnswer);
+    assert_eq!(production.silence("checkout-errors", key(8), 100), ResultValue::Uncertain);
+    assert!(production.find_silence(key(8)));
+    assert_eq!(production.silence("checkout-errors", key(8), 100), ResultValue::Made);
+    assert!(production.inject_incident(&name));
+    assert!(production.alerts().is_empty());
+    assert_eq!(
+        production
+            .observed()
+            .iter()
+            .filter(|effect| matches!(effect, ObservedEffect::Silence { applied: true, .. }))
+            .count(),
+        1
+    );
+    production.advance(101);
+    assert!(production.inject_incident(&name));
+    assert_eq!(production.alerts().len(), 1);
+}

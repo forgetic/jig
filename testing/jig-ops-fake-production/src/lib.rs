@@ -124,6 +124,8 @@ pub struct ServiceFacts {
     pub load_percent: u8,
     /// Current error count.
     pub errors: u32,
+    /// Errors per hundred requests in the latest sample.
+    pub error_rate_percent: u8,
     /// Time of this read.
     pub observed: u64,
     /// Revision changed by either hand.
@@ -163,6 +165,8 @@ pub enum ResultValue {
 /// An effect the production API received, including refused copies.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ObservedEffect {
+    /// Silencing one alert rule by a durable key.
+    Silence { rule: String, key: Key, until: u64, applied: bool },
     /// Restarting a service by operation ID where supported.
     Restart { service: ServiceName, operation: u64, applied: bool },
     /// Changing a service's replica count.
@@ -200,6 +204,8 @@ pub struct Production {
     environments: BTreeMap<EnvironmentName, EnvironmentFacts>,
     created: BTreeMap<Key, EnvironmentName>,
     operations: BTreeMap<u64, ServiceName>,
+    rules: BTreeMap<String, ServiceName>,
+    silences: BTreeMap<Key, (String, u64)>,
     alerts: Vec<Alert>,
     observed: Vec<ObservedEffect>,
     faults: VecDeque<Fault>,
@@ -221,6 +227,8 @@ impl Production {
             environments: BTreeMap::new(),
             created: BTreeMap::new(),
             operations: BTreeMap::new(),
+            rules: BTreeMap::new(),
+            silences: BTreeMap::new(),
             alerts: Vec::new(),
             observed: Vec::new(),
             faults: VecDeque::new(),
@@ -275,6 +283,7 @@ impl Production {
             healthy_replicas: replicas,
             load_percent: noise,
             errors: 0,
+            error_rate_percent: 0,
             observed: self.now,
             revision: 1,
         };
@@ -286,6 +295,37 @@ impl Production {
             samples: vec![Sample { at: self.now, load_percent: noise, errors: 0 }],
         };
         self.services.insert(name, service);
+    }
+
+    /// Attaches an alert rule to one service.
+    pub fn add_alert_rule(&mut self, rule: &str, service: ServiceName) {
+        self.rules.insert(rule.into(), service);
+    }
+
+    /// Finds a prior silence by its durable key, even after its time expires.
+    pub fn find_silence(&mut self, key: Key) -> bool {
+        self.count_call();
+        self.silences.contains_key(&key)
+    }
+
+    /// Silences one rule once by its key.
+    pub fn silence(&mut self, rule: &str, key: Key, until: u64) -> ResultValue {
+        self.count_call();
+        let fault = self.take_fault();
+        if fault == Some(Fault::ApiError) {
+            return ResultValue::Error;
+        }
+        if let Some((prior_rule, prior_until)) = self.silences.get(&key) {
+            let same = prior_rule == rule && *prior_until == until;
+            self.observed.push(ObservedEffect::Silence { rule: rule.into(), key, until, applied: false });
+            return if same { ResultValue::Made } else { ResultValue::Conflict };
+        }
+        if !self.rules.contains_key(rule) {
+            return ResultValue::Missing;
+        }
+        self.silences.insert(key, (rule.into(), until));
+        self.observed.push(ObservedEffect::Silence { rule: rule.into(), key, until, applied: true });
+        Self::after_effect(fault.as_ref())
     }
 
     /// Adds or changes a pool's capacity without evicting existing environments.
@@ -308,12 +348,25 @@ impl Production {
         service.incident = true;
         service.recovery_at = None;
         service.facts.errors = 20;
+        service.facts.error_rate_percent = 20;
         service.facts.healthy_replicas = service.facts.replicas.saturating_sub(1);
         service.facts.load_percent = 95;
         service.facts.revision = service.facts.revision.checked_add(1).expect("revision fits");
         service.logs.push(Log { at: self.now, text: "incident: elevated errors".into() });
         service.samples.push(Sample { at: self.now, load_percent: 95, errors: 20 });
-        self.alerts.push(Alert { number: self.next_alert, service: name.clone(), at: self.now });
+        let mut silenced = false;
+        for (rule, subject) in &self.rules {
+            if subject == name {
+                for (silenced_rule, until) in self.silences.values() {
+                    if silenced_rule == rule && *until >= self.now {
+                        silenced = true;
+                    }
+                }
+            }
+        }
+        if !silenced {
+            self.alerts.push(Alert { number: self.next_alert, service: name.clone(), at: self.now });
+        }
         self.next_alert = self.next_alert.checked_add(1).expect("alert number fits");
         true
     }
@@ -327,6 +380,7 @@ impl Production {
                 service.recovery_at = None;
                 service.facts.healthy_replicas = service.facts.replicas;
                 service.facts.errors = 0;
+                service.facts.error_rate_percent = 0;
                 service.logs.push(Log { at: self.now, text: "recovered".into() });
             }
             service.facts.observed = self.now;

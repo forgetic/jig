@@ -382,7 +382,7 @@ impl Parent {
         let roll = u32::try_from(self.rng.below(1000)).expect("fits");
         let (relays, deliveries, yields) = (self.script.relays, self.script.deliveries, self.script.yields);
         if roll < relays {
-            out.push(self.call(agent, Ask::Relay { body: Box::from(&b"read issue"[..]) }));
+            out.push(self.call(agent, Ask::Relay { body: Box::from(&b"read record"[..]) }));
         } else if roll < relays + deliveries {
             out.push(self.call(agent, Ask::Deliver { message: Box::from(&b"fix: the thing"[..]) }));
         } else if roll < relays + deliveries + yields {

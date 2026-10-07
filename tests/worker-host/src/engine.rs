@@ -350,7 +350,7 @@ impl Engine {
             acts.push(Self::host(event, true));
         }
         let after = self.script.relay.draw(&mut self.rng);
-        let answer = Box::from(&b"the issue's body"[..]);
+        let answer = Box::from(&b"the requested record"[..]);
         acts.push(Act::Host { after, event: Event::Relayed { run, attempt, call, answer }, stale: false });
         acts
     }

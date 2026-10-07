@@ -1,8 +1,8 @@
-use skein_lib::{ReplyTo, Token, Wall};
 use jig_core_tasks::{
     Accepted, End, Event, MessageKind, NoticeState, Party, Refusal, Subscription, SubscriptionKind, WakeRule, Word,
 };
 use jig_tasks_world::{LIMITS, Reply, World, task};
+use skein_lib::{ReplyTo, Token, Wall};
 
 fn say(world: &mut World, number: u64) {
     let reply_to = world.to();

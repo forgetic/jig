@@ -1,8 +1,8 @@
-use skein_lib::ReplyTo;
 use jig_core_tasks::{
     self as tasks, Active, End, Event, Executor, Funder, Party, Phase, ProcedureDecision, TaskResult,
 };
 use jig_tasks_world::{LIMITS, Reply, World, task};
+use skein_lib::ReplyTo;
 
 fn step(world: &mut World, task: u64, step: u64, decision: ProcedureDecision) -> Reply {
     let reply_to = world.to();

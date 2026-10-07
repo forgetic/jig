@@ -1,7 +1,7 @@
 //! Independent conservation from durable task allocations, ended transitions
 //! and admitted priced inputs (domain/tasks.md, 2 and 5).
-use std::collections::BTreeMap;
 use jig_core_tasks::{Funder, Key, Stored, TaskRecord};
+use std::collections::BTreeMap;
 
 #[derive(Default, Debug)]
 pub struct Accounting {

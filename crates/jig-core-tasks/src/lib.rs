@@ -74,8 +74,8 @@ pub use boundary::{
     Accepted, Active, Cause, Closing, Contract, DelegateState, DelegationContext, End, Ending, Event, Executor, Hold,
     Key, MessageKind, New, NewsClass, NoticeState, Parameter, Party, PersonAddress, Phase, Problem, ProcedureDecision,
     QuestionCredit, RecurringOverlap, RecurringState, RecurringTemplate, Refusal, Request, ResultKind, ResultsWake,
-    RunContext, SavedResource, Spec, Stage, Status, Stored, Subscription, SubscriptionKind, TaskRecord, TaskResult, Verdict,
-    WakePolicy, WakeRule, Was, Word,
+    RunContext, SavedResource, Spec, Stage, Status, Stored, Subscription, SubscriptionKind, TaskRecord, TaskResult,
+    Verdict, WakePolicy, WakeRule, Was, Word,
 };
 pub use control::{Amendment, Change, Control, History};
 pub use domain::{Domain, ViewTask, fire, max_out, step, view_phase};

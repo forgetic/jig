@@ -52,8 +52,7 @@ fn batch_is_atomic_and_cycles_and_limits_refuse_at_entrance() {
         (
             {
                 let mut n = task(2, &[]);
-                n.authority.delegation.kinds =
-                    vec![jig_core_tasks::AuthorityExecutor::Role(1); 4].into_boxed_slice();
+                n.authority.delegation.kinds = vec![jig_core_tasks::AuthorityExecutor::Role(1); 4].into_boxed_slice();
                 n
             },
             Refusal::AuthorityShape,
@@ -122,8 +121,7 @@ fn dependency_order_negative_verdict_starts_but_failure_holds() {
     for fail in [false, true] {
         let mut w = World::new(3, LIMITS);
         let mut first = task(1, &[]);
-        first.contract =
-            Contract::Verdict { choices: Box::new([jig_core_tasks::Verdict { code: 0, words: 32 }]) };
+        first.contract = Contract::Verdict { choices: Box::new([jig_core_tasks::Verdict { code: 0, words: 32 }]) };
         w.make(Party::Person(1), vec![first, task(2, &[1])]);
         assert!(!w.activations.contains(&2));
         w.claim(1, 1);
@@ -206,10 +204,7 @@ fn held_running_task_waits_for_terminal_and_retains_its_hold() {
     assert!(w.results.is_empty());
     assert!(matches!(
         w.record(1).phase,
-        Phase::Held {
-            was: Was::Closing(jig_core_tasks::Closing { stage: Stage::Delegates, .. }),
-            why: Hold::Stopped
-        }
+        Phase::Held { was: Was::Closing(jig_core_tasks::Closing { stage: Stage::Delegates, .. }), why: Hold::Stopped }
     ));
 }
 

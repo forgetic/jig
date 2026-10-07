@@ -110,13 +110,17 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(
             u64::from(limits.inbox_messages).checked_mul(u64::try_from(size_of::<crate::QuestionCredit>()).ok()?)?,
         )?
-        .checked_add(u64::from(limits.saved_resources).checked_mul(
-            u64::try_from(size_of::<crate::SavedResource>()).ok()?
-                .checked_add(u64::from(limits.authority_segments).checked_mul(
-                    u64::try_from(size_of::<Box<[u8]>>()).ok()?,
-                )?)?
-                .checked_add(u64::from(limits.authority_bytes))?,
-        )?)?
+        .checked_add(
+            u64::from(limits.saved_resources).checked_mul(
+                u64::try_from(size_of::<crate::SavedResource>())
+                    .ok()?
+                    .checked_add(
+                        u64::from(limits.authority_segments)
+                            .checked_mul(u64::try_from(size_of::<Box<[u8]>>()).ok()?)?,
+                    )?
+                    .checked_add(u64::from(limits.authority_bytes))?,
+            )?,
+        )?
         .checked_add(u64::from(limits.result_bytes).checked_mul(3)?)?
         .checked_add(u64::from(limits.parameters).checked_mul(u64::try_from(size_of::<Parameter>()).ok()?)?)?
         .checked_add(u64::from(limits.inputs).checked_mul(8)?)?

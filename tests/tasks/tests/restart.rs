@@ -1,6 +1,6 @@
-use skein_lib::Wall;
 use jig_core_tasks::{Active, End, Event, Key, Party, Phase, Refusal, Stored, TaskResult};
 use jig_tasks_world::{LIMITS, Reply, World, task};
+use skein_lib::Wall;
 
 #[test]
 fn make_and_claim_have_independent_before_and_after_durable_cuts() {
@@ -90,8 +90,8 @@ fn a_crash_before_finished_decision_resumes_current_attempt() {
 
 #[test]
 fn restore_rejects_corrupt_links_cycles_and_contracts_without_panicking() {
-    use skein_lib::{Env, Queue, Time, Wall};
     use jig_core_tasks::{Domain, Request, max_out, step};
+    use skein_lib::{Env, Queue, Time, Wall};
     let mut source = World::new(25, LIMITS);
     source.make(Party::Person(1), vec![task(1, &[]), task(2, &[])]);
     for corrupt in 0..4 {
@@ -232,8 +232,8 @@ fn dependency_progress_survives_restore_without_loading_historical_ends() {
 
 #[test]
 fn restore_refuses_unrepresentable_eventual_actual_funding_postings() {
-    use skein_lib::Queue;
     use jig_core_tasks::{Cause, Domain, Funder, Request, step};
+    use skein_lib::Queue;
     let mut source = World::new(30, LIMITS);
     source.make(Party::Person(1), vec![task(1, &[])]);
     source.claim(1, 1);
@@ -261,8 +261,8 @@ fn restore_refuses_unrepresentable_eventual_actual_funding_postings() {
 
 #[test]
 fn malformed_unfinished_dependencies_refuse_at_restore_entrance() {
-    use skein_lib::Queue;
     use jig_core_tasks::{Domain, Request, step};
+    use skein_lib::Queue;
     let mut source = World::new(31, LIMITS);
     source.make(Party::Person(1), vec![task(1, &[])]);
     for waiting in [
@@ -284,8 +284,8 @@ fn malformed_unfinished_dependencies_refuse_at_restore_entrance() {
 
 #[test]
 fn restore_refuses_a_missing_unfinished_live_dependency_before_activation() {
-    use skein_lib::Queue;
     use jig_core_tasks::{Domain, Request, step};
+    use skein_lib::Queue;
     let mut source = World::new(32, LIMITS);
     source.make(Party::Person(1), vec![task(1, &[]), task(2, &[1])]);
     for phase in [Phase::Waiting, Phase::Active(Active::Due), Phase::Active(Active::Preparing)] {
@@ -315,8 +315,8 @@ fn restore_refuses_a_missing_unfinished_live_dependency_before_activation() {
 
 #[test]
 fn impossible_settled_live_and_inconsistent_ledger_states_refuse_at_restore_entrance() {
-    use skein_lib::Queue;
     use jig_core_tasks::{Domain, Funder, Request, Stage, step};
+    use skein_lib::Queue;
     let mut source = World::new(33, LIMITS);
     source.open_period(1, 300);
     source.carve_pool(1, 200);
@@ -354,8 +354,8 @@ fn impossible_settled_live_and_inconsistent_ledger_states_refuse_at_restore_entr
 
 #[test]
 fn restore_refuses_task_funding_outside_its_requester_ancestry() {
-    use skein_lib::Queue;
     use jig_core_tasks::{Domain, Funder, Request, step};
+    use skein_lib::Queue;
     let mut source = World::new(34, LIMITS);
     source.make(Party::Person(1), vec![task(1, &[]), task(2, &[])]);
     let mut rows = source.records.values().cloned().collect::<Vec<_>>();
@@ -378,8 +378,8 @@ fn restore_refuses_task_funding_outside_its_requester_ancestry() {
 
 #[test]
 fn unresolved_or_inconsistent_escalation_rows_refuse_before_retention() {
-    use skein_lib::Queue;
     use jig_core_tasks::{Domain, Escalation, EscalationHolder, Hold, Request, Was, step};
+    use skein_lib::Queue;
     let mut source = World::new(36, LIMITS);
     source.make(Party::Person(1), vec![task(1, &[])]);
     for corrupt in 0..6 {
@@ -414,8 +414,8 @@ fn unresolved_or_inconsistent_escalation_rows_refuse_before_retention() {
 
 #[test]
 fn waiting_restore_requests_recheck_once_and_identical_recipient_changes_nothing() {
-    use skein_lib::Queue;
     use jig_core_tasks::{Domain, Escalation, EscalationHolder, Hold, Request, Was, step};
+    use skein_lib::Queue;
     let mut source = World::new(37, LIMITS);
     source.make(Party::Person(1), vec![task(1, &[])]);
     for rejected in [false, true] {

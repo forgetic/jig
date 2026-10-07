@@ -1,9 +1,7 @@
+use jig_core_tasks::{Contract, Ending, Last, Limits, Parameter, Party, Phase, Status, TaskRecord, TaskResult, Was};
 use skein_lib::Duration;
-use std::collections::{BTreeMap, BTreeSet};
-use jig_core_tasks::{
-    Contract, Ending, Last, Limits, Parameter, Party, Phase, Status, TaskRecord, TaskResult, Was,
-};
 use skein_world::domain::{Expectations, Judge};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Seen {

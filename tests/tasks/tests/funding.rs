@@ -1,8 +1,8 @@
-use skein_lib::ReplyTo;
 use jig_core_tasks::{
     self as tasks, Accepted, Cause, End, Event, Funder, Key, Numbers, Party, Refusal, Stored, TaskResult,
 };
 use jig_tasks_world::{LIMITS, Reply, World, task};
+use skein_lib::ReplyTo;
 
 fn send(world: &mut World, build: impl FnOnce(ReplyTo) -> Event) -> Reply {
     let reply_to = world.to();

@@ -1,6 +1,6 @@
-use skein_lib::Time;
 use jig_core_tasks::{Party, Status};
 use jig_tasks_world::referee::{Seen, Tasks};
+use skein_lib::Time;
 use skein_world::domain::{Referee, Verdict};
 
 fn rejects(seen: Vec<Seen>) {
@@ -246,10 +246,7 @@ fn accounting_referee_rejects_expense_reservation_and_settlement_corruption() {
     let before = w.records.clone();
     w.terminal_cause(
         1,
-        End::Finished {
-            result: jig_core_tasks::TaskResult::Report { words: Box::new([1]) },
-            cancel_delegates: false,
-        },
+        End::Finished { result: jig_core_tasks::TaskResult::Report { words: Box::new([1]) }, cancel_delegates: false },
         Cause::Priced { cumulative: 7 },
     );
     for fault in 0..3 {

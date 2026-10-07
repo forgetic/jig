@@ -4,8 +4,8 @@
 //! Priced inputs use combined accounting admission; exact replay is root-owned.
 use crate::domain::{Domain, entrance, fact, publish, record, refused, task_mut};
 use crate::{
-    Accepted, Active, Class, Closing, Contract, End, Ending, Fact, Hold, Limits, Phase, Refusal, Request, Stage,
-    SavedResource, TaskResult, Tries, Was,
+    Accepted, Active, Class, Closing, Contract, End, Ending, Fact, Hold, Limits, Phase, Refusal, Request,
+    SavedResource, Stage, TaskResult, Tries, Was,
 };
 use alloc::boxed::Box;
 use skein_lib::{Env, Queue, ReplyTo};
@@ -30,7 +30,9 @@ pub(crate) fn saved_within(saved: Option<&[SavedResource]>, limits: &Limits) -> 
         if bytes > usize::try_from(limits.authority_bytes).expect("u32 fits usize") {
             return false;
         }
-        if let Some(before) = previous && before >= resource {
+        if let Some(before) = previous
+            && before >= resource
+        {
             return false;
         }
         previous = Some(resource);

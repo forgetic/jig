@@ -167,6 +167,13 @@ fn task_bytes(task: &TaskRecord) -> Option<u64> {
     for word in &task.inbox {
         inbox_bytes = inbox_bytes.checked_add(bytes(word.words.len())?)?;
     }
+    let mut saved_bytes = bytes(size_of_val(&*task.saved))?;
+    for resource in &task.saved {
+        saved_bytes = saved_bytes.checked_add(bytes(size_of_val(&*resource.path))?)?;
+        for segment in &resource.path {
+            saved_bytes = saved_bytes.checked_add(bytes(segment.len())?)?;
+        }
+    }
     bytes(size_of::<TaskRecord>())?
         .checked_add(match &task.recurring {
             Some(state) => {
@@ -204,12 +211,5 @@ fn task_bytes(task: &TaskRecord) -> Option<u64> {
         .checked_add(bytes(size_of_val(&*task.subscriptions))?)?
         .checked_add(bytes(size_of_val(&*task.waiting_on))?)?
         .checked_add(inbox_bytes)?
-        .checked_add(bytes(size_of_val(&*task.saved))?)?
-        .checked_add(task.saved.iter().try_fold(0u64, |total, resource| {
-            let mut held = total.checked_add(bytes(size_of_val(&*resource.path))?)?;
-            for segment in &resource.path {
-                held = held.checked_add(bytes(segment.len())?)?;
-            }
-            Some(held)
-        })?)
+        .checked_add(saved_bytes)
 }

@@ -262,7 +262,10 @@ impl Parent {
     #[expect(clippy::needless_pass_by_value, reason = "the world takes ownership of emitted requests")]
     pub fn take(&mut self, request: Request) -> Vec<Out> {
         match request {
-            jig_worker_host::Request::StartTyped { .. }
+            jig_worker_host::Request::RelayTyped { .. }
+            | jig_worker_host::Request::DeliverTyped { .. }
+            | jig_worker_host::Request::ReplyTyped { .. }
+            | jig_worker_host::Request::StartTyped { .. }
             | jig_worker_host::Request::Turn { .. }
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
@@ -460,7 +463,9 @@ impl Parent {
 
     fn call(&mut self, agent: Token, ask: Ask) -> Out {
         match ask {
-            jig_worker_host::Ask::DeliverV2 { .. } => unreachable!("this script runs version one"),
+            Ask::RelayTyped { .. } | jig_worker_host::Ask::DeliverV2 { .. } => {
+                unreachable!("this script runs version one")
+            }
 
             Ask::Relay { .. } => self.tally.relays += 1,
             Ask::Deliver { .. } => self.tally.deliveries += 1,

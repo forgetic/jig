@@ -3,6 +3,8 @@
 //! after withdrawal or stop until the workspace reports its terminal. A
 //! relay settles after its local cancellation terminal arrives.
 
+use alloc::boxed::Box;
+
 use skein_lib::{Id, Token};
 
 use crate::hosted::Hosted;
@@ -12,6 +14,8 @@ pub(crate) struct Call {
     /// The run that made it.
     pub(crate) hosted: Id<Hosted>,
     pub(crate) state: State,
+    /// The agent's opaque name for a typed call; legacy calls use `state`'s token.
+    pub(crate) typed: Option<Box<[u8]>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

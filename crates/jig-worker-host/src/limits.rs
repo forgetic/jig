@@ -80,7 +80,9 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     let hosted = Slab::<Hosted>::worst_case(limits.slots)?;
     let names = Map::<Token, Id<Hosted>>::worst_case(limits.slots)?;
     let ready = Map::<Id<Hosted>, Reason>::worst_case(limits.slots)?;
-    let calls = Slab::<Call>::worst_case(calls(limits)?)?;
+    let call_count = calls(limits)?;
+    let calls =
+        Slab::<Call>::worst_case(call_count)?.checked_add(u64::from(call_count).checked_mul(limits.event_bytes)?)?;
     let facts = Queue::<Fact>::worst_case(limits.facts)?;
     let told =
         Queue::<Told>::worst_case(limits.told)?.checked_add(u64::from(limits.told).checked_mul(limits.fact_bytes)?)?;

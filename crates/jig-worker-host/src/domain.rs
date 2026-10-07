@@ -117,6 +117,21 @@ impl Domain {
         }
     }
 
+    /// Whether a typed engine answer names this pending delivery and its opaque call name.
+    #[must_use]
+    pub fn is_relayed_typed_for(&self, run: Token, attempt: Token, delivery: Token, call: &[u8]) -> bool {
+        if !self.is_relayed_for(run, attempt, delivery) {
+            return false;
+        }
+        let Some(entry) = self.calls.get(Id::from_token(delivery)) else {
+            return false;
+        };
+        match &entry.typed {
+            Some(name) => name.as_ref() == call,
+            None => false,
+        }
+    }
+
     /// Whether the relayed call `call`, as the host names it, still waits for
     /// the engine's answer: neither answered, withdrawn, nor answered as
     /// unavailable as its run left live.
@@ -214,6 +229,11 @@ impl Domain {
 /// Handles one event, emitting at most [`max_out`] requests.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
+        Event::InboundTyped { run, attempt, name, sender, words } => {
+            hosted::inbound_typed(domain, env, run, attempt, name, sender, words, out);
+        }
+        Event::CalledTyped { owner, call, ask } => hosted::called_typed(domain, env, owner, call, ask, out),
+        Event::WithdrawnTyped { owner, call } => hosted::withdrawn_typed(domain, owner, call, out),
         Event::AssignTyped { reply_to, assignment } => hosted::assign_typed(domain, env, reply_to, assignment, out),
         Event::AssignV2 { reply_to, assignment } => hosted::assign_v2(domain, env, reply_to, assignment, out),
         Event::Turn { owner, turn } => hosted::turned(domain, env, owner, turn, out),

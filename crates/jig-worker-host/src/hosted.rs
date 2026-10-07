@@ -42,7 +42,26 @@ pub(crate) struct Hosted {
 #[derive(Debug)]
 enum Runtime {
     Legacy,
-    V2 { transcript: Option<Box<[u8]>>, typed: Option<TypedStart>, turns: u32, spent: u64 },
+    V2 { transcript: Option<Box<[u8]>>, typed: Option<TypedStart>, typed_mode: bool, turns: u32, spent: u64 },
+}
+
+enum CallName {
+    Legacy(Token),
+    Typed(Box<[u8]>),
+}
+
+fn reply(agent: Token, call: CallName, reply: Reply, out: &mut Queue<Request>) {
+    match call {
+        CallName::Legacy(call) => out.push(Request::Reply { agent, call, reply }),
+        CallName::Typed(call) => out.push(Request::ReplyTyped { agent, call, reply }),
+    }
+}
+
+fn take_name(call: &mut Call, legacy: Token) -> CallName {
+    match call.typed.take() {
+        Some(name) => CallName::Typed(name),
+        None => CallName::Legacy(legacy),
+    }
 }
 
 #[derive(Debug)]
@@ -55,6 +74,7 @@ struct TypedStart {
 pub(crate) struct NamedEvent {
     name: Token,
     event: Box<[u8]>,
+    sender: Option<Box<[u8]>>,
 }
 
 #[derive(Debug)]
@@ -133,7 +153,14 @@ pub(crate) fn assign_v2(
         refuse_v2(reply_to, &assignment, Refusal::Invalid(invalid), out);
         return;
     }
-    assign_runtime(domain, env, reply_to, assignment, Runtime::V2 { transcript, typed: None, turns: 0, spent: 0 }, out);
+    assign_runtime(
+        domain,
+        env,
+        reply_to,
+        assignment,
+        Runtime::V2 { transcript, typed: None, typed_mode: false, turns: 0, spent: 0 },
+        out,
+    );
 }
 
 pub(crate) fn assign_typed(
@@ -155,7 +182,7 @@ pub(crate) fn assign_typed(
         env,
         reply_to,
         assignment,
-        Runtime::V2 { transcript: None, typed: Some(typed), turns: 0, spent: 0 },
+        Runtime::V2 { transcript: None, typed: Some(typed), typed_mode: true, turns: 0, spent: 0 },
         out,
     );
 }
@@ -257,30 +284,63 @@ pub(crate) fn inbound(
     event: Box<[u8]>,
     out: &mut Queue<Request>,
 ) {
+    inbound_named(domain, env, run, attempt, NamedEvent { name, event, sender: None }, out);
+}
+
+#[expect(clippy::too_many_arguments, reason = "one typed message's fields enter through the host boundary")]
+pub(crate) fn inbound_typed(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    run: Token,
+    attempt: Token,
+    name: Token,
+    sender: Box<[u8]>,
+    words: Box<[u8]>,
+    out: &mut Queue<Request>,
+) {
+    inbound_named(domain, env, run, attempt, NamedEvent { name, event: words, sender: Some(sender) }, out);
+}
+
+fn inbound_named(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    run: Token,
+    attempt: Token,
+    message: NamedEvent,
+    out: &mut Queue<Request>,
+) {
     let Some(id) = fenced(&domain.names, &domain.hosted, run, attempt) else {
         return;
     };
-    if len(&event) > env.limits.event_bytes {
-        out.push(Request::Bounced { run, attempt, name, bounce: Bounce::TooLarge });
+    let sender_len = match &message.sender {
+        Some(sender) => len(sender),
+        None => 0,
+    };
+    let fits = match sender_len.checked_add(len(&message.event)) {
+        Some(bytes) => bytes <= env.limits.event_bytes,
+        None => false,
+    };
+    if !fits {
+        out.push(Request::Bounced { run, attempt, name: message.name, bounce: Bounce::TooLarge });
         return;
     }
     let entry = domain.hosted.get_mut(id).expect("a named run is hosted");
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
         State::Preparing { reply_to, charter, snapshot, mut held } => {
-            hold(&mut held, NamedEvent { name, event }, run, attempt, out);
+            hold(&mut held, message, run, attempt, out);
             State::Preparing { reply_to, charter, snapshot, held }
         }
         State::Starting { reply_to, workspace, mut held } => {
-            hold(&mut held, NamedEvent { name, event }, run, attempt, out);
+            hold(&mut held, message, run, attempt, out);
             State::Starting { reply_to, workspace, held }
         }
         State::Active { reply_to, workspace, agent } | State::Waiting { reply_to, workspace, agent } => {
-            out.push(Request::Deliver { agent, name, event });
+            deliver_message(agent, message, out);
             State::Active { reply_to, workspace, agent }
         }
         state @ (State::Cancelling { .. } | State::Unwanted { .. } | State::Stopping { .. } | State::Saving { .. }) => {
-            out.push(Request::Bounced { run, attempt, name, bounce: Bounce::Ending });
+            out.push(Request::Bounced { run, attempt, name: message.name, bounce: Bounce::Ending });
             state
         }
         State::Closed => unreachable!("a closed run has left the names"),
@@ -333,7 +393,8 @@ pub(crate) fn relayed(
     }
     match entry.state {
         call::State::Relayed { agent, call } => {
-            out.push(Request::Reply { agent, call, reply: Reply::Relayed { answer } });
+            let name = take_name(entry, call);
+            reply(agent, name, Reply::Relayed { answer }, out);
         }
         call::State::Settling { .. } => {}
         call::State::Delivering { .. } | call::State::Closed => unreachable!("only a live relay receives an answer"),
@@ -513,7 +574,7 @@ pub(crate) fn started(domain: &mut Domain, env: &Env<Limits>, owner: Token, agen
                 let Some(event) = held.pop() else {
                     break;
                 };
-                out.push(Request::Deliver { agent, name: event.name, event: event.event });
+                deliver_message(agent, event, out);
             }
             State::Active { reply_to, workspace, agent }
         }
@@ -541,6 +602,28 @@ pub(crate) fn called(
     ask: Ask,
     out: &mut Queue<Request>,
 ) {
+    called_named(domain, env, owner, CallName::Legacy(call), ask, out);
+}
+
+pub(crate) fn called_typed(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    owner: Token,
+    call: Box<[u8]>,
+    ask: Ask,
+    out: &mut Queue<Request>,
+) {
+    called_named(domain, env, owner, CallName::Typed(call), ask, out);
+}
+
+fn called_named(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    owner: Token,
+    call: CallName,
+    ask: Ask,
+    out: &mut Queue<Request>,
+) {
     let Domain { hosted, calls, .. } = domain;
     let id = Id::<Hosted>::from_token(owner);
     let entry = hosted.get_mut(id).expect("a run lives until its agent has gone");
@@ -553,7 +636,7 @@ pub(crate) fn called(
         }
         // Once a run is cancelled or ending, its calls are not served.
         State::Stopping { reply_to, workspace, agent, ending, gone } => {
-            out.push(Request::Reply { agent, call, reply: Reply::Unavailable });
+            reply(agent, call, Reply::Unavailable, out);
             State::Stopping { reply_to, workspace, agent, ending, gone }
         }
         State::Preparing { .. }
@@ -567,6 +650,14 @@ pub(crate) fn called(
 }
 
 pub(crate) fn withdrawn(domain: &mut Domain, owner: Token, call: Token, out: &mut Queue<Request>) {
+    withdrawn_named(domain, owner, CallName::Legacy(call), out);
+}
+
+pub(crate) fn withdrawn_typed(domain: &mut Domain, owner: Token, call: Box<[u8]>, out: &mut Queue<Request>) {
+    withdrawn_named(domain, owner, CallName::Typed(call), out);
+}
+
+fn withdrawn_named(domain: &mut Domain, owner: Token, call: CallName, out: &mut Queue<Request>) {
     let Domain { hosted, calls, .. } = domain;
     let id = Id::<Hosted>::from_token(owner);
     let entry = hosted.get_mut(id).expect("a run lives until its agent has gone");
@@ -723,6 +814,7 @@ pub(crate) fn delivered(domain: &mut Domain, owner: Token, delivery: Delivery, o
     let call = calls.get_mut(call_id).expect("a delivery call lives until it settles");
     let id = call.hosted;
     let state = mem::replace(&mut call.state, call::State::Closed);
+    let typed = call.typed.take();
     calls.retire(call_id);
     let entry = hosted.get_mut(id).expect("a run lives until its delivery settles");
     assert!(entry.delivery == Some(call_id), "one delivery is in flight");
@@ -732,7 +824,11 @@ pub(crate) fn delivered(domain: &mut Domain, owner: Token, delivery: Delivery, o
     }
     match state {
         call::State::Delivering { agent, call } => {
-            out.push(Request::Reply { agent, call, reply: Reply::Delivered(delivery) });
+            let name = match typed {
+                Some(name) => CallName::Typed(name),
+                None => CallName::Legacy(call),
+            };
+            reply(agent, name, Reply::Delivered(delivery), out);
         }
         call::State::Relayed { .. } | call::State::Settling { .. } | call::State::Closed => {
             unreachable!("only a delivery ends a delivery call")
@@ -961,6 +1057,13 @@ fn hold(held: &mut Queue<NamedEvent>, event: NamedEvent, run: Token, attempt: To
     }
 }
 
+fn deliver_message(agent: Token, message: NamedEvent, out: &mut Queue<Request>) {
+    match message.sender {
+        Some(sender) => out.push(Request::DeliverTyped { agent, name: message.name, sender, words: message.event }),
+        None => out.push(Request::Deliver { agent, name: message.name, event: message.event }),
+    }
+}
+
 /// Return messages accepted during preparation when the run cannot start.
 fn bounce_held(mut held: Queue<NamedEvent>, run: Token, attempt: Token, out: &mut Queue<Request>) {
     for _ in 0..held.len() {
@@ -972,27 +1075,39 @@ fn bounce_held(mut held: Queue<NamedEvent>, run: Token, attempt: Token, out: &mu
 /// Serves the host call `call` of the live run `id`, through its workspace
 /// or the engine, or answers it as busy.
 #[expect(clippy::too_many_arguments, reason = "a cell handler takes the fields it touches")]
+#[expect(clippy::too_many_lines, reason = "the call admission and dispatch table stays in one handler")]
 fn serve(
     entry: &mut Hosted,
     calls: &mut Slab<Call>,
     id: Id<Hosted>,
     workspace: Option<Token>,
     agent: Token,
-    call: Token,
+    call: CallName,
     ask: Ask,
     limits: &Limits,
     out: &mut Queue<Request>,
 ) {
-    if !ask_mode(&entry.runtime, &ask) {
-        out.push(Request::Reply { agent, call, reply: Reply::Unavailable });
+    let name_fits = match &call {
+        CallName::Legacy(_) => true,
+        CallName::Typed(name) => len(name) <= limits.event_bytes,
+    };
+    let input_fits = match &ask {
+        Ask::RelayTyped { tool, writes: _, input, deadline: _ } => match len(tool).checked_add(len(input)) {
+            Some(bytes) => bytes <= limits.event_bytes,
+            None => false,
+        },
+        Ask::Deliver { .. } | Ask::DeliverV2 { .. } | Ask::Relay { .. } => true,
+    };
+    if !name_fits || !input_fits || !ask_mode(&entry.runtime, &ask, &call) {
+        reply(agent, call, Reply::Unavailable, out);
         return;
     }
     let delivery = match &ask {
         Ask::Deliver { .. } | Ask::DeliverV2 { .. } => true,
-        Ask::Relay { .. } => false,
+        Ask::Relay { .. } | Ask::RelayTyped { .. } => false,
     };
     if delivery && workspace.is_none() {
-        out.push(Request::Reply { agent, call, reply: Reply::Unavailable });
+        reply(agent, call, Reply::Unavailable, out);
         return;
     }
     match entry.runtime {
@@ -1006,8 +1121,15 @@ fn serve(
                         unreachable!("the run keeps relay waits only")
                     }
                 };
-                if name == call {
-                    out.push(Request::Reply { agent, call, reply: Reply::Busy });
+                let duplicate = match &call {
+                    CallName::Legacy(call) => pending.typed.is_none() && name == *call,
+                    CallName::Typed(call) => match &pending.typed {
+                        Some(typed) => typed == call,
+                        None => false,
+                    },
+                };
+                if duplicate {
+                    reply(agent, call, Reply::Busy, out);
                     return;
                 }
             }
@@ -1016,14 +1138,26 @@ fn serve(
     let in_flight = entry.relays.len().saturating_add(u32::from(entry.delivery.is_some()));
     // A delivery changes a workspace: one at a time.
     if in_flight >= limits.run_calls || (delivery && entry.delivery.is_some()) {
-        out.push(Request::Reply { agent, call, reply: Reply::Busy });
+        reply(agent, call, Reply::Busy, out);
         return;
     }
-    let state = if delivery { call::State::Delivering { agent, call } } else { call::State::Relayed { agent, call } };
+    let legacy = match &call {
+        CallName::Legacy(call) => *call,
+        CallName::Typed(_) => Token::new(0),
+    };
+    let typed = match &call {
+        CallName::Legacy(_) => None,
+        CallName::Typed(name) => Some(name.clone()),
+    };
+    let state = if delivery {
+        call::State::Delivering { agent, call: legacy }
+    } else {
+        call::State::Relayed { agent, call: legacy }
+    };
     // Calls answered in this iteration keep their slots until the reclaim
     // point: a call may find none free even within its run's limit.
-    let Ok(call_id) = calls.insert(Call { hosted: id, state }) else {
-        out.push(Request::Reply { agent, call, reply: Reply::Busy });
+    let Ok(call_id) = calls.insert(Call { hosted: id, state, typed }) else {
+        reply(agent, call, Reply::Busy, out);
         return;
     };
     match ask {
@@ -1054,11 +1188,29 @@ fn serve(
                 Runtime::V2 { .. } => out.push(Request::RelayV2 {
                     run: entry.run,
                     attempt: entry.attempt,
-                    call,
+                    call: legacy,
                     delivery: call_id.token(),
                     body,
                 }),
             }
+        }
+        Ask::RelayTyped { tool, writes, input, deadline } => {
+            let added = entry.relays.insert(call_id).expect("checked the run's calls for room above");
+            assert!(added, "a call is new to its run");
+            let call = match call {
+                CallName::Typed(call) => call,
+                CallName::Legacy(_) => unreachable!("typed asks carry typed names"),
+            };
+            out.push(Request::RelayTyped {
+                run: entry.run,
+                attempt: entry.attempt,
+                call,
+                delivery: call_id.token(),
+                tool,
+                writes,
+                input,
+                deadline,
+            });
         }
     }
 }
@@ -1066,7 +1218,7 @@ fn serve(
 /// The live run withdrew the call its agent names `call`: a relay in flight is
 /// answered as withdrawn, and closes. A delivery goes on, and is answered once it
 /// settles; a call answered already is not found, and nothing happens.
-fn withdraw(entry: &mut Hosted, calls: &mut Slab<Call>, call: Token, out: &mut Queue<Request>) {
+fn withdraw(entry: &mut Hosted, calls: &mut Slab<Call>, call: CallName, out: &mut Queue<Request>) {
     let mut found = None;
     for call_id in &entry.relays {
         let relayed = calls.get(*call_id).expect("a run's calls live until they close");
@@ -1075,7 +1227,14 @@ fn withdraw(entry: &mut Hosted, calls: &mut Slab<Call>, call: Token, out: &mut Q
             call::State::Settling { .. } => continue,
             call::State::Delivering { .. } | call::State::Closed => unreachable!("a run's relays are relayed calls"),
         };
-        if named == call {
+        let same = match &call {
+            CallName::Legacy(call) => relayed.typed.is_none() && named == *call,
+            CallName::Typed(call) => match &relayed.typed {
+                Some(typed) => typed == call,
+                None => false,
+            },
+        };
+        if same {
             found = Some(*call_id);
         }
     }
@@ -1085,7 +1244,8 @@ fn withdraw(entry: &mut Hosted, calls: &mut Slab<Call>, call: Token, out: &mut Q
     let relayed = calls.get_mut(call_id).expect("found above");
     match relayed.state {
         call::State::Relayed { agent, call } => {
-            out.push(Request::Reply { agent, call, reply: Reply::Withdrawn });
+            let name = take_name(relayed, call);
+            reply(agent, name, Reply::Withdrawn, out);
             relayed.state = call::State::Settling { call };
             out.push(Request::CancelRelay { call: call_id.token() });
         }
@@ -1102,7 +1262,8 @@ fn leave(relays: &Set<Id<Call>>, calls: &mut Slab<Call>, out: &mut Queue<Request
         let entry = calls.get_mut(*call_id).expect("a run's relays live until their terminals");
         match entry.state {
             call::State::Relayed { agent, call } => {
-                out.push(Request::Reply { agent, call, reply: Reply::Unavailable });
+                let name = take_name(entry, call);
+                reply(agent, name, Reply::Unavailable, out);
                 entry.state = call::State::Settling { call };
                 out.push(Request::CancelRelay { call: call_id.token() });
             }
@@ -1114,15 +1275,24 @@ fn leave(relays: &Set<Id<Call>>, calls: &mut Slab<Call>, out: &mut Queue<Request
     }
 }
 
-fn ask_mode(runtime: &Runtime, ask: &Ask) -> bool {
+fn ask_mode(runtime: &Runtime, ask: &Ask, call: &CallName) -> bool {
+    let typed_name = match call {
+        CallName::Legacy(_) => false,
+        CallName::Typed(_) => true,
+    };
     match runtime {
         Runtime::Legacy => match ask {
-            Ask::DeliverV2 { .. } => false,
-            Ask::Deliver { .. } | Ask::Relay { .. } => true,
+            Ask::DeliverV2 { .. } | Ask::RelayTyped { .. } => false,
+            Ask::Deliver { .. } | Ask::Relay { .. } => match call {
+                CallName::Legacy(_) => true,
+                CallName::Typed(_) => false,
+            },
         },
-        Runtime::V2 { .. } => match ask {
+        Runtime::V2 { typed_mode, .. } => match ask {
             Ask::Deliver { .. } => false,
-            Ask::DeliverV2 { .. } | Ask::Relay { .. } => true,
+            Ask::DeliverV2 { .. } => *typed_mode == typed_name,
+            Ask::Relay { .. } => !*typed_mode && !typed_name,
+            Ask::RelayTyped { .. } => *typed_mode && typed_name,
         },
     }
 }

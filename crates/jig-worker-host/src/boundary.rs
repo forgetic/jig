@@ -10,6 +10,25 @@ use skein_lib::{Duration, ReplyTo, Token};
 /// parent -> host
 #[derive(PartialEq, Eq, Debug)]
 pub enum Event {
+    /// A named message with its sender label and words.
+    InboundTyped {
+        run: Token,
+        attempt: Token,
+        name: Token,
+        sender: Box<[u8]>,
+        words: Box<[u8]>,
+    },
+    /// A host or delivery call named in the run's own bytes.
+    CalledTyped {
+        owner: Token,
+        call: Box<[u8]>,
+        ask: Ask,
+    },
+    /// The agent withdrew its typed call after its deadline.
+    WithdrawnTyped {
+        owner: Token,
+        call: Box<[u8]>,
+    },
     /// An assignment with ordered turn bodies and calls settled after them.
     AssignTyped {
         reply_to: ReplyTo,
@@ -172,6 +191,30 @@ pub enum Event {
 /// host -> parent
 #[derive(PartialEq, Eq, Debug)]
 pub enum Request {
+    /// Relay a named host tool call with its effect classification and input.
+    RelayTyped {
+        run: Token,
+        attempt: Token,
+        call: Box<[u8]>,
+        delivery: Token,
+        tool: Box<[u8]>,
+        writes: bool,
+        input: Box<[u8]>,
+        deadline: Duration,
+    },
+    /// Pass a named message to the agent.
+    DeliverTyped {
+        agent: Token,
+        name: Token,
+        sender: Box<[u8]>,
+        words: Box<[u8]>,
+    },
+    /// Answer a call under the agent's opaque name.
+    ReplyTyped {
+        agent: Token,
+        call: Box<[u8]>,
+        reply: Reply,
+    },
     /// Start an agent with its activation and committed conversation state.
     StartTyped {
         owner: Token,
@@ -320,6 +363,19 @@ pub enum Request {
 /// section 6). These requests carry no process or channel vocabulary.
 #[derive(PartialEq, Eq, Debug)]
 pub enum ToAgent {
+    /// Pass a named message with its sender label and words.
+    MessageTyped {
+        agent: Token,
+        name: Token,
+        sender: Box<[u8]>,
+        words: Box<[u8]>,
+    },
+    /// Answer a call under the agent's opaque name.
+    AnswerTyped {
+        agent: Token,
+        call: Box<[u8]>,
+        reply: Reply,
+    },
     /// Start an agent with its activation and committed conversation state.
     StartTyped {
         owner: Token,
@@ -371,17 +427,64 @@ pub enum ToAgent {
 /// the application agent's own vocabulary into these events.
 #[derive(PartialEq, Eq, Debug)]
 pub enum FromAgent {
-    Turn { owner: Token, turn: Turn },
-    Facts { owner: Token, fact: Box<[u8]> },
-    FinishedV2 { owner: Token, turns: u32, spent: u64, finish: FinishV2 },
-    Started { owner: Token, agent: Token },
-    Called { owner: Token, call: Token, ask: Ask },
-    Withdrawn { owner: Token, call: Token },
-    Bounced { owner: Token, name: Token, bounce: Bounce },
-    Yielded { owner: Token },
-    Finished { owner: Token, finish: Finish },
-    Faulted { owner: Token, fault: AgentFailure },
-    Gone { owner: Token, detail: Box<[u8]> },
+    /// A named host or delivery call with typed arguments.
+    CalledTyped {
+        owner: Token,
+        call: Box<[u8]>,
+        ask: Ask,
+    },
+    /// The agent withdrew its named call.
+    WithdrawnTyped {
+        owner: Token,
+        call: Box<[u8]>,
+    },
+    Turn {
+        owner: Token,
+        turn: Turn,
+    },
+    Facts {
+        owner: Token,
+        fact: Box<[u8]>,
+    },
+    FinishedV2 {
+        owner: Token,
+        turns: u32,
+        spent: u64,
+        finish: FinishV2,
+    },
+    Started {
+        owner: Token,
+        agent: Token,
+    },
+    Called {
+        owner: Token,
+        call: Token,
+        ask: Ask,
+    },
+    Withdrawn {
+        owner: Token,
+        call: Token,
+    },
+    Bounced {
+        owner: Token,
+        name: Token,
+        bounce: Bounce,
+    },
+    Yielded {
+        owner: Token,
+    },
+    Finished {
+        owner: Token,
+        finish: Finish,
+    },
+    Faulted {
+        owner: Token,
+        fault: AgentFailure,
+    },
+    Gone {
+        owner: Token,
+        detail: Box<[u8]>,
+    },
 }
 
 impl Event {
@@ -389,6 +492,8 @@ impl Event {
     #[must_use]
     pub fn from_agent(event: FromAgent) -> Event {
         match event {
+            FromAgent::CalledTyped { owner, call, ask } => Event::CalledTyped { owner, call, ask },
+            FromAgent::WithdrawnTyped { owner, call } => Event::WithdrawnTyped { owner, call },
             FromAgent::Turn { owner, turn } => Event::Turn { owner, turn },
             FromAgent::Facts { owner, fact } => Event::Facts { owner, fact },
             FromAgent::FinishedV2 { owner, turns, spent, finish } => Event::FinishedV2 { owner, turns, spent, finish },
@@ -409,6 +514,10 @@ impl Request {
     /// any request addressed to another capability unchanged.
     pub fn to_agent(self) -> Result<ToAgent, Request> {
         match self {
+            Request::DeliverTyped { agent, name, sender, words } => {
+                Ok(ToAgent::MessageTyped { agent, name, sender, words })
+            }
+            Request::ReplyTyped { agent, call, reply } => Ok(ToAgent::AnswerTyped { agent, call, reply }),
             Request::StartTyped { owner, workspace, charter, activation, turns, answered, grants } => {
                 Ok(ToAgent::StartTyped { owner, workspace, charter, activation, turns, answered, grants })
             }
@@ -423,7 +532,8 @@ impl Request {
             Request::Grant { agent, grant } => Ok(ToAgent::Grant { agent, grant }),
             Request::TurnCredit { agent, read } => Ok(ToAgent::ReadCredit { agent, read }),
             Request::Stop { agent } => Ok(ToAgent::Cancel { agent }),
-            other @ (Request::RelayV2 { .. }
+            other @ (Request::RelayTyped { .. }
+            | Request::RelayV2 { .. }
             | Request::AnswerV2 { .. }
             | Request::Turn { .. }
             | Request::DeliverV2 { .. }
@@ -537,6 +647,13 @@ pub struct Workspace {
 /// A host call of a run.
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub enum Ask {
+    /// A host tool call, carrying its charter name, write flag, input and time left.
+    RelayTyped {
+        tool: Box<[u8]>,
+        writes: bool,
+        input: Box<[u8]>,
+        deadline: Duration,
+    },
     DeliverV2 {
         title: Box<[u8]>,
         body: Box<[u8]>,

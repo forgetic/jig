@@ -560,7 +560,10 @@ impl World {
             return Taken::Stale;
         }
         match event {
-            jig_worker_host::Event::AssignTyped { .. }
+            jig_worker_host::Event::InboundTyped { .. }
+            | jig_worker_host::Event::CalledTyped { .. }
+            | jig_worker_host::Event::WithdrawnTyped { .. }
+            | jig_worker_host::Event::AssignTyped { .. }
             | jig_worker_host::Event::AssignV2 { .. }
             | jig_worker_host::Event::Turn { .. }
             | jig_worker_host::Event::FinishedV2 { .. }
@@ -572,7 +575,9 @@ impl World {
             Event::Started { owner, agent } => Taken::Started { owner: *owner, agent: *agent },
             Event::Called { owner, call, ask } => {
                 let delivery = match ask {
-                    jig_worker_host::Ask::DeliverV2 { .. } => unreachable!("this script runs version one"),
+                    jig_worker_host::Ask::DeliverV2 { .. } | host::Ask::RelayTyped { .. } => {
+                        unreachable!("this script runs version one")
+                    }
 
                     host::Ask::Deliver { .. } => true,
                     host::Ask::Relay { .. } => false,
@@ -688,7 +693,10 @@ impl World {
     /// `run`'s attempt `attempt`: a refusal, or a prepare that admits it.
     fn assigned(&mut self, run: Token, attempt: Token, request: &Request) {
         match request {
-            jig_worker_host::Request::StartTyped { .. }
+            jig_worker_host::Request::RelayTyped { .. }
+            | jig_worker_host::Request::DeliverTyped { .. }
+            | jig_worker_host::Request::ReplyTyped { .. }
+            | jig_worker_host::Request::StartTyped { .. }
             | jig_worker_host::Request::Turn { .. }
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
@@ -734,10 +742,14 @@ impl World {
     }
 
     /// Hands the host's `request` to whom it is for, checking it on the way.
+    #[expect(clippy::too_many_lines, reason = "the world routes the full host output vocabulary")]
     fn route(&mut self, request: Request) {
         self.trace.log(self.now, format!("host -> {request:?}"));
         match request {
-            jig_worker_host::Request::StartTyped { .. }
+            jig_worker_host::Request::RelayTyped { .. }
+            | jig_worker_host::Request::DeliverTyped { .. }
+            | jig_worker_host::Request::ReplyTyped { .. }
+            | jig_worker_host::Request::StartTyped { .. }
             | jig_worker_host::Request::Turn { .. }
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }

@@ -9,7 +9,7 @@ use jig_worker_host::{
     self as host, AnswerV2, AnsweredCall, Ask, Assignment, AssignmentTyped, AssignmentV2, Delivery, DeliveryOutcome,
     EndingV2, Event, FinishV2, Limits, Reason, Reply, Request, Turn, Workspace,
 };
-use skein_lib::{Env, Queue, ReplyTo, Time, Token, Wall};
+use skein_lib::{Duration, Env, Queue, ReplyTo, Time, Token, Wall};
 
 const RUN: Token = Token::new(31);
 const ATTEMPT: Token = Token::new(932);
@@ -39,6 +39,22 @@ pub struct StartedState {
     pub answered: Box<[AnsweredCall]>,
 }
 
+/// The call the scripted engine received from the host.
+pub struct RelayedCall {
+    pub name: Box<[u8]>,
+    pub tool: Box<[u8]>,
+    pub writes: bool,
+    pub input: Box<[u8]>,
+    pub deadline: Duration,
+}
+
+/// The message the scripted agent received from the host.
+pub struct ReceivedMessage {
+    pub name: Token,
+    pub sender: Box<[u8]>,
+    pub words: Box<[u8]>,
+}
+
 /// One host and its scripted capabilities and committed engine observations.
 #[expect(clippy::struct_excessive_bools, reason = "independent link, agent, workspace and acknowledgement states")]
 pub struct World {
@@ -63,6 +79,9 @@ pub struct World {
     acked: BTreeSet<u32>,
     stats: Stats,
     typed_start: Option<StartedState>,
+    typed_relay: Option<RelayedCall>,
+    typed_reply: Option<Box<[u8]>>,
+    typed_message: Option<ReceivedMessage>,
 }
 
 impl World {
@@ -99,6 +118,9 @@ impl World {
             acked: BTreeSet::new(),
             stats: Stats::default(),
             typed_start: None,
+            typed_relay: None,
+            typed_reply: None,
+            typed_message: None,
         }
     }
 
@@ -169,6 +191,24 @@ impl World {
         self.typed_start.as_ref()
     }
 
+    /// The typed call the engine saw.
+    #[must_use]
+    pub fn typed_relay(&self) -> Option<&RelayedCall> {
+        self.typed_relay.as_ref()
+    }
+
+    /// The name under which the agent received the call's answer.
+    #[must_use]
+    pub fn typed_reply(&self) -> Option<&[u8]> {
+        self.typed_reply.as_deref()
+    }
+
+    /// The typed message the agent saw.
+    #[must_use]
+    pub fn typed_message(&self) -> Option<&ReceivedMessage> {
+        self.typed_message.as_ref()
+    }
+
     pub fn turn(&mut self, number: u32, body: &[u8]) {
         assert!(self.reading, "the agent waits for host credit");
         self.reading = false;
@@ -193,6 +233,31 @@ impl World {
             owner: self.owner.expect("assigned"),
             call: Token::new(72),
             ask: Ask::Relay { body: Box::from(&b"read"[..]) },
+        });
+    }
+
+    /// The agent calls an engine host tool under its opaque name.
+    pub fn relay_typed(&mut self, writes: bool) {
+        self.send(Event::CalledTyped {
+            owner: self.owner.expect("assigned"),
+            call: Box::from(&b"call-one"[..]),
+            ask: Ask::RelayTyped {
+                tool: Box::from(&b"inspect"[..]),
+                writes,
+                input: Box::from(&b"input words"[..]),
+                deadline: Duration::from_nanos(37),
+            },
+        });
+    }
+
+    /// The engine sends a named message with its label and words.
+    pub fn message_typed(&mut self) {
+        self.send(Event::InboundTyped {
+            run: RUN,
+            attempt: ATTEMPT,
+            name: Token::new(17),
+            sender: Box::from(&b"requester"[..]),
+            words: Box::from(&b"please check"[..]),
         });
     }
 
@@ -322,8 +387,30 @@ impl World {
         assert!(!self.host.is_ready());
     }
 
+    #[expect(clippy::too_many_lines, reason = "the scripted peer routes every host request")]
     fn route(&mut self, request: Request) {
         match request {
+            Request::RelayTyped { run, attempt, call, delivery, tool, writes, input, deadline } => {
+                assert_eq!((run, attempt), (RUN, ATTEMPT));
+                self.typed_relay = Some(RelayedCall { name: call, tool, writes, input, deadline });
+                self.stats.relays += 1;
+                self.events.push_back(Event::Relayed {
+                    run,
+                    attempt,
+                    call: delivery,
+                    answer: Box::from(&b"reply"[..]),
+                });
+            }
+            Request::ReplyTyped { agent, call, reply } => {
+                assert_eq!(agent, AGENT);
+                assert_eq!(reply, Reply::Relayed { answer: Box::from(&b"reply"[..]) });
+                self.typed_reply = Some(call);
+                self.stats.replies += 1;
+            }
+            Request::DeliverTyped { agent, name, sender, words } => {
+                assert_eq!(agent, AGENT);
+                self.typed_message = Some(ReceivedMessage { name, sender, words });
+            }
             Request::StartTyped { owner, workspace, charter, activation, turns, answered, grants } => {
                 self.start_typed(owner, workspace, &charter, activation, turns, answered, &grants);
             }

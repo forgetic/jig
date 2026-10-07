@@ -1,0 +1,13 @@
+# What the worlds, their tests and harnesses under tests/ may not use: they are
+# ordinary Rust, but a seed must replay to the same run.
+
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "iteration order depends on a random seed: BTreeMap" },
+    { path = "std::collections::HashSet", reason = "iteration order depends on a random seed: BTreeSet" },
+    { path = "std::time::Instant", reason = "the world's clock is World::now" },
+    { path = "std::time::SystemTime", reason = "the world's clock is World::now" },
+]
+
+disallowed-methods = [
+    { path = "std::thread::spawn", reason = "one thread, so that a run replays" },
+]

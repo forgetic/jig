@@ -99,7 +99,12 @@ impl Measured {
         let workstreams = (0..limits.workstreams).map(|nth| channel.raw() * 100 + u64::from(nth)).collect();
         self.step(Event::Hello {
             channel,
-            hello: Hello { graces: None, slots: limits.slots, workstreams, hosting: hosting.into() },
+            hello: Hello {
+                stop_bound: Duration::from_secs(0),
+                slots: limits.slots,
+                workstreams,
+                hosting: hosting.into(),
+            },
         })
     }
 

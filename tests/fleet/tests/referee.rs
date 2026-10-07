@@ -2,6 +2,7 @@
 //! would feed them, fails a run that breaks an expectation, and says why; and
 //! passes one that keeps them.
 
+use jig_core_fleet::HostKind;
 use jig_fleet_world::referee::{Down, End, Fleet, Kind, Said, Seen};
 use skein_lib::{Duration, Time};
 use skein_world::domain::{Referee, Verdict};
@@ -26,7 +27,7 @@ fn why(referee: &Referee<Fleet>) -> String {
 const SAID: Said = Said { kind: Kind::Ended, nonce: 7 };
 
 fn assigned(worker: usize, hosting: u32, run: u64, attempt: u64, admitted: bool) -> Seen {
-    Seen::Assigned { worker, slots: 2, hosting, run, attempt, admitted }
+    Seen::Assigned { kind: HostKind::Worker, worker, slots: 2, hosting, run, attempt, admitted }
 }
 
 /// A referee that has seen attempt 11 of run 1 started, and admitted.
@@ -144,4 +145,35 @@ fn an_attempt_that_never_ends_fails_at_its_deadline() {
     assert!(referee.is_due(at(60)));
     referee.fire(at(60), &mut Vec::new());
     assert!(why(&referee).contains("End { run: 1, attempt: 11 } was not met"));
+}
+
+#[test]
+fn every_adoption_must_receive_one_terminal_outcome() {
+    let mut judge = referee();
+    see(&mut judge, 0, Seen::Adopted { run: 1, attempt: 11 });
+    judge.fire(at(60), &mut Vec::new());
+    assert!(why(&judge).contains("AdoptionEnd"));
+
+    let mut ended = referee();
+    see(&mut ended, 0, Seen::Adopted { run: 1, attempt: 11 });
+    see(&mut ended, 1, Seen::Ended { run: 1, attempt: 11, end: End::Lost });
+    ended.assert_passed(0);
+}
+
+#[test]
+fn engine_and_worker_hosts_cannot_hold_two_live_attempts_of_one_task() {
+    let mut judge = referee();
+    see(&mut judge, 0, Seen::Started { run: 1, attempt: 11 });
+    see(
+        &mut judge,
+        1,
+        Seen::Assigned { kind: HostKind::Engine, worker: 0, slots: 1, hosting: 0, run: 1, attempt: 11, admitted: true },
+    );
+    see(&mut judge, 2, Seen::Started { run: 1, attempt: 12 });
+    see(
+        &mut judge,
+        3,
+        Seen::Assigned { kind: HostKind::Worker, worker: 1, slots: 1, hosting: 0, run: 1, attempt: 12, admitted: true },
+    );
+    assert!(why(&judge).contains("while attempt Some(11) is live"));
 }

@@ -58,7 +58,7 @@ fn referee_requires_every_kept_turn_to_be_forgotten_in_time() {
 }
 
 #[test]
-fn workers_are_refused_for_equal_or_longer_declared_stop_bounds() {
+fn a_worker_whose_stop_bound_reaches_the_engines_grace_is_refused_at_its_hello() {
     for secs in [20, 21] {
         let report = turns::run(Settings { stop_bound: Duration::from_secs(secs), ..Settings::new(1) });
         assert!(report.refused);

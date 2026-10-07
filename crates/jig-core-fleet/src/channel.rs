@@ -107,16 +107,13 @@ pub(crate) fn hello(domain: &mut Domain, env: &Env<Limits>, channel: Token, hell
         domain.facts.push(Fact::Dropped);
         return;
     }
-    let too_long = match hello.graces {
-        Some(graces) => graces >= limits.grace,
-        None => false,
-    };
+    let too_long = hello.stop_bound >= limits.grace;
     if domain.channels.is_full() || too_long {
         domain.facts.push(Fact::TurnedAway);
         out.push(Request::Refuse { channel });
         return;
     }
-    let Hello { slots, workstreams, hosting, graces: _ } = hello;
+    let Hello { slots, workstreams, hosting, stop_bound: _ } = hello;
     let mut worker = Channel {
         kind: HostKind::Worker,
         token: channel,

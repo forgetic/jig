@@ -1,5 +1,5 @@
 //! Turns are opaque parent payloads. The fleet holds only their admission
-//! and committed prefix (domain/engine.md, 7.2 and 8; domain/worker.md, section 8).
+//! and committed prefix (domain/engine.md, 7.2 and 8; domain/hosts.md, section 6.4).
 //! A stray's body stays here until adoption; every body leaves exactly once
 //! in `Turned` or `Drop`. Handed admissions own no payload. Cleanup and
 //! adoption release one held body per resume, so each emits at most two

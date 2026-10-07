@@ -119,7 +119,12 @@ impl Harness {
         for key in workstreams {
             keys.push(*key).unwrap();
         }
-        let hello = Hello { graces: None, slots, workstreams: keys.into_boxed(), hosting: Box::from(hosting) };
+        let hello = Hello {
+            stop_bound: Duration::from_secs(0),
+            slots,
+            workstreams: keys.into_boxed(),
+            hosting: Box::from(hosting),
+        };
         self.step(Event::Hello { channel, hello })
     }
 
@@ -872,7 +877,7 @@ fn a_kept_answer_forgotten_while_its_worker_is_away_is_acknowledged_once_it_is_b
 }
 
 #[test]
-fn a_stray_not_adopted_in_time_is_cancelled() {
+fn a_run_no_claim_adopts_is_cancelled_after_the_grace() {
     let mut h = Harness::new(LIMITS);
     h.loaded();
     h.hello(C1, 2, &[], &[hosted(R1, A1, Phase::Active)]);
@@ -1044,7 +1049,7 @@ fn adoption_restores_the_prefix_before_releasing_stray_turns() {
 }
 
 #[test]
-fn a_restart_restores_committed_turns_before_the_worker_replays() {
+fn a_turn_sent_again_after_a_restart_is_acknowledged_again_and_dropped() {
     let mut h = Harness::new(Limits { turns: 2, ..LIMITS });
     h.step(Event::Adopt { reply_to: to(A1), run: R1, attempt: A1, kept: 7, kind: HostKind::Worker, worked: false });
     h.hello(C1, 2, &[], &[hosted(R1, A1, Phase::Active)]);
@@ -1065,14 +1070,14 @@ fn stray_turn_bodies_are_released_when_the_claim_is_fenced_or_lost() {
 
 #[test]
 fn declared_stop_bounds_must_be_strictly_below_the_engine_grace() {
-    for (graces, accepted) in [
-        (None, true),
-        (Some(Duration::from_secs(9)), true),
-        (Some(Duration::from_secs(10)), false),
-        (Some(Duration::from_secs(11)), false),
+    for (stop_bound, accepted) in [
+        (Duration::from_secs(0), true),
+        (Duration::from_secs(9), true),
+        (Duration::from_secs(10), false),
+        (Duration::from_secs(11), false),
     ] {
         let mut h = Harness::new(LIMITS);
-        let hello = Hello { graces, slots: 2, workstreams: Box::default(), hosting: Box::default() };
+        let hello = Hello { stop_bound, slots: 2, workstreams: Box::default(), hosting: Box::default() };
         let out = h.step(Event::Hello { channel: C1, hello });
         if accepted {
             assert!(out.is_empty());

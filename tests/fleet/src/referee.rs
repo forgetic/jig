@@ -5,11 +5,11 @@
 //!
 //! Safety, checked on every observation:
 //!
-//! - no worker is assigned more runs than its slots, the answers it holds
-//!   for the engine counted;
-//! - never two live attempts of a run's workstream: no worker is assigned an
-//!   attempt of a run while any worker hosts another of it, and no attempt
-//!   is assigned again once a worker admitted it (a busy refusal admits
+//! - no host is assigned more runs than its slots, including answers held
+//!   for acknowledgement;
+//! - never two live attempts of a task: no host is assigned an attempt
+//!   while any host may still run another, and no attempt is assigned
+//!   again once a host admitted it (a busy refusal admits
 //!   nothing, and the attempt is assigned again);
 //! - nothing reaches a worker for an attempt the parent cancelled, or that
 //!   ended (answered, presumed lost or withdrawn), but a cancel;
@@ -19,7 +19,7 @@
 //! - a worker forgets an answer only once the parent has made it durable,
 //!   or no longer claims its attempt.
 //!
-//! Liveness, as deadlines of its own: every attempt the parent starts ends
+//! Liveness, as deadlines of its own: every start and adoption ends
 //! within a bound the world sets.
 //!
 //! It injects what belongs to no fake: a worker's channel dropping, for a
@@ -27,6 +27,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use jig_core_fleet::HostKind;
 use skein_lib::Duration;
 use skein_world::domain::{Expectations, Judge};
 
@@ -72,16 +73,18 @@ pub enum Down {
 pub enum Seen {
     /// The parent started the attempt: it must end.
     Started { run: u64, attempt: u64 },
+    /// The parent adopted a claim after restart; this adoption must end.
+    Adopted { run: u64, attempt: u64 },
     /// The parent cancelled the attempt.
     Cancelled { run: u64, attempt: u64 },
     /// The parent heard the attempt end.
     Ended { run: u64, attempt: u64, end: End },
     /// The fleet sent `down` about the attempt to a worker.
     Sent { run: u64, attempt: u64, down: Down },
-    /// The worker `worker`, with `slots`, hosting `hosting` runs and holding
-    /// answers, received the assignment of the attempt, and admitted it or
-    /// not.
-    Assigned { worker: usize, slots: u32, hosting: u32, run: u64, attempt: u64, admitted: bool },
+    /// A host of `kind`, with `slots` and `hosting` runs, received an
+    /// assignment. `worker` indexes the scripted workers, or is zero for
+    /// the engine host.
+    Assigned { kind: HostKind, worker: usize, slots: u32, hosting: u32, run: u64, attempt: u64, admitted: bool },
     /// A worker answered the attempt, once, its run gone if it was hosted.
     Answered { run: u64, attempt: u64, said: Said },
     /// The parent made the attempt's answer durable.
@@ -95,6 +98,8 @@ pub enum Seen {
 pub enum Expected {
     /// The attempt the parent started ends.
     End { run: u64, attempt: u64 },
+    /// One adoption of the claim ends after restart.
+    AdoptionEnd { run: u64, attempt: u64 },
 }
 
 /// What the referee injects.
@@ -159,12 +164,16 @@ impl Expectations for Fleet {
                 self.claimed.insert((run, attempt));
                 judge.expect(Expected::End { run, attempt }, self.within);
             }
+            Seen::Adopted { run, attempt } => {
+                judge.expect(Expected::AdoptionEnd { run, attempt }, self.within);
+            }
             Seen::Cancelled { run, attempt } => {
                 self.cancelled.insert((run, attempt));
             }
             Seen::Ended { run, attempt, end } => {
                 self.ends += 1;
                 judge.meet(&Expected::End { run, attempt });
+                judge.meet(&Expected::AdoptionEnd { run, attempt });
                 let after = self.ended.contains(&(run, attempt));
                 judge.check(
                     !after,
@@ -199,10 +208,10 @@ impl Expectations for Fleet {
                     }
                 }
             }
-            Seen::Assigned { worker, slots, hosting, run, attempt, admitted } => {
+            Seen::Assigned { kind, worker, slots, hosting, run, attempt, admitted } => {
                 judge.check(
                     hosting < slots,
-                    format_args!("worker {worker} is assigned no more runs than its {slots} slots"),
+                    format_args!("{kind:?} host {worker} is assigned no more runs than its {slots} slots"),
                 );
                 let fresh = !self.admitted.contains(&(run, attempt));
                 judge.check(fresh, format_args!("attempt {attempt} of run {run} is not assigned once admitted"));

@@ -82,7 +82,15 @@ impl World {
         let busy = full || (!entry.runs.is_empty() && self.rng.chance(self.settings.busy));
         let invalid = !busy && self.rng.chance(self.settings.invalid);
         let admitted = !busy && !invalid;
-        self.observe(Seen::Assigned { worker, slots, hosting, run, attempt, admitted });
+        self.observe(Seen::Assigned {
+            kind: jig_core_fleet::HostKind::Worker,
+            worker,
+            slots,
+            hosting,
+            run,
+            attempt,
+            admitted,
+        });
         if !admitted {
             // A refusal goes once, and keeps nothing.
             let kind = if busy { Kind::Busy } else { Kind::Invalid };

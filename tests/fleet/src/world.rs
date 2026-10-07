@@ -870,7 +870,10 @@ impl World {
                     .into_iter()
                     .map(|(run, attempt, phase)| Hosted { run: Token::new(run), attempt: Token::new(attempt), phase })
                     .collect();
-                Event::Hello { channel: token, hello: Hello { slots, workstreams, hosting, graces: None } }
+                Event::Hello {
+                    channel: token,
+                    hello: Hello { slots, workstreams, hosting, stop_bound: Duration::from_secs(0) },
+                }
             }
             Up::Answer { run, attempt, said } => {
                 let payload = self.payload(Payload::Answer(said));
@@ -1232,6 +1235,7 @@ impl World {
             for (attempt, cancelled) in stale {
                 self.stats.adoptions += 1;
                 self.end("adopted");
+                self.observe(Seen::Adopted { run: run.raw(), attempt });
                 self.adopting.push(attempt);
                 self.calls.open(attempt, ());
                 let token = Token::new(attempt);

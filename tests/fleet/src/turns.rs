@@ -285,7 +285,7 @@ impl World {
         let channel = Token::new(self.channels);
         self.channel = Some(channel);
         let hello = Hello {
-            graces: Some(self.settings.stop_bound),
+            stop_bound: self.settings.stop_bound,
             slots: 1,
             workstreams: Box::default(),
             hosting: Box::from([Hosted { run: RUN, attempt: ATTEMPT, phase: Phase::Active }]),

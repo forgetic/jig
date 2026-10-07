@@ -108,7 +108,7 @@ fn a_charter_for_workers_only_waits_while_only_engine_slots_are_free() {
                 channel: Token::new(5),
                 hello: Hello {
                     slots: 1,
-                    graces: Some(Duration::from_secs(1)),
+                    stop_bound: Duration::from_secs(1),
                     workstreams: Box::new([]),
                     hosting: Box::new([]),
                 }
@@ -139,7 +139,7 @@ fn a_worker_holding_the_workstream_is_preferred_over_a_free_engine_slot() {
                 channel: Token::new(11),
                 hello: Hello {
                     slots: 1,
-                    graces: Some(Duration::from_secs(1)),
+                    stop_bound: Duration::from_secs(1),
                     workstreams: Box::new([9]),
                     hosting: Box::new([]),
                 }

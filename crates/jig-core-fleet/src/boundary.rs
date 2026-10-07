@@ -429,10 +429,9 @@ pub enum Request {
 /// What a worker says first on every channel (domain/engine.md, section 8).
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct Hello {
-    /// Declared stop bound: contact grace, then max(cancel grace, push
-    /// deadline), then save commit and push. It must be strictly below the engine's grace;
-    /// `None` preserves the first payload version's unchecked behavior.
-    pub graces: Option<Duration>,
+    /// The worker's longest stop time after losing contact. It must be
+    /// strictly below the engine's grace.
+    pub stop_bound: Duration,
     /// How many runs it hosts at once: none once it is shutting down.
     pub slots: u32,
     pub workstreams: Box<[u64]>,

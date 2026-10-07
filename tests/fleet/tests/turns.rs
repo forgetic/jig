@@ -1,5 +1,5 @@
-use skein_lib::{Duration, Time};
 use jig_fleet_world::turns::{self, Seen, Settings, Turns};
+use skein_lib::{Duration, Time};
 use skein_world::domain::{Referee, Verdict, assert_replays};
 
 #[test]

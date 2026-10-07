@@ -38,8 +38,8 @@
 //! The fleet knows workers, slots, workstreams, runs, attempts and phases,
 //! and how an answer ends; charters, snapshots, outcomes, inbound events,
 //! relayed calls and facts are the parent's, named by tokens the fleet passes
-//! on or hands back. It knows only task numbers and workstreams: a run and an attempt are
-//! tokens to it, as the host protocol packs them.
+//! on or hands back. A run and an attempt are tokens to the fleet, as the host
+//! protocol packs them.
 //!
 //! What happens is also told as content-free [`Fact`]s, kept in a bounded
 //! queue the parent drains ([`Domain::pop_fact`]); what does not fit is dropped

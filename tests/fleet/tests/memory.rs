@@ -3,10 +3,10 @@
 //! keys as it may, every attempt tracked, every relayed call kept, and every
 //! entry point on the way.
 
-use skein_lib::{Duration, Env, Queue, ReplyTo, Time, Token, Wall};
 use jig_core_fleet::{
     Answer, Bounce, Domain, Event, Hello, Hosted, Limits, Phase, Request, fire, max_out, resume, step, worst_case,
 };
+use skein_lib::{Duration, Env, Queue, ReplyTo, Time, Token, Wall};
 use skein_world::domain::heap::{self, Meter};
 
 #[global_allocator]
@@ -84,7 +84,7 @@ impl Measured {
         while let Some(request) = self.out.pop() {
             requests.push(request);
         }
-        self.meter.check(measured, self.bound, self.env.limits);
+        self.meter.check(measured, self.bound, &self.env.limits);
         // The iteration ends: the reclaim point.
         self.domain.reclaim();
         while self.domain.pop_fact().is_some() {}

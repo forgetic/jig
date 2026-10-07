@@ -2,8 +2,8 @@
 //! would feed them, fails a run that breaks an expectation, and says why; and
 //! passes one that keeps them.
 
-use skein_lib::{Duration, Time};
 use jig_fleet_world::referee::{Down, End, Fleet, Kind, Said, Seen};
+use skein_lib::{Duration, Time};
 use skein_world::domain::{Referee, Verdict};
 
 fn at(secs: u64) -> Time {

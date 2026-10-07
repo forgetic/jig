@@ -1,0 +1,13 @@
+[package]
+name = "jig-core-authority"
+description = "Authority, funding and action checks: the engine's authority child domain, sans-io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+skein-lib.workspace = true
+
+[lints]
+workspace = true

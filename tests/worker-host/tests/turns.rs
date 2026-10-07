@@ -1,8 +1,34 @@
 //! Version-two worker host peers: engine commits, a lossy link, and an
 //! agent and workspace that settle through the host's requests.
 
-use jig_worker_host::{EndingV2, Failure, Reason};
+use jig_worker_host::{AnsweredCall, DeliveryOutcome, EndingV2, Failure, Reason, SettledAnswer};
 use jig_worker_host_world::turn_world::World;
+
+#[test]
+fn a_resumed_run_starts_with_its_turn_bodies_and_answered_calls() {
+    let mut world = World::new();
+    let turns: Box<[Box<[u8]>]> = vec![Box::from(&b"first"[..]), Box::from(&b"second"[..])].into_boxed_slice();
+    let answered = vec![
+        AnsweredCall {
+            name: Box::from(&b"call one"[..]),
+            tool: Box::from(&b"inspect"[..]),
+            answer: SettledAnswer::Host { error: false, body: Box::from(&b"found"[..]) },
+        },
+        AnsweredCall {
+            name: Box::from(&b"call two"[..]),
+            tool: Box::from(&b"deliver"[..]),
+            answer: SettledAnswer::Delivery { outcome: DeliveryOutcome::Delivered },
+        },
+    ];
+    world.assign_typed(turns, answered.into_boxed_slice());
+    let Some(start) = world.typed_start() else { panic!("the agent started") };
+    assert_eq!(start.activation, 932);
+    assert_eq!(&*start.turns, &[Box::from(&b"first"[..]), Box::from(&b"second"[..])]);
+    assert_eq!(&start.answered[0].name[..], b"call one");
+    assert_eq!(&start.answered[0].tool[..], b"inspect");
+    assert_eq!(start.answered[0].answer, SettledAnswer::Host { error: false, body: Box::from(&b"found"[..]) });
+    assert_eq!(start.answered[1].answer, SettledAnswer::Delivery { outcome: DeliveryOutcome::Delivered });
+}
 
 #[test]
 fn committed_turns_replay_after_busy_and_reconnect_then_restore_credit() {

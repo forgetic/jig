@@ -262,7 +262,8 @@ impl Parent {
     #[expect(clippy::needless_pass_by_value, reason = "the world takes ownership of emitted requests")]
     pub fn take(&mut self, request: Request) -> Vec<Out> {
         match request {
-            jig_worker_host::Request::Turn { .. }
+            jig_worker_host::Request::StartTyped { .. }
+            | jig_worker_host::Request::Turn { .. }
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
             | jig_worker_host::Request::AnswerV2 { .. }

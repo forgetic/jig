@@ -214,6 +214,7 @@ impl Domain {
 /// Handles one event, emitting at most [`max_out`] requests.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
+        Event::AssignTyped { reply_to, assignment } => hosted::assign_typed(domain, env, reply_to, assignment, out),
         Event::AssignV2 { reply_to, assignment } => hosted::assign_v2(domain, env, reply_to, assignment, out),
         Event::Turn { owner, turn } => hosted::turned(domain, env, owner, turn, out),
         Event::Facts { owner, fact } => hosted::told(domain, env, owner, fact),

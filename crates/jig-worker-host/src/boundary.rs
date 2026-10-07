@@ -10,6 +10,11 @@ use skein_lib::{Duration, ReplyTo, Token};
 /// parent -> host
 #[derive(PartialEq, Eq, Debug)]
 pub enum Event {
+    /// An assignment with ordered turn bodies and calls settled after them.
+    AssignTyped {
+        reply_to: ReplyTo,
+        assignment: AssignmentTyped,
+    },
     /// A version-two run: transcript and committed call tail stay opaque.
     AssignV2 {
         reply_to: ReplyTo,
@@ -167,6 +172,16 @@ pub enum Event {
 /// host -> parent
 #[derive(PartialEq, Eq, Debug)]
 pub enum Request {
+    /// Start an agent with its activation and committed conversation state.
+    StartTyped {
+        owner: Token,
+        workspace: Option<Token>,
+        charter: Box<[u8]>,
+        activation: u64,
+        turns: Box<[Box<[u8]>]>,
+        answered: Box<[AnsweredCall]>,
+        grants: Box<[Grant]>,
+    },
     /// Stable agent name on the engine wire; delivery identifies this local wait.
     RelayV2 {
         run: Token,
@@ -305,6 +320,16 @@ pub enum Request {
 /// section 6). These requests carry no process or channel vocabulary.
 #[derive(PartialEq, Eq, Debug)]
 pub enum ToAgent {
+    /// Start an agent with its activation and committed conversation state.
+    StartTyped {
+        owner: Token,
+        workspace: Option<Token>,
+        charter: Box<[u8]>,
+        activation: u64,
+        turns: Box<[Box<[u8]>]>,
+        answered: Box<[AnsweredCall]>,
+        grants: Box<[Grant]>,
+    },
     ReadCredit {
         agent: Token,
         read: bool,
@@ -384,6 +409,9 @@ impl Request {
     /// any request addressed to another capability unchanged.
     pub fn to_agent(self) -> Result<ToAgent, Request> {
         match self {
+            Request::StartTyped { owner, workspace, charter, activation, turns, answered, grants } => {
+                Ok(ToAgent::StartTyped { owner, workspace, charter, activation, turns, answered, grants })
+            }
             Request::StartV2 { owner, workspace, charter, transcript, grants } => {
                 Ok(ToAgent::StartV2 { owner, workspace, charter, transcript, grants })
             }
@@ -435,6 +463,35 @@ pub struct Assignment {
 pub struct AssignmentV2 {
     pub assignment: Assignment,
     pub transcript: Option<Box<[u8]>>,
+}
+
+/// An assignment with the conversation state the agent consumes (hosts.md, 2).
+#[derive(PartialEq, Eq, Hash, Debug)]
+pub struct AssignmentTyped {
+    pub assignment: Assignment,
+    /// Ordered committed turn bodies. An empty list starts a fresh conversation.
+    pub turns: Box<[Box<[u8]>]>,
+    /// Calls settled after the last committed turn, in commit order.
+    pub answered: Box<[AnsweredCall]>,
+}
+
+/// A call committed after the last turn, to tell the next activation.
+#[derive(PartialEq, Eq, Hash, Debug)]
+pub struct AnsweredCall {
+    /// The run's opaque call name.
+    pub name: Box<[u8]>,
+    /// The host tool's name as declared by the charter.
+    pub tool: Box<[u8]>,
+    pub answer: SettledAnswer,
+}
+
+/// The committed answer to a host call or workspace delivery.
+#[derive(PartialEq, Eq, Hash, Debug)]
+pub enum SettledAnswer {
+    /// A host tool's answer, including whether it is an error.
+    Host { error: bool, body: Box<[u8]> },
+    /// A workspace delivery's outcome.
+    Delivery { outcome: DeliveryOutcome },
 }
 
 /// A turn's cumulative spend and last read message name are opaque accounting.

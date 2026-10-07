@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use jig_worker_host::{
-    self as host, AnswerV2, Ask, Assignment, AssignmentV2, Delivery, DeliveryOutcome, EndingV2, Event, FinishV2,
-    Limits, Reason, Reply, Request, Turn, Workspace,
+    self as host, AnswerV2, AnsweredCall, Ask, Assignment, AssignmentTyped, AssignmentV2, Delivery, DeliveryOutcome,
+    EndingV2, Event, FinishV2, Limits, Reason, Reply, Request, Turn, Workspace,
 };
 use skein_lib::{Env, Queue, ReplyTo, Time, Token, Wall};
 
@@ -30,6 +30,13 @@ pub struct Stats {
     pub saves: u32,
     pub releases: u32,
     pub facts: u32,
+}
+
+/// The committed conversation state received by the scripted agent.
+pub struct StartedState {
+    pub activation: u64,
+    pub turns: Box<[Box<[u8]>]>,
+    pub answered: Box<[AnsweredCall]>,
 }
 
 /// One host and its scripted capabilities and committed engine observations.
@@ -55,6 +62,7 @@ pub struct World {
     committed: BTreeSet<u32>,
     acked: BTreeSet<u32>,
     stats: Stats,
+    typed_start: Option<StartedState>,
 }
 
 impl World {
@@ -63,7 +71,7 @@ impl World {
     pub fn new() -> Self {
         let mut limits = crate::Settings::calm(1).host;
         limits.slots = 1;
-        limits.transcript_bytes = 64;
+        limits.transcript_bytes = 512;
         limits.turn_bytes = 32;
         limits.turns = 2;
         limits.turn_queue_bytes = 64;
@@ -90,6 +98,7 @@ impl World {
             committed: BTreeSet::new(),
             acked: BTreeSet::new(),
             stats: Stats::default(),
+            typed_start: None,
         }
     }
 
@@ -133,6 +142,31 @@ impl World {
             assignment: AssignmentV2 { assignment, transcript: Some(Box::from(&b"prior turn"[..])) },
         });
         assert!(self.owner.is_some() && self.agent_live && self.reading);
+    }
+
+    /// Assign a resumed run with each turn and its settled call tail intact.
+    pub fn assign_typed(&mut self, turns: Box<[Box<[u8]>]>, answered: Box<[AnsweredCall]>) {
+        self.send(Event::Unacknowledged { answers: 0 });
+        let assignment = Assignment {
+            run: RUN,
+            attempt: ATTEMPT,
+            workspace: None,
+            save: false,
+            charter: Box::from(&b"charter"[..]),
+            snapshot: None,
+            grants: Box::new([]),
+        };
+        self.send(Event::AssignTyped {
+            reply_to: ReplyTo::new(RUN),
+            assignment: AssignmentTyped { assignment, turns, answered },
+        });
+        assert!(self.owner.is_some() && self.agent_live && self.reading);
+    }
+
+    /// The typed activation and committed state the scripted agent received.
+    #[must_use]
+    pub fn typed_start(&self) -> Option<&StartedState> {
+        self.typed_start.as_ref()
     }
 
     pub fn turn(&mut self, number: u32, body: &[u8]) {
@@ -290,6 +324,9 @@ impl World {
 
     fn route(&mut self, request: Request) {
         match request {
+            Request::StartTyped { owner, workspace, charter, activation, turns, answered, grants } => {
+                self.start_typed(owner, workspace, &charter, activation, turns, answered, &grants);
+            }
             Request::Prepare { owner, .. } => {
                 self.owner = Some(owner);
                 self.space_live = true;
@@ -382,6 +419,27 @@ impl World {
             | Request::Abort { .. }
             | Request::DeliverWorkspace { .. } => panic!("unscripted request: {request:?}"),
         }
+    }
+
+    #[expect(clippy::too_many_arguments, reason = "the scripted peer receives the complete start request")]
+    fn start_typed(
+        &mut self,
+        owner: Token,
+        workspace: Option<Token>,
+        charter: &[u8],
+        activation: u64,
+        turns: Box<[Box<[u8]>]>,
+        answered: Box<[AnsweredCall]>,
+        grants: &[host::Grant],
+    ) {
+        assert_eq!(workspace, None);
+        assert_eq!(charter, b"charter");
+        assert!(grants.is_empty());
+        self.owner = Some(owner);
+        self.agent_live = true;
+        self.reading = true;
+        self.typed_start = Some(StartedState { activation, turns, answered });
+        self.events.push_back(Event::Started { owner, agent: AGENT });
     }
 
     fn receive_turn(&mut self, turn: Turn) {

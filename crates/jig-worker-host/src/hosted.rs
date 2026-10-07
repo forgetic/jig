@@ -11,8 +11,8 @@ use skein_lib::{Env, Id, List, Map, Queue, ReplyTo, Set, Slab, Token};
 
 use crate::assignment::{self, len};
 use crate::boundary::{
-    AgentFailure, Answer, Ask, Assignment, Bounce, Delivery, Failure, Finish, Grant, Hosting, Phase, Preparation,
-    Reason, Refusal, Reply, Request, RunFailure, Work,
+    AgentFailure, Answer, AnsweredCall, Ask, Assignment, AssignmentTyped, Bounce, Delivery, Failure, Finish, Grant,
+    Hosting, Phase, Preparation, Reason, Refusal, Reply, Request, RunFailure, SettledAnswer, Work,
 };
 use crate::call::{self, Call};
 use crate::domain::Domain;
@@ -42,7 +42,13 @@ pub(crate) struct Hosted {
 #[derive(Debug)]
 enum Runtime {
     Legacy,
-    V2 { transcript: Option<Box<[u8]>>, turns: u32, spent: u64 },
+    V2 { transcript: Option<Box<[u8]>>, typed: Option<TypedStart>, turns: u32, spent: u64 },
+}
+
+#[derive(Debug)]
+struct TypedStart {
+    turns: Box<[Box<[u8]>]>,
+    answered: Box<[AnsweredCall]>,
 }
 
 #[derive(Debug)]
@@ -127,7 +133,67 @@ pub(crate) fn assign_v2(
         refuse_v2(reply_to, &assignment, Refusal::Invalid(invalid), out);
         return;
     }
-    assign_runtime(domain, env, reply_to, assignment, Runtime::V2 { transcript, turns: 0, spent: 0 }, out);
+    assign_runtime(domain, env, reply_to, assignment, Runtime::V2 { transcript, typed: None, turns: 0, spent: 0 }, out);
+}
+
+pub(crate) fn assign_typed(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    reply_to: ReplyTo,
+    next: AssignmentTyped,
+    out: &mut Queue<Request>,
+) {
+    let AssignmentTyped { assignment, turns, answered } = next;
+    if assignment.snapshot.is_some() || !typed_fits(&turns, &answered, &env.limits) {
+        let invalid = if assignment.snapshot.is_some() { crate::Invalid::Version } else { crate::Invalid::Transcript };
+        refuse_v2(reply_to, &assignment, Refusal::Invalid(invalid), out);
+        return;
+    }
+    let typed = TypedStart { turns, answered };
+    assign_runtime(
+        domain,
+        env,
+        reply_to,
+        assignment,
+        Runtime::V2 { transcript: None, typed: Some(typed), turns: 0, spent: 0 },
+        out,
+    );
+}
+
+fn typed_fits(turns: &[Box<[u8]>], answered: &[AnsweredCall], limits: &Limits) -> bool {
+    let Ok(turn_count) = u64::try_from(turns.len()) else { return false };
+    let Ok(turn_size) = u64::try_from(size_of::<Box<[u8]>>()) else { return false };
+    let Some(mut bytes) = turn_count.checked_mul(turn_size) else {
+        return false;
+    };
+    let Ok(answer_count) = u64::try_from(answered.len()) else { return false };
+    let Ok(answer_size) = u64::try_from(size_of::<AnsweredCall>()) else { return false };
+    let Some(rows) = answer_count.checked_mul(answer_size) else {
+        return false;
+    };
+    let Some(sum) = bytes.checked_add(rows) else { return false };
+    bytes = sum;
+    for body in turns {
+        if len(body) > limits.turn_bytes {
+            return false;
+        }
+        let Some(sum) = bytes.checked_add(len(body)) else { return false };
+        bytes = sum;
+    }
+    for call in answered {
+        if len(&call.name) > limits.event_bytes || len(&call.tool) > limits.event_bytes {
+            return false;
+        }
+        let body = match &call.answer {
+            SettledAnswer::Host { error: _, body } => len(body),
+            SettledAnswer::Delivery { outcome: _ } => 0,
+        };
+        let Some(sum) = bytes.checked_add(len(&call.name)) else { return false };
+        let Some(sum) = sum.checked_add(len(&call.tool)) else { return false };
+        let Some(sum) = sum.checked_add(body) else { return false };
+        bytes = sum;
+    }
+    bytes <= limits.transcript_bytes
 }
 
 fn assign_runtime(
@@ -355,13 +421,24 @@ fn start_prepared(domain: &mut Domain, owner: Token, workspace: Option<Token>, o
                 Runtime::Legacy => {
                     out.push(Request::Start { owner, workspace, charter, snapshot, grants: grants.into_boxed() });
                 }
-                Runtime::V2 { transcript, .. } => out.push(Request::StartV2 {
-                    owner,
-                    workspace,
-                    charter,
-                    transcript: transcript.take(),
-                    grants: grants.into_boxed(),
-                }),
+                Runtime::V2 { transcript, typed, .. } => match typed.take() {
+                    Some(typed) => out.push(Request::StartTyped {
+                        owner,
+                        workspace,
+                        charter,
+                        activation: entry.attempt.raw(),
+                        turns: typed.turns,
+                        answered: typed.answered,
+                        grants: grants.into_boxed(),
+                    }),
+                    None => out.push(Request::StartV2 {
+                        owner,
+                        workspace,
+                        charter,
+                        transcript: transcript.take(),
+                        grants: grants.into_boxed(),
+                    }),
+                },
             }
             entry.refreshed = false;
             State::Starting { reply_to, workspace, held }

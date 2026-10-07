@@ -94,7 +94,7 @@ impl Measured {
                 Request::DeliverV2 { owner, .. } | Request::DeliverWorkspace { owner, .. } => Asked::Delivery { owner },
                 Request::RelayV2 { delivery, .. } => Asked::Relay { call: delivery },
                 Request::AnswerV2 { answer, .. } => Asked::AnswerV2 { answer },
-                Request::StartV2 { .. } | Request::Start { .. } => Asked::Start,
+                Request::StartTyped { .. } | Request::StartV2 { .. } | Request::Start { .. } => Asked::Start,
 
                 Request::Prepare { owner, .. } => Asked::Prepare { owner },
                 Request::Relay { call, .. } => Asked::Relay { call },

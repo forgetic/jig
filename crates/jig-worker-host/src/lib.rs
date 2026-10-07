@@ -22,9 +22,9 @@ mod tests;
 mod turns;
 
 pub use boundary::{
-    AgentFailure, Answer, AnswerV2, Ask, Assignment, AssignmentV2, Bounce, Delivery, DeliveryOutcome, EndingV2, Event,
-    Failure, Finish, FinishV2, FromAgent, Grant, Hosting, Invalid, Phase, Preparation, Reason, Refusal, Reply, Request,
-    RunFailure, ToAgent, Turn, Work, Workspace,
+    AgentFailure, Answer, AnswerV2, AnsweredCall, Ask, Assignment, AssignmentTyped, AssignmentV2, Bounce, Delivery,
+    DeliveryOutcome, EndingV2, Event, Failure, Finish, FinishV2, FromAgent, Grant, Hosting, Invalid, Phase,
+    Preparation, Reason, Refusal, Reply, Request, RunFailure, SettledAnswer, ToAgent, Turn, Work, Workspace,
 };
 pub use domain::{Domain, max_out, resume, step};
 pub use facts::{Fact, Told};

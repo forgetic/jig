@@ -560,7 +560,8 @@ impl World {
             return Taken::Stale;
         }
         match event {
-            jig_worker_host::Event::AssignV2 { .. }
+            jig_worker_host::Event::AssignTyped { .. }
+            | jig_worker_host::Event::AssignV2 { .. }
             | jig_worker_host::Event::Turn { .. }
             | jig_worker_host::Event::FinishedV2 { .. }
             | Event::AcknowledgeTurn { .. } => unreachable!("this script runs version one"),
@@ -687,7 +688,8 @@ impl World {
     /// `run`'s attempt `attempt`: a refusal, or a prepare that admits it.
     fn assigned(&mut self, run: Token, attempt: Token, request: &Request) {
         match request {
-            jig_worker_host::Request::Turn { .. }
+            jig_worker_host::Request::StartTyped { .. }
+            | jig_worker_host::Request::Turn { .. }
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
             | jig_worker_host::Request::AnswerV2 { .. }
@@ -735,7 +737,8 @@ impl World {
     fn route(&mut self, request: Request) {
         self.trace.log(self.now, format!("host -> {request:?}"));
         match request {
-            jig_worker_host::Request::Turn { .. }
+            jig_worker_host::Request::StartTyped { .. }
+            | jig_worker_host::Request::Turn { .. }
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
             | jig_worker_host::Request::AnswerV2 { .. }

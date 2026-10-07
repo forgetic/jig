@@ -187,7 +187,8 @@ impl Engine {
     /// Takes the host's request `request`, which is for the engine.
     pub fn take(&mut self, request: Request) -> Vec<Act> {
         match request {
-            jig_worker_host::Request::Turn { .. }
+            jig_worker_host::Request::StartTyped { .. }
+            | jig_worker_host::Request::Turn { .. }
             | jig_worker_host::Request::DeliverV2 { .. }
             | jig_worker_host::Request::RelayV2 { .. }
             | jig_worker_host::Request::AnswerV2 { .. }

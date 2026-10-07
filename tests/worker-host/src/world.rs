@@ -68,6 +68,8 @@ impl Settings {
                 event_bytes: 64,
                 run_calls: 2,
                 facts: 64,
+                told: 8,
+                fact_bytes: 64,
             },
             engine: engine::Script {
                 assignments: 8,
@@ -604,6 +606,7 @@ impl World {
                 Taken::Other
             }
             Event::Inbound { .. }
+            | Event::Facts { .. }
             | Event::Grant { .. }
             | Event::Cancel { .. }
             | Event::Unacknowledged { .. }

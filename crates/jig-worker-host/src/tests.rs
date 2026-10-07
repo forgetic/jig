@@ -5,7 +5,7 @@ use skein_lib::{Env, List, Queue, ReplyTo, Time, Token, Wall};
 
 use crate::{
     Answer, Ask, Assignment, Bounce, Delivery, DeliveryOutcome, Domain, Event, Failure, Finish, Invalid, Limits,
-    Preparation, Reason, Refusal, Reply, Request, Work, Workspace, max_out, step,
+    Preparation, Reason, Refusal, Reply, Request, Told, Work, Workspace, max_out, step,
 };
 
 const LIMITS: Limits = Limits {
@@ -21,6 +21,8 @@ const LIMITS: Limits = Limits {
     event_bytes: 16,
     run_calls: 2,
     facts: 64,
+    told: 2,
+    fact_bytes: 16,
 };
 
 struct Harness {
@@ -209,6 +211,25 @@ fn stopping_waits_for_a_delivery_even_after_the_agent_is_gone() {
     };
     assert_eq!((*answered_agent, *answered_call, *outcome), (agent, call, changed));
     assert_eq!((*released, work.left), (workspace, Some(changed.left)));
+}
+
+#[test]
+fn live_agent_facts_wait_within_the_hosts_bound_and_drop_when_full() {
+    let mut h = Harness::new();
+    let (owner, _, _) = h.live(1);
+    assert!(h.step(Event::Facts { owner, fact: Box::from(&b"one"[..]) }).is_empty());
+    assert!(h.step(Event::Facts { owner, fact: Box::from(&b"two"[..]) }).is_empty());
+    assert!(h.step(Event::Facts { owner, fact: Box::from(&b"three"[..]) }).is_empty());
+    assert_eq!(h.domain.told_lost(), 1);
+    assert_eq!(
+        h.domain.pop_told(),
+        Some(Told { run: Token::new(1), attempt: Token::new(1001), fact: Box::from(&b"one"[..]) })
+    );
+    assert_eq!(
+        h.domain.pop_told(),
+        Some(Told { run: Token::new(1), attempt: Token::new(1001), fact: Box::from(&b"two"[..]) })
+    );
+    assert_eq!(h.domain.pop_told(), None);
 }
 
 #[test]

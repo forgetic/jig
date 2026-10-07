@@ -4,7 +4,7 @@ use skein_lib::{Env, Id, Map, Queue, Slab, Token};
 
 use crate::boundary::{Event, Hosting, Reason, Request};
 use crate::call::{self, Call};
-use crate::facts::{Fact, Facts};
+use crate::facts::{AgentFacts, Fact, Facts, Told};
 use crate::hosted::{self, Hosted};
 use crate::limits::{self, Limits};
 
@@ -33,6 +33,7 @@ pub struct Domain {
     /// Runs to cancel, each for its reason, one per resume.
     pub(crate) ready: Map<Id<Hosted>, Reason>,
     pub(crate) facts: Facts,
+    pub(crate) told: AgentFacts,
     /// The worker is shutting down: it admits no more runs.
     pub(crate) shut: bool,
     /// Answers the engine has yet to acknowledge, as the parent last said:
@@ -51,6 +52,7 @@ impl Domain {
             calls: Slab::with_capacity(calls),
             ready: Map::with_capacity(limits.slots),
             facts: Facts::with_capacity(limits.facts),
+            told: AgentFacts::with_capacity(limits.told),
             shut: false,
             unacknowledged: 0,
         }
@@ -147,6 +149,17 @@ impl Domain {
         self.facts.lost()
     }
 
+    /// The oldest agent fact waiting for the engine.
+    pub fn pop_told(&mut self) -> Option<Told> {
+        self.told.pop()
+    }
+
+    /// Agent facts dropped for lack of room or excess bytes.
+    #[must_use]
+    pub const fn told_lost(&self) -> u64 {
+        self.told.lost()
+    }
+
     /// The reclaim point: frees what closed in this iteration.
     pub fn reclaim(&mut self) {
         self.hosted.reclaim();
@@ -159,6 +172,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
     match event {
         Event::AssignV2 { reply_to, assignment } => hosted::assign_v2(domain, env, reply_to, assignment, out),
         Event::Turn { owner, turn } => hosted::turned(domain, env, owner, turn, out),
+        Event::Facts { owner, fact } => hosted::told(domain, env, owner, fact),
         Event::FinishedV2 { owner, turns, spent, finish } => {
             hosted::finished_v2(domain, env, owner, turns, spent, finish, out);
         }

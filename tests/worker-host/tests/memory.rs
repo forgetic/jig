@@ -25,6 +25,8 @@ const LIMITS: Limits = Limits {
     event_bytes: 256,
     run_calls: 2,
     facts: 16,
+    told: 2,
+    fact_bytes: 256,
 };
 
 fn bytes(len: u64) -> Box<[u8]> {

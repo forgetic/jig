@@ -3,6 +3,7 @@ use skein_lib::{Id, Map, Queue, Set, Slab, Token};
 use crate::boundary::{Delivery, Reason};
 use crate::call::Call;
 use crate::facts::Fact;
+use crate::facts::Told;
 use crate::hosted::{Hosted, NamedEvent};
 
 /// The host child domain's limits (section 7), handed by its parent to every
@@ -39,6 +40,10 @@ pub struct Limits {
     /// Facts kept until the parent drains them. Beyond them, facts are
     /// dropped and counted.
     pub facts: u32,
+    /// Agent facts kept for the engine while the channel cannot take them.
+    pub told: u32,
+    /// The most bytes in one agent fact.
+    pub fact_bytes: u64,
 }
 
 /// The host calls in flight at once, across runs, under `limits`, or `None` if
@@ -70,6 +75,8 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     let ready = Map::<Id<Hosted>, Reason>::worst_case(limits.slots)?;
     let calls = Slab::<Call>::worst_case(calls(limits)?)?;
     let facts = Queue::<Fact>::worst_case(limits.facts)?;
+    let told =
+        Queue::<Told>::worst_case(limits.told)?.checked_add(u64::from(limits.told).checked_mul(limits.fact_bytes)?)?;
     // Until its agent starts, a run holds its charter, its snapshot and the
     // inbound events that came meanwhile; from when it is told how the run
     // finishes, the outcome, the snapshot or the detail of the failure.
@@ -93,6 +100,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(ready)?
         .checked_add(calls)?
         .checked_add(facts)?
+        .checked_add(told)?
         .checked_add(runs)?
         .checked_add(delivered)
 }

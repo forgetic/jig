@@ -9,6 +9,8 @@
 //! refused at the entrance tells nothing: no run was hosted. What the run
 //! itself reports is not the host's: the top level forwards it.
 
+use alloc::boxed::Box;
+
 use skein_lib::{Queue, Token};
 
 use crate::boundary::Failure;
@@ -28,6 +30,43 @@ pub enum Fact {
     Ended { run: Token, attempt: Token },
     /// It answered: failed, for `failure`.
     Failed { run: Token, attempt: Token, failure: Failure },
+}
+
+/// A live fact the agent reported, named for its run on the engine link.
+#[derive(PartialEq, Eq, Debug)]
+pub struct Told {
+    pub run: Token,
+    pub attempt: Token,
+    pub fact: Box<[u8]>,
+}
+
+/// Agent facts wait for an open channel, within a fixed count and byte bound.
+#[derive(Debug)]
+pub(crate) struct AgentFacts {
+    queue: Queue<Told>,
+    lost: u64,
+}
+
+impl AgentFacts {
+    pub(crate) fn with_capacity(capacity: u32) -> AgentFacts {
+        AgentFacts { queue: Queue::with_capacity(capacity), lost: 0 }
+    }
+
+    pub(crate) fn push(&mut self, fact: Told, max_bytes: u64) {
+        if u64::try_from(fact.fact.len()).expect("a length fits in u64") > max_bytes
+            || self.queue.try_push(fact).is_err()
+        {
+            self.lost = self.lost.saturating_add(1);
+        }
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<Told> {
+        self.queue.pop()
+    }
+
+    pub(crate) const fn lost(&self) -> u64 {
+        self.lost
+    }
 }
 
 /// The facts not yet drained, and how many did not fit.

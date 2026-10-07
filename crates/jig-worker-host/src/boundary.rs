@@ -20,6 +20,11 @@ pub enum Event {
         owner: Token,
         turn: Turn,
     },
+    /// A live agent fact, kept best effort for the engine.
+    Facts {
+        owner: Token,
+        fact: Box<[u8]>,
+    },
     /// Version-two last word, with cumulative accounting.
     FinishedV2 {
         owner: Token,
@@ -327,6 +332,7 @@ pub enum ToAgent {
 #[derive(PartialEq, Eq, Debug)]
 pub enum FromAgent {
     Turn { owner: Token, turn: Turn },
+    Facts { owner: Token, fact: Box<[u8]> },
     FinishedV2 { owner: Token, turns: u32, spent: u64, finish: FinishV2 },
     Started { owner: Token, agent: Token },
     Called { owner: Token, call: Token, ask: Ask },
@@ -344,6 +350,7 @@ impl Event {
     pub fn from_agent(event: FromAgent) -> Event {
         match event {
             FromAgent::Turn { owner, turn } => Event::Turn { owner, turn },
+            FromAgent::Facts { owner, fact } => Event::Facts { owner, fact },
             FromAgent::FinishedV2 { owner, turns, spent, finish } => Event::FinishedV2 { owner, turns, spent, finish },
             FromAgent::Started { owner, agent } => Event::Started { owner, agent },
             FromAgent::Called { owner, call, ask } => Event::Called { owner, call, ask },

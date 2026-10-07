@@ -16,7 +16,7 @@ use crate::boundary::{
 };
 use crate::call::{self, Call};
 use crate::domain::Domain;
-use crate::facts::{Fact, Facts};
+use crate::facts::{Fact, Facts, Told};
 use crate::limits::Limits;
 
 #[derive(Debug)]
@@ -1193,6 +1193,14 @@ pub(crate) fn turned(
     } else {
         faulted(domain, env, owner, AgentFailure::Rules, out);
     }
+}
+
+/// Keep a live agent fact for the engine, dropping it when bounded room is full.
+pub(crate) fn told(domain: &mut Domain, env: &Env<Limits>, owner: Token, fact: Box<[u8]>) {
+    let Some(hosting) = domain.hosting(owner) else {
+        return;
+    };
+    domain.told.push(Told { run: hosting.run, attempt: hosting.attempt, fact }, env.limits.fact_bytes);
 }
 
 pub(crate) fn finished_v2(

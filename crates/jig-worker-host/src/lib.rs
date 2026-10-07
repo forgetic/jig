@@ -26,5 +26,5 @@ pub use boundary::{
     RunFailure, ToAgent, Turn, Work, Workspace,
 };
 pub use domain::{Domain, max_out, resume, step};
-pub use facts::Fact;
+pub use facts::{Fact, Told};
 pub use limits::{Limits, worst_case};

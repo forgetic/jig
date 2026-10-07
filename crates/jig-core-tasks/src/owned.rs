@@ -45,6 +45,13 @@ pub fn stored_bytes(record: &Stored) -> Option<u64> {
             }
             Some(total)
         }
+        Stored::Pool(row) => {
+            let mut total = bytes(size_of_val(&*row.pool.path))?;
+            for segment in &row.pool.path {
+                total = total.checked_add(bytes(segment.len())?)?;
+            }
+            Some(total)
+        }
     }
 }
 

@@ -25,6 +25,7 @@ pub const LIMITS: Limits = Limits {
     dependencies: 8,
     holdings: 4,
     hold_kinds: 4,
+    pools: 8,
     hold_segments: 4,
     hold_bytes: 64,
     hold_waiters: 8,
@@ -342,6 +343,8 @@ impl World {
             Event::Turn { task, cumulative, .. }
             | Event::Activation { task, cause: Cause::Priced { cumulative }, .. } => Some((*task, *cumulative)),
             Event::Kinds { .. }
+            | Event::Slots { .. }
+            | Event::AllocationGone { .. }
             | Event::ReadAfresh { .. }
             | Event::EffectInFlight { .. }
             | Event::EffectSettled { .. }
@@ -399,6 +402,8 @@ impl World {
                 self.message = self.message.max(word.number);
             }
             Event::Kinds { .. }
+            | Event::Slots { .. }
+            | Event::AllocationGone { .. }
             | Event::ReadAfresh { .. }
             | Event::EffectInFlight { .. }
             | Event::EffectSettled { .. }
@@ -596,6 +601,7 @@ impl World {
                 }),
                 Stored::Live(_)
                 | Stored::Writer(_)
+                | Stored::Pool(_)
                 | Stored::Ended(_)
                 | Stored::Stub(_)
                 | Stored::Ledger(_)
@@ -682,6 +688,7 @@ impl World {
                 Stored::Live(record) => Some(*record.clone()),
                 Stored::Ended(_)
                 | Stored::Writer(_)
+                | Stored::Pool(_)
                 | Stored::Stub(_)
                 | Stored::Ledger(_)
                 | Stored::History(_)
@@ -709,6 +716,7 @@ impl World {
             Stored::Live(record) => record,
             Stored::Ended(_)
             | Stored::Writer(_)
+            | Stored::Pool(_)
             | Stored::Stub(_)
             | Stored::Ledger(_)
             | Stored::History(_)
@@ -732,6 +740,7 @@ impl World {
                 Key::Live(number) if !before.contains(key) => Some(*number),
                 Key::Live(_)
                 | Key::Writer(_)
+                | Key::Pool(_)
                 | Key::Ended(_)
                 | Key::Stub(_)
                 | Key::Ledger(_)
@@ -795,6 +804,7 @@ impl World {
                 Stored::Live(record) | Stored::Ended(record) => Some(record.attempt),
                 Stored::Ledger(_)
                 | Stored::Writer(_)
+                | Stored::Pool(_)
                 | Stored::Stub(_)
                 | Stored::History(_)
                 | Stored::PersonProposal(_) => None,
@@ -882,7 +892,12 @@ impl World {
         let rows = self
             .records
             .values()
-            .filter(|row| matches!(row, Stored::Live(_) | Stored::Ledger(_) | Stored::Stub(_) | Stored::Writer(_)))
+            .filter(|row| {
+                matches!(
+                    row,
+                    Stored::Live(_) | Stored::Ledger(_) | Stored::Stub(_) | Stored::Writer(_) | Stored::Pool(_)
+                )
+            })
             .cloned()
             .collect::<Vec<_>>();
         for record in rows {

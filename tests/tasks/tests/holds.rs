@@ -9,6 +9,78 @@ fn resource(value: u8) -> Holding {
     Holding::Write { resource: Name { connector: 1, path: Box::new([Box::new([value])]) }, kind: 1 }
 }
 
+fn pool(value: u8) -> Holding {
+    Holding::Slot { pool: Name { connector: 1, path: Box::new([Box::new([value])]) }, kind: 2 }
+}
+
+fn configured_pool(seed: u64) -> World {
+    let mut world = World::new(seed, LIMITS);
+    world.configure_holds(1, vec![Kind { connector: 1, kind: 2, hold: HoldKind::Pooled { taken: Taken::Waits } }]);
+    world
+}
+
+#[test]
+fn two_tasks_want_the_last_slot_of_a_pool_and_the_second_takes_it_as_the_first_closes() {
+    let mut world = configured_pool(308);
+    let Holding::Slot { pool: name, .. } = pool(1) else { unreachable!() };
+    world.send(Event::Slots { pool: name.clone(), slots: 1 });
+    let mut first = task(1, &[]);
+    first.holdings = Box::new([pool(1)]);
+    let mut second = task(2, &[]);
+    second.holdings = Box::new([pool(1)]);
+    assert_eq!(world.make(Party::Person(1), vec![first, second]), Reply::Made(vec![1, 2]));
+    assert!(world.record(1).holds_taken);
+    assert!(!world.record(2).holds_taken);
+    world.restart();
+    assert!(!world.record(2).holds_taken);
+    world.claim(1, 1);
+    world.finish(1);
+    world.settle(1);
+    assert!(world.record(2).holds_taken);
+}
+
+#[test]
+fn a_pool_shrinking_while_its_slots_are_held_admits_nobody_until_it_drains() {
+    let mut world = configured_pool(309);
+    let Holding::Slot { pool: name, .. } = pool(2) else { unreachable!() };
+    world.send(Event::Slots { pool: name.clone(), slots: 2 });
+    let mut first = task(1, &[]);
+    first.holdings = Box::new([pool(2)]);
+    let mut second = task(2, &[]);
+    second.holdings = Box::new([pool(2)]);
+    let mut third = task(3, &[]);
+    third.holdings = Box::new([pool(2)]);
+    assert_eq!(world.make(Party::Person(1), vec![first, second, third]), Reply::Made(vec![1, 2, 3]));
+    assert!(world.record(1).holds_taken && world.record(2).holds_taken);
+    assert!(!world.record(3).holds_taken);
+    world.send(Event::Slots { pool: name.clone(), slots: 1 });
+    world.restart();
+    world.claim(1, 1);
+    world.finish(1);
+    world.settle(1);
+    assert!(!world.record(3).holds_taken);
+    world.claim(2, 2);
+    world.finish(2);
+    world.settle(2);
+    assert!(world.record(3).holds_taken);
+}
+
+#[test]
+fn a_lost_pool_allocation_holds_its_task_without_releasing_its_slot() {
+    let mut world = configured_pool(310);
+    let Holding::Slot { pool: name, .. } = pool(3) else { unreachable!() };
+    world.send(Event::Slots { pool: name.clone(), slots: 1 });
+    let mut holder = task(1, &[]);
+    holder.holdings = Box::new([pool(3)]);
+    let mut waiter = task(2, &[]);
+    waiter.holdings = Box::new([pool(3)]);
+    assert_eq!(world.make(Party::Person(1), vec![holder, waiter]), Reply::Made(vec![1, 2]));
+    world.send(Event::AllocationGone { pool: name, task: 1 });
+    assert!(matches!(world.record(1).phase, Phase::Held { why: Hold::Drift, .. }));
+    assert!(world.record(1).holds_taken);
+    assert!(!world.record(2).holds_taken);
+}
+
 fn configured(seed: u64) -> World {
     let mut world = World::new(seed, LIMITS);
     world.configure_holds(1, vec![Kind { connector: 1, kind: 1, hold: HoldKind::Exclusive { taken: Taken::Waits } }]);

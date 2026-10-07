@@ -3,7 +3,8 @@
 //! never interprets a connector's path.
 use crate::domain::{Domain, publish, record, task_mut};
 use crate::{
-    HoldKind, Holding, Kind, Limits, Name, New, Party, Phase, Problem, Refusal, Request, Taken, TaskRecord, Was,
+    HoldKind, Holding, Kind, Limits, Name, New, Party, Phase, PoolSlots, Problem, Refusal, Request, Stored, Taken,
+    TaskRecord, Was,
 };
 use alloc::boxed::Box;
 use skein_lib::{Env, Queue};
@@ -29,6 +30,84 @@ pub(crate) fn kinds(domain: &mut Domain, limits: &Limits, connector: u16, kinds:
         } else {
             domain.hold_kinds.insert(key, configured.hold).expect("configured kind capacity");
         }
+    }
+}
+
+/// Keep the latest connector count durable; a shrink changes admission but
+/// leaves all current holders in place.
+pub(crate) fn slots(domain: &mut Domain, limits: &Limits, pool: Name, slots: u32, out: &mut Queue<Request>) {
+    if !domain.ready() || !shape(limits, &pool) || !pooled_connector(domain, pool.connector) {
+        return;
+    }
+    let number = match domain.pools.get(&pool) {
+        Some(row) => row.number,
+        None => {
+            assert!(domain.pools.len() < limits.pools, "configured pool room");
+            let number = domain.next_pool.checked_add(1).expect("pool number fits");
+            domain.next_pool = number;
+            number
+        }
+    };
+    let row = PoolSlots { number, pool: pool.clone(), slots };
+    domain.pools.insert(pool, row.clone()).expect("pool room preflighted");
+    out.push(Request::Save { record: Stored::Pool(row) });
+}
+
+fn pooled_connector(domain: &Domain, connector: u16) -> bool {
+    for (key, kind) in &domain.hold_kinds {
+        if key.connector == connector
+            && let HoldKind::Pooled { .. } = kind
+        {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn restore_pool(domain: &mut Domain, limits: &Limits, row: PoolSlots) -> bool {
+    if row.number == 0
+        || !shape(limits, &row.pool)
+        || !pooled_connector(domain, row.pool.connector)
+        || domain.pools.contains_key(&row.pool)
+        || domain.pools.len() == domain.pools.capacity()
+    {
+        return false;
+    }
+    for (_, known) in &domain.pools {
+        if known.number == row.number {
+            return false;
+        }
+    }
+    domain.next_pool = domain.next_pool.max(row.number);
+    domain.pools.insert(row.pool.clone(), row).is_ok()
+}
+
+/// A connector knows an individual allocation vanished even though the
+/// holder's pool slot remains reserved until its task releases it.
+pub(crate) fn allocation_gone(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    pool: &Name,
+    task: u64,
+    out: &mut Queue<Request>,
+) {
+    let held = match record(domain, task) {
+        Some(row) if row.holds_taken => {
+            let mut held = false;
+            for holding in &row.holdings {
+                if let Holding::Slot { pool: name, .. } = holding
+                    && name == pool
+                {
+                    held = true;
+                    break;
+                }
+            }
+            held
+        }
+        Some(_) | None => false,
+    };
+    if held {
+        crate::run::hold(domain, env, task, crate::Hold::Drift, out);
     }
 }
 
@@ -82,6 +161,48 @@ fn holder(domain: &Domain, holding: &Holding) -> Option<u64> {
     None
 }
 
+fn holders(domain: &Domain, holding: &Holding) -> u32 {
+    let mut count = 0_u32;
+    for (number, _) in &domain.names {
+        let row = record(domain, *number).expect("indexed live task");
+        if row.holds_taken {
+            for held in &row.holdings {
+                if same(held, holding) {
+                    count = count.saturating_add(1);
+                    break;
+                }
+            }
+        }
+    }
+    count
+}
+
+fn held_by(domain: &Domain, task: u64, holding: &Holding) -> bool {
+    let Some(row) = record(domain, task) else { return false };
+    if !row.holds_taken {
+        return false;
+    }
+    for held in &row.holdings {
+        if same(held, holding) {
+            return true;
+        }
+    }
+    false
+}
+
+fn available(domain: &Domain, holding: &Holding, extra: u32) -> bool {
+    match holding {
+        Holding::Write { .. } => holder(domain, holding).is_none() && extra == 0,
+        Holding::Slot { pool, .. } => {
+            let slots = match domain.pools.get(pool) {
+                Some(row) => row.slots,
+                None => 0,
+            };
+            holders(domain, holding).saturating_add(extra) < slots
+        }
+    }
+}
+
 /// Current task that owns an exclusive resource, including a handed-down one.
 pub(crate) fn writer_holder(domain: &Domain, resource: &Name) -> Option<u64> {
     for (number, _) in &domain.names {
@@ -120,6 +241,7 @@ fn waiting_count(domain: &Domain, holding: &Holding) -> u32 {
 }
 
 /// Preflight a complete batch without granting any of its resources.
+#[expect(clippy::too_many_lines, reason = "whole-batch hold admission checks every resource before mutation")]
 pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batch: &[New]) -> Result<(), Problem> {
     for (at, new) in batch.iter().enumerate() {
         if new.holdings.len() > usize::try_from(limits.holdings).expect("u32 fits usize") {
@@ -146,27 +268,33 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batc
                 }
             }
             let mut occupied = holder(domain, needed);
+            let mut earlier_count = 0_u32;
             for earlier in batch.iter().take(at) {
                 for prior in &earlier.holdings {
                     if same(prior, needed) {
                         occupied = Some(earlier.number);
+                        earlier_count = earlier_count.saturating_add(1);
                     }
                 }
             }
             let handed_down = match creator {
-                Party::Task(parent) => occupied == Some(parent),
+                Party::Task(parent) => earlier_count == 0 && held_by(domain, parent, needed),
                 Party::Person(_) | Party::Deployment { .. } => false,
             };
             if handed_down && !new.dependencies.is_empty() {
                 return Err(Problem::new(Some(new.number), Refusal::Holds));
             }
-            if let Some(blocker) = if handed_down { None } else { occupied } {
+            let blocked = !handed_down && !available(domain, needed, earlier_count);
+            if blocked {
                 match taken {
                     Taken::Refuses => {
                         return Err(Problem {
                             task: Some(new.number),
                             why: Refusal::HoldTaken,
-                            blocked_by: Some(Box::new([blocker])),
+                            blocked_by: match occupied {
+                                Some(owner) => Some(Box::new([owner])),
+                                None => None,
+                            },
                         });
                     }
                     Taken::Waits => {}
@@ -180,14 +308,14 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batc
                     }
                 }
             }
-            if queued >= limits.hold_waiters && occupied.is_some() && !handed_down {
+            if queued >= limits.hold_waiters && blocked {
                 return Err(Problem::new(Some(new.number), Refusal::Holds));
             }
         }
         let mut handing_down = false;
         if let Party::Task(parent) = creator {
             for needed in &new.holdings {
-                if holder(domain, needed) == Some(parent) {
+                if held_by(domain, parent, needed) {
                     handing_down = true;
                     break;
                 }
@@ -207,12 +335,11 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batc
                 if earlier_holder {
                     return Err(Problem::new(Some(new.number), Refusal::HoldTaken));
                 }
-                if let Some(owner) = holder(domain, needed)
-                    && match creator {
-                        Party::Task(parent) => owner != parent,
-                        Party::Person(_) | Party::Deployment { .. } => true,
-                    }
-                {
+                let transferred = match creator {
+                    Party::Task(parent) => held_by(domain, parent, needed),
+                    Party::Person(_) | Party::Deployment { .. } => false,
+                };
+                if !transferred && !available(domain, needed, 0) {
                     return Err(Problem::new(Some(new.number), Refusal::HoldTaken));
                 }
             }
@@ -225,7 +352,7 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batc
 pub(crate) fn free(domain: &Domain, number: u64) -> bool {
     let row = record(domain, number).expect("waiting task live");
     for needed in &row.holdings {
-        if holder(domain, needed).is_some() {
+        if !available(domain, needed, 0) {
             return false;
         }
     }
@@ -289,7 +416,7 @@ pub(crate) fn wait(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mu
     }
     let mut blocked = None;
     for needed in &row.holdings {
-        if holder(domain, needed).is_some() {
+        if !available(domain, needed, 0) {
             blocked = Some(name(needed).clone());
             break;
         }
@@ -372,7 +499,10 @@ pub(crate) fn valid_record(domain: &Domain, limits: &Limits, row: &TaskRecord) -
                 return false;
             }
         }
-        if row.holds_taken && holder(domain, holding).is_some() {
+        if row.holds_taken
+            && let Holding::Write { .. } = holding
+            && holder(domain, holding).is_some()
+        {
             return false;
         }
     }

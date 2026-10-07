@@ -117,6 +117,7 @@ impl Accounting {
                             }
                             Stored::Live(_)
                             | Stored::Writer(_)
+                            | Stored::Pool(_)
                             | Stored::Ended(_)
                             | Stored::Stub(_)
                             | Stored::Ledger(_)
@@ -152,6 +153,7 @@ impl Accounting {
                             }
                             Stored::Live(_)
                             | Stored::Writer(_)
+                            | Stored::Pool(_)
                             | Stored::Ended(_)
                             | Stored::Stub(_)
                             | Stored::Ledger(_)
@@ -183,6 +185,7 @@ impl Accounting {
                 }
                 Stored::Ended(_)
                 | Stored::Writer(_)
+                | Stored::Pool(_)
                 | Stored::Stub(_)
                 | Stored::History(_)
                 | Stored::PersonProposal(_) => {}

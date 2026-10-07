@@ -587,6 +587,11 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>, stored: Stored, ou
                 failed(domain, None, Refusal::Restore, out);
             }
         }
+        Stored::Pool(row) => {
+            if !crate::holds::restore_pool(domain, &env.limits, row) {
+                failed(domain, None, Refusal::Restore, out);
+            }
+        }
         // Historical ended rows stay outside the live arena;
         // they cannot accidentally return an ended task to the live arena.
         Stored::Ended(task) => failed(domain, Some(task.number), Refusal::Restore, out),

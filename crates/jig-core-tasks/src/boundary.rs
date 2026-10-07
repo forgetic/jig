@@ -645,6 +645,14 @@ pub struct WriterSlot {
     pub lost: bool,
 }
 
+/// Last durable connector report of one pool's current admission capacity.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct PoolSlots {
+    pub number: u64,
+    pub pool: Name,
+    pub slots: u32,
+}
+
 /// One connector's configured resource kind.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Kind {
@@ -808,10 +816,12 @@ pub enum Key {
     Ledger(/** Actual period/pool source identity. */ Funder),
     /// One occupied writer slot for a held resource.
     Writer(u64),
+    /// Last known capacity for a connector pool.
+    Pool(u64),
 }
 
-/// Tasks-to-root persistence row or root-to-tasks live restore input; only `Live` and `Ledger`
-/// belong to startup restoration. (domain/tasks.md, section 2).
+/// Tasks-to-root persistence row or root-to-tasks startup restore input; live tasks,
+/// funding, writer slots and pool counts are restored before admission.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Stored {
     /// Pending or decided person-origin goal proposal.
@@ -839,6 +849,8 @@ pub enum Stored {
     ),
     /// Occupied writer slot, restored before claims are adopted.
     Writer(WriterSlot),
+    /// Last reported pool capacity, restored before hold readiness runs.
+    Pool(PoolSlots),
 }
 
 impl Stored {
@@ -854,6 +866,7 @@ impl Stored {
             Stored::Stub(stub) => Key::Stub(stub.task),
             Stored::Ledger(record) => Key::Ledger(record.funder),
             Stored::Writer(slot) => Key::Writer(slot.number),
+            Stored::Pool(row) => Key::Pool(row.number),
         }
     }
 }
@@ -972,6 +985,10 @@ pub enum Accepted {
 pub enum Event {
     /// Root installs one connector's bounded resource-kind configuration.
     Kinds { connector: u16, kinds: Box<[Kind]> },
+    /// Connector reports its current slot count for one opaque pool.
+    Slots { pool: Name, slots: u32 },
+    /// Connector reports that a holder's allocation in this pool vanished.
+    AllocationGone { pool: Name, task: u64 },
     /// Connector facts changed for one idle procedure; a due step is offered once.
     WakeProcedure { task: u64 },
     /// Root admits a person's goal proposal after validating policy and shape.

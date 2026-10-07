@@ -5,7 +5,8 @@
 //! authentication or the authority child's policy tables. Root supplies those
 //! decisions through independent semantic types.
 //!
-//! `Domain::new` starts restoring. `Stored::Live`, `Stored::Ledger` and `Stored::Stub`
+//! `Domain::new` starts restoring. `Stored::Live`, `Stored::Ledger`, `Stored::Stub`,
+//! `Stored::Writer` and `Stored::Pool`
 //! enter `Restore`; `Restored` validates the complete live graph and authentic
 //! financial reservations before bounded activation/adoption outputs. Historical
 //! ended rows remain in root storage and cannot re-enter live state
@@ -75,7 +76,7 @@ pub use batch::{valid_authority, valid_contract, valid_spec};
 pub use boundary::{
     Accepted, Active, Cause, Closing, Contract, DelegateState, DelegationContext, End, Ending, Event, Executor, Hold,
     HoldKind, Holding, InvalidResult, Key, Kind, MessageKind, Name, New, NewsClass, NoticeState, Parameter, Party,
-    PersonAddress, Phase, Problem, ProcedureDecision, QuestionCredit, RecurringOverlap, RecurringState,
+    PersonAddress, Phase, PoolSlots, Problem, ProcedureDecision, QuestionCredit, RecurringOverlap, RecurringState,
     RecurringTemplate, Refusal, Request, ResultFollowups, ResultKind, ResultsWake, RunContext, SavedResource, Spec,
     Stage, Status, Stored, Stub, Subscription, SubscriptionKind, Taken, TaskRecord, TaskResult, Verdict, WakePolicy,
     WakeRule, Was, Word, Writer, WriterSlot,

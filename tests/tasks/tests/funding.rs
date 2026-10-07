@@ -32,6 +32,7 @@ fn ledger(world: &World, funder: Funder) -> tasks::FundingRecord {
         Stored::Live(_)
         | Stored::Ended(_)
         | Stored::Writer(_)
+        | Stored::Pool(_)
         | Stored::Stub(_)
         | Stored::History(_)
         | Stored::PersonProposal(_) => {

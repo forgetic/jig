@@ -1,0 +1,13 @@
+[package]
+name = "jig-core-accounts"
+description = "The engine's secret-free account refresh and availability policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+skein-lib.workspace = true
+
+[lints]
+workspace = true

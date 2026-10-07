@@ -1,9 +1,13 @@
-//! Jig's worker host (hosts.md, section 6). It admits assignments, asks the
-//! application workspace to prepare and serve deliveries, supervises an agent
-//! through the worker root, and answers after the agent and workspace settle.
-//! The root translates its engine, workspace and agent capabilities. The host
-//! has no timers; its callers bound every wait (hosts.md, sections 6 and 7).
-//! Facts are best effort and never govern a decision.
+//! Jig's host (domain/hosts.md, sections 4 to 6) keeps the lifecycle of runs
+//! on the slots of a worker or an engine. It admits assignments, asks an
+//! optional application workspace to prepare and serve deliveries, supervises
+//! an agent capability, and answers after both have settled. It keeps turns
+//! and answers until the core acknowledges them. The root translates the link
+//! to the core, workspace and agent capabilities; an engine root gives it a
+//! direct link that is never lost and no workspace. The agent may be a process
+//! or an inline agent, and the host does not distinguish them.
+//! The host arms no timers; its callers bound each wait. Facts are best effort
+//! and never govern a decision.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]

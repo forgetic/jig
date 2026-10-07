@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use jig_host::{
-    self as host, AgentFailure, Event, Fact, Failure, Finish, Limits, Reason, Reply, Request, RunFailure,
-};
+use jig_host::{self as host, AgentFailure, Event, Fact, Failure, Finish, Limits, Reason, Reply, Request, RunFailure};
 use skein_lib::{Duration, ReplyTo, Rng, Time, Token};
 use skein_world::domain::{Ledger, Schedule, Span, Stage, Trace};
 

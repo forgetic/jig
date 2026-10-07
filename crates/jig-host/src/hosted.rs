@@ -113,7 +113,7 @@ enum Ending {
     /// It failed: as it said, or its agent broke the rules saying it, or
     /// exited without a word.
     Failed { failure: Failure, detail: Box<[u8]> },
-    /// The worker stopped it, for `failure`: a cancel, or a fault of its
+    /// The host stopped it, for `failure`: a cancel, or a fault of its
     /// agent. What the run says before its agent has gone still wins.
     Stopped { failure: Failure, detail: Box<[u8]> },
 }
@@ -433,7 +433,7 @@ fn relay_ended(domain: &mut Domain, call_id: Id<Call>, out: &mut Queue<Request>)
 pub(crate) fn cancel_all(domain: &mut Domain, reason: Reason) {
     let Domain { names, ready, shut, .. } = domain;
     match reason {
-        // A worker shutting down takes no more work.
+        // A host shutting down takes no more work.
         Reason::Shutdown => *shut = true,
         Reason::Engine | Reason::Contact => {}
     }
@@ -730,7 +730,7 @@ pub(crate) fn finished(domain: &mut Domain, env: &Env<Limits>, owner: Token, fin
         }
         State::Stopping { reply_to, workspace, agent, ending, gone } => {
             let ending = match ending {
-                // Stopped by the worker, the run says how it finishes as it
+                // Stopped by the host, the run says how it finishes as it
                 // winds down: its own ending wins.
                 Ending::Stopped { failure, detail: _ } => said(finish, failure, &env.limits),
                 // It said how it finishes already, or its agent exited.
@@ -766,7 +766,7 @@ pub(crate) fn faulted(
             out.push(Request::Stop { agent });
             State::Stopping { reply_to, workspace, agent, ending, gone: false }
         }
-        // How the run ends is decided already, or the worker stopped it first.
+        // How the run ends is decided already, or the host stopped it first.
         state @ State::Stopping { .. } => state,
         State::Preparing { .. }
         | State::Cancelling { .. }

@@ -1,5 +1,5 @@
 //! Turns retained for the engine until it acknowledges them (domain/hosts.md,
-//! section 6.4). The worker root handles channel retries; the host owns the
+//! section 6.4). The root handles link retries when needed; the host owns the
 //! bytes and the credit bound that pauses an agent reader.
 
 use skein_lib::bytes::copy_of;

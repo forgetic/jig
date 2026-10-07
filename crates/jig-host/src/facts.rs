@@ -1,4 +1,4 @@
-//! What the host tells whoever watches the worker (domain/hosts.md, sections
+//! What the host tells whoever watches it (domain/hosts.md, sections
 //! 6.2 and 6.5): a fact for each step of a hosted run's lifecycle, content-free (the
 //! engine's names and classifications, never what the charter, the run or the
 //! engine said), in a bounded queue the parent drains at its own pace.

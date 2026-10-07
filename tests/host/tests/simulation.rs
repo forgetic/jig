@@ -56,11 +56,7 @@ fn assignments_beyond_the_limits_are_refused_as_invalid_and_never_admitted() {
 fn cancelled_runs_are_stopped_saved_and_their_calls_answered_as_unavailable() {
     let calm = Settings::calm(4);
     let settings = Settings {
-        engine: jig_host_world::engine::Script {
-            cancels: 1000,
-            cancel_after: Span::millis(0, 20_000),
-            ..calm.engine
-        },
+        engine: jig_host_world::engine::Script { cancels: 1000, cancel_after: Span::millis(0, 20_000), ..calm.engine },
         parent: jig_host_world::parent::Script { relays: 600, late: 1000, ..calm.parent },
         ..calm
     };
@@ -83,11 +79,7 @@ fn stale_attempts_change_nothing() {
 fn losing_contact_past_the_grace_cancels_every_run_and_saves_their_work_first() {
     let calm = Settings::calm(6);
     let settings = Settings {
-        engine: jig_host_world::engine::Script {
-            assignments: 4,
-            spacing: Span::millis(0, 1_000),
-            ..calm.engine
-        },
+        engine: jig_host_world::engine::Script { assignments: 4, spacing: Span::millis(0, 1_000), ..calm.engine },
         parent: jig_host_world::parent::Script { steps: 30, ..calm.parent },
         outage: Some(Outage {
             at: Span::millis(5_000, 5_000),
@@ -107,11 +99,7 @@ fn losing_contact_past_the_grace_cancels_every_run_and_saves_their_work_first() 
 fn losing_contact_within_the_grace_keeps_the_runs_and_reports_them() {
     let calm = Settings::calm(7);
     let settings = Settings {
-        engine: jig_host_world::engine::Script {
-            assignments: 4,
-            spacing: Span::millis(0, 1_000),
-            ..calm.engine
-        },
+        engine: jig_host_world::engine::Script { assignments: 4, spacing: Span::millis(0, 1_000), ..calm.engine },
         parent: jig_host_world::parent::Script { steps: 30, ..calm.parent },
         outage: Some(Outage {
             at: Span::millis(5_000, 5_000),

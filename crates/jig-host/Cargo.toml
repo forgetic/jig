@@ -1,6 +1,6 @@
 [package]
 name = "jig-host"
-description = "Hosted runs: the worker domain's host child domain, sans-io"
+description = "Hosted runs: admission, relays, turns and answers, sans-io"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

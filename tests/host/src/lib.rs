@@ -1,4 +1,4 @@
-//! A domain world for the worker's host child domain (programming-model.md,
+//! A domain world for the host child domain (programming-model.md,
 //! 4.5; testing-strategy.md, 2.2; hosts.md, sections 4 and 9): the
 //! host, with the world as its parent, a scripted engine assigning it runs
 //! ([`engine`]), and the parent's capabilities scripted ([`parent`]):
@@ -16,7 +16,7 @@
 //! while the run's agent may still be running or a delivery is in flight; a slot
 //! is taken from admission until the run has answered, and the run answers
 //! only once it has left live and all of it is released; a stale attempt, or
-//! the attempt hosted assigned again, never acts; a worker shutting down
+//! the attempt hosted assigned again, never acts; a host shutting down
 //! admits nothing more; inbound events reach a run once each, in the order
 //! sent; every host call is answered once, every call of a run that has left
 //! live (a cancelled one among them) as unavailable, those relayed in flight

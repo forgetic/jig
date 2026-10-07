@@ -36,7 +36,7 @@ pub struct Domain {
     pub(crate) facts: Facts,
     pub(crate) told: AgentFacts,
     pub(crate) turns: Turns,
-    /// The worker is shutting down: it admits no more runs.
+    /// The root is shutting down: it admits no more runs.
     pub(crate) shut: bool,
     /// Answers the engine has yet to acknowledge, as the parent last said:
     /// each keeps its run's slot.

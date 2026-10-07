@@ -1,5 +1,5 @@
-//! The worker host's boundary (hosts.md, sections 6 and 7). The worker root
-//! translates engine messages and the workspace and agent capabilities. A
+//! The host's boundary (domain/hosts.md, sections 4 to 7). Its root
+//! translates core messages and the optional workspace and agent capabilities. A
 //! request's `owner` names the hosted run or its call; a terminal echoes it.
 //! The root owns application workspace items and interprets opaque tokens.
 
@@ -101,7 +101,7 @@ pub enum Event {
     },
     /// From the top level: cancel every run hosted now, for `reason` (lost
     /// contact with the engine past its grace, or shutdown). The runs are
-    /// cancelled one at a time, from the ready list. A worker shutting down
+    /// cancelled one at a time, from the ready list. A root shutting down
     /// admits no more runs: assignments after it are refused as busy.
     CancelAll {
         reason: Reason,
@@ -112,7 +112,7 @@ pub enum Event {
     /// From the top level: `answers` the host made have yet to be
     /// acknowledged by the engine. Each keeps its run's slot until it is, so
     /// that the engine, which frees a slot once it has the answer, never finds
-    /// a worker with more runs than slots.
+    /// a host with more runs than slots.
     Unacknowledged {
         answers: u32,
     },
@@ -330,7 +330,7 @@ pub enum Request {
         call: Token,
         reply: Reply,
     },
-    /// Stop the agent `agent`: cancel its run, then kill what is left of it
+    /// Stop the agent `agent`: cancel its run, then end what is left of it
     /// past the grace. Its start's `Gone` comes once it has all gone. Sent
     /// whenever its run leaves live, also once the run has said how it
     /// finishes or the agent was faulted, when it changes nothing: the agent
@@ -359,7 +359,7 @@ pub enum Request {
     },
 }
 
-/// The host's agent capability, translated by the worker root (hosts.md,
+/// The host's agent capability, translated by its root (domain/hosts.md,
 /// section 6). These requests carry no process or channel vocabulary.
 #[derive(PartialEq, Eq, Debug)]
 pub enum ToAgent {
@@ -510,7 +510,7 @@ impl Event {
 }
 
 impl Request {
-    /// Take an agent request for translation by the worker root, returning
+    /// Take an agent request for translation by the root, returning
     /// any request addressed to another capability unchanged.
     pub fn to_agent(self) -> Result<ToAgent, Request> {
         match self {
@@ -551,7 +551,7 @@ impl Request {
     }
 }
 
-/// What the engine gives the worker for one run (domain/hosts.md, section 2).
+/// What the core gives the host for one run (domain/hosts.md, section 2).
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct Assignment {
     /// The engine's names for the run and for this attempt at it.
@@ -635,7 +635,7 @@ pub enum EndingV2 {
     Failed { failure: Failure, detail: Box<[u8]>, work: Work },
 }
 
-/// The application's workspace items, held by its worker root.
+/// The application's workspace items, held by its root.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Workspace {
     /// The task whose runs may reuse the workspace.
@@ -777,8 +777,8 @@ pub struct Work {
 pub enum Refusal {
     /// Every slot is taken (by a run hosted, or one whose answer the engine
     /// has yet to acknowledge), the run is hosted already under another
-    /// attempt that has not answered yet, or the worker is shutting down. A
-    /// later retry, on this worker or another, may find room.
+    /// attempt that has not answered yet, or the host is shutting down. A
+    /// later retry, on this host or another, may find room.
     Busy,
     /// The assignment does not fit the limits.
     Invalid(Invalid),
@@ -855,9 +855,9 @@ pub enum AgentFailure {
 pub enum Reason {
     /// The engine cancelled it.
     Engine,
-    /// The worker lost contact with the engine for longer than the grace.
+    /// A worker root lost contact with the core for longer than the grace.
     Contact,
-    /// The worker is shutting down.
+    /// The root is shutting down.
     Shutdown,
 }
 

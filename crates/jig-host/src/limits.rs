@@ -43,7 +43,7 @@ pub struct Limits {
     /// Facts kept until the parent drains them. Beyond them, facts are
     /// dropped and counted.
     pub facts: u32,
-    /// Agent facts kept for the engine while the channel cannot take them.
+    /// Agent facts kept for the core while the link cannot take them.
     pub told: u32,
     /// The most bytes in one agent fact.
     pub fact_bytes: u64,

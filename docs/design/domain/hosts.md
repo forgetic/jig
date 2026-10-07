@@ -39,9 +39,12 @@ section 12.
   charter in its own terms; the protocol layer, or the local host, puts
   them into smith's (section 8). Only the hosts, and a client's view of
   conversations, link smith.
-- **Nothing a run sends is lost.** Turns and answers are kept until the
-  core acknowledges them, once committed, and sent again after every
-  hello.
+- **Committed turns survive.** Turns and answers are kept until the core
+  acknowledges them, once committed, and sent again after every hello.
+  What a host loses before it was committed (its turns, when a worker
+  dies) is done again by the task's next attempt, which starts from the
+  last committed turn and is told of the calls committed after it
+  (engine.md, 7.1 and 7.3).
 
 ## 2. The contract
 
@@ -373,10 +376,19 @@ bytes; the local host, for runs in the engine.
   the run must make through its workspace before it finishes, with the
   fields its workspace asks for; a failure. The core judges a result
   again as it commits it (tasks.md, 5.6).
-- **Budget, models, waiting:** what the task has left, capped per run, in
-  the deployment's unit, with each model's prices; the LLM endpoints the
-  accounts give, their credentials as grants; the charter's waiting time,
-  and whether a run resumes its transcript or starts fresh.
+- **Budget, models, waiting:** the run's budget, reserved from its task
+  at its claim, in the deployment's unit, with each model's prices; the
+  LLM endpoints the accounts give, their credentials as grants; the
+  charter's waiting time, and whether a run resumes its transcript or
+  starts fresh.
+- **What jig asks of smith's budget** (smith's `run.md`, section 9):
+  before each completion, its sub-agents' included, the agent reserves
+  that completion's maximum cost (the input it sends and the output its
+  `max_tokens` allows, at the model's prices) from the run's budget, and
+  settles the difference when the completion ends; a completion whose
+  maximum does not fit is not made, and the run ends for its budget. All
+  of it is inside the run, with no call to its host, so the run never
+  spends past its budget (authority.md, section 7).
 
 ## 9. Messages and delivery
 

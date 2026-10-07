@@ -36,8 +36,8 @@ is still open is listed in section 12.
 - **A decision commits once** (section 4): its change of state and the
   effects it asks for, in one commit. Nothing leaves the engine before
   the commit it follows from is durable. Effects are made from the
-  outbox, keyed, so a write repeated after an uncertain failure finds
-  what the first made.
+  outbox, keyed, and each kind of effect declares how one whose outcome
+  is uncertain is resolved, which is what its promise of once rests on.
 - **The owner keeps the value** (section 5). The core holds what it acts
   on, and nothing of a connector's vocabulary: it names a connector's
   values by token and size, and the application's root puts each output
@@ -219,10 +219,12 @@ tasks, inboxes and authority know none of them.
   keeps it waiting.
 - **The outbox makes each effect, keyed.** An effect committed is an
   entry in its connector's outbox, with a key derived from what the
-  effect is for, never from when it was asked. Its connector makes it; a
-  creation carries its key where the system keeps it, so a write repeated
-  after an uncertain failure finds what the first made (connectors.md,
-  section 4).
+  effect is for, never from when it was asked. Its connector makes it.
+  How one whose outcome is uncertain is resolved depends on what the
+  system offers for its kind: a key the system keeps, a condition it
+  checks, a write that may be repeated. An effect with none of these is
+  never repeated on the engine's own: its task is held for a person
+  (connectors.md, 4.3).
 - **Facts are read afresh.** What a connector's system owns is read again
   before a decision that depends on it, as level-triggered state. Events
   are hints that something changed, never the state itself.
@@ -409,6 +411,12 @@ Each object the application deals with is one of two kinds:
 - **Nothing is required of a system** beyond the access the application
   is given. Policy is the enforcement; whatever protection a system has
   is a second net.
+- **What a system offers decides how strong its promises are.** An
+  effect is made at most once across uncertainty only if its system
+  keeps its key or checks its condition; otherwise its task is held for a
+  person when its outcome is uncertain. A requirement holds when an
+  effect is applied only if the effect's own system checks it then
+  (connectors.md, 4.3 and section 7).
 - **What the application may do there is read at adoption,** and the
   project's policy keeps within it (connectors.md, section 12).
 
@@ -481,21 +489,33 @@ P, the person on call
 The referees of jig's worlds hold the core, and every application's
 wiring, to these, seen from outside (testing.md):
 
-- **Authority holds.** No effect is made, no task created and no budget
-  spent beyond what the deployment's rules, the project's policy and the
-  chain of authority above the task allow, except by a proposal a holder
-  of that authority accepted. No effect is made whose requirements'
-  verdicts were not met.
-- **Once.** Every keyed effect is made at most once, across restarts
-  included; every task in a batch is made, or none is.
+- **Authority holds.** No effect is made, no task created and no spend
+  recorded beyond what the deployment's rules and the project's policy,
+  as they stand when it is decided, and the chain of authority above the
+  task allow, except by a proposal a holder of that authority accepted.
+  Every guarded requirement held when its effect was applied; every
+  observed one was met, within its freshness, when its effect was
+  decided.
+- **Spend is bounded.** Each completion's maximum is reserved before it
+  is made and each priced effect is charged its maximum when decided, so
+  recorded spend never exceeds a task's budget. The only spend beyond it
+  is what a worker spent on turns it lost before they were committed,
+  bounded by the turns it may keep unacknowledged.
+- **Once, as each kind allows.** An effect whose system keeps its key or
+  checks its condition is made at most once, across restarts and late
+  arrivals included; an idempotent set may be repeated, to the same final
+  state; an effect of any other kind whose outcome is uncertain is not
+  repeated without a person's decision. Every task in a batch is made, or
+  none is.
 - **Nothing ahead of its commit.** Nothing a party was answered, a host
   was assigned or acknowledged, or a system was asked to do, depended on
   state the store did not keep. What people watch live may run ahead of
   it, as views are best effort.
 - **Order.** A task starts only after its dependencies are done and
-  closed; one run at most writes a resource at a time, and a pool never
-  has more holders than its slots; an effect lands exactly the state its
-  decision saw, where the system can check it; a task ends only after its
+  closed; one run at most writes a resource at a time; a pool admits no
+  holder beyond the slots it is known to have, and one that shrank admits
+  none until it drains; an effect lands exactly the state its decision
+  saw, where the system can check it; a task ends only after its
   delegates.
 - **Nothing is lost.** A result reaches its requester; a person's words
   reach the task they were written to, or that task ends; a proposal is

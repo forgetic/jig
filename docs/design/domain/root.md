@@ -33,11 +33,14 @@ still open is listed in section 14.
   items, a call's answer from the core's part and a connector's.
 - **Boilerplate, not judgement.** What is left to the application is
   which child an event goes to and the small total functions between
-  vocabularies. A mistake there is an ordinary bug, found by the
-  application's stories; it cannot break a promise silently, because
-  every write and every output passes through the journal, and jig's
-  conformance world crashes the application's domain at every commit
-  (testing.md, section 5).
+  vocabularies. A missing arm breaks the build. A wrong arm (an event
+  routed to the wrong child, an effect's kind or resources mistranslated)
+  is a bug the journal cannot see: the conformance world catches it
+  where its scenarios reach, since every write and output passes through
+  the journal, the fakes report what they observed in their own terms,
+  independently of the root's translation, and its worlds generate kinds
+  and names across connectors (testing.md, section 5). What no scenario
+  reaches is the application's to test.
 - **Copied, not invented.** `ops`'s root is the reference every root is
   copied from (section 12).
 
@@ -290,10 +293,13 @@ and lets the compiler list the arms to fill.
 The root has no world of its own beyond its application's: the
 application's worlds run its whole domain on jig's conformance world
 (testing.md, section 5), whose referee checks, from outside, that the
-root kept every promise: nothing a party, a host or a system saw depended
-on a commit that was lost; every keyed effect made once across a crash
-at every commit; no effect made without its verdicts; a restart's steps
-in the core's order. Its own stories are the application's.
+root kept every promise the conformance world checks: nothing a party,
+a host or a system saw depended on a commit that was lost; every effect
+made as its recovery class allows across a crash at every commit; no
+effect made without its verdicts; a restart's steps in the core's order;
+every effect a fake system observed matching, in that system's own
+terms, the effect the core decided. Its own stories are the
+application's.
 
 ## 14. Open questions
 

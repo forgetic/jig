@@ -146,8 +146,12 @@ answered once durable (engine.md, 5.2):
 
 A project, its resources and roles, its homes and its policy are records
 in the store that owners change through requests like any other. A
-policy change applies to what is decided after it; it never revokes what
-was already given to a task, which its requester may amend.
+policy change applies to every decision after it, the decisions of tasks
+already made included: a narrowing makes their grants beyond it
+unusable, and a widening does not widen them. What was committed before
+it is made, and pending proposals are judged against it when accepted
+(authority.md, section 6, effective authority). An owner who wants work
+in flight stopped cancels it.
 
 ## 6. A party's inbox
 

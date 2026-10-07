@@ -28,18 +28,25 @@ section 12.
   funded it. Spend is counted in one unit of the deployment's: LLM
   completions as runs price them, and effects as their connectors price
   them.
+- **Recorded spend never exceeds a budget.** A run reserves each
+  completion's maximum before making it, and a priced effect is charged
+  its maximum when decided. The only spend beyond a budget is what a
+  worker spent on turns it lost before they were committed, which is
+  bounded (section 7).
 - **Every action is checked** before it commits: a batch, an effect, a
   read, a tool call, a run starting, a party's request, an amendment, a
   note. A check answers allow, wait, propose, or refuse.
 - **Requirements are verdicts.** The policy attaches requirements to
   kinds of effect; each names a connector, which judges it from its own
   facts: met, wait, or refuse. The connector making the effect need not
-  be the one judging.
+  be the one judging. A guarded requirement holds when the effect is
+  applied; an observed one, when it is decided.
 - **Beyond its authority, a task proposes.** The nearest holder above it
   whose authority covers what the action needs accepts and funds it, or
   rejects it.
-- **The root is the deployment's rules and the project's policy.** No
-  task, and no party, loosens them.
+- **The root is the deployment's rules and the project's policy,** as
+  they stand when a decision is made. No task, and no party, loosens
+  them; a narrowing reaches every task's later decisions.
 - **Pure policy.** The authority child domain decides over values it is
   given and keeps nothing between calls but the rules and policies in
   force, so it is tested by its step tests.
@@ -187,6 +194,22 @@ deployment's rules       the most any project may have; requirements on effects
   connector starts on a project's behalf (a recurring task, a standing
   watch), with the authority the project's policy gives such tasks,
   funded from the project's spend.
+- **Effective authority.** What a task may do when it decides is its own
+  authority within the deployment's rules, the project's policy and what
+  adoption found the application may do, as all three stand then:
+  - *a narrowing* applies to every decision after it, existing tasks'
+    included: a grant beyond the new ceiling is unusable, not removed,
+    and a check that meets it answers refuse;
+  - *a widening* never widens an existing task: its authority is what it
+    was given;
+  - *effects already committed* are made: they were decided under the
+    policy that stood then. A party who wants them stopped cancels their
+    task, which withdraws what has not been sent (tasks.md, section 7);
+  - *pending proposals* are judged again when accepted, against the
+    policy as it stands then;
+  - *a live run* whose workspace writes something the narrowing forbids
+    is cancelled, and its task's next run starts within the new ceiling;
+    its other calls are checked as they come.
 
 ## 7. Budgets and spend
 
@@ -209,14 +232,21 @@ deployment's rules       the most any project may have; requirements on effects
   anew: its old funder is given back what the task has left and keeps
   what it spent; the new funder reserves what the task has left from its
   own.
-- **Overruns** are charged all the same: what is spent past what a task
-  had left is counted, and its task, left with nothing, is held for its
-  budget (tasks.md, 5.5); its funder's numbers carry the excess.
+- **No overrun is recorded.** Every charge is reserved before it is
+  made (below), so what is recorded against a task never passes its
+  budget. A task left with too little for its next run or effect waits,
+  or is held for its budget (tasks.md, 5.5).
 - **Periods.** A project's spend and a party's allotment are per period.
   A reservation counts in the period that funded it, and what it returns
   goes back to that period, so a reset frees nothing reserved. A
   recurring task's budget is carved again each period (tasks.md,
   section 10).
+- **Standing work renews by period.** A standing task, recurring or a
+  standing procedure (connectors.md, 6.6), has its tasks and its spend
+  carved again from the project's spend each period, so a watch that
+  runs for months never exhausts its allotment of tasks. Its delegates
+  keep their reservations in the period that funded them, and return to
+  it.
 - **What is spent:**
   - *LLM completions,* priced as they are spent. A charter carries its
     models' prices, in the deployment's unit; a run prices each
@@ -225,16 +255,26 @@ deployment's rules       the most any project may have; requirements on effects
     its answer. The core charges each turn as it commits it.
   - *Priced effects.* A connector may price a kind of effect, in the
     deployment's unit: an environment for a week, a scale-up for a day.
-    The price is part of the effect's description when it is decided,
-    checked against the task's budget as part of the effect's check
-    (8.2), and charged in the commit that decides it. What the connector
-    later finds it cost beyond that is charged when it says so, as an
-    overrun is.
-- **A run's budget** is what its task has left, capped per run by the
-  deployment. The agent enforces it (smith's `run.md`, section 9),
-  stopping the next completion of each session once the run has spent
-  it, so a run spends past its budget by at most one completion of each
-  session it has open.
+    The price is the effect's maximum cost, part of its description when
+    it is decided, checked against the task's budget as part of the
+    effect's check (8.2), and charged in the commit that decides it.
+    What the connector later finds it cost below that is returned when
+    it says so; it never charges more.
+- **A run's budget** is reserved from what its task has left in the
+  commit that claims it, capped per run by the deployment. The agent
+  enforces it exactly: before each completion, its sub-agents' included,
+  it reserves that completion's maximum cost (the input it sends, and
+  the output its `max_tokens` allows, at its model's prices) from the
+  run's budget, and settles the difference when the completion ends. A
+  completion whose maximum does not fit is not made, and the run ends
+  for its budget (hosts.md, section 8). So a run never spends past its
+  budget, and stops a little early rather than late.
+- **Spend lost with a worker.** A turn's spend is recorded when the turn
+  commits. A worker that dies loses the turns it had not had
+  acknowledged, and what they spent was spent but never recorded; the
+  next attempt is budgeted from what the store recorded. That spend is
+  the only spend beyond a budget, bounded by the turns and bytes a run
+  may keep unacknowledged (hosts.md, 6.4) at its models' prices.
 - **Time is a deadline.** A task past its deadline is held, and its
   requester told; its delegates' deadlines are no later than its own.
 - **Load is not spend.** A connector's requests to its system are its
@@ -277,13 +317,17 @@ description, which its connector gives (connectors.md, 4.1):
 - its price, if it has one, is within what the task has left, or the
   answer is propose, as a widening of its budget;
 - the verdicts its requirements need (section 10) were given for the
-  exact state the effect names: wait while one is wait, refuse once one
-  is refuse.
+  exact state the effect names, observed ones within their freshness:
+  wait while one is wait, refuse once one is refuse;
+- every requirement the policy marks as one that must be guarded is
+  guarded by the effect's kind, or the answer is refuse.
 
 The effect carries its condition to the system where the system can
 check it: a rollback made only if the service is still at the version
-decided on, a merge made at exactly the head decided on, so the verdicts
-given for that state stay true while it is made.
+decided on, a merge made at exactly the head decided on, so the guarded
+verdicts given for that state stay true while it is made. Observed
+verdicts promise only what their judges saw when the effect was decided.
+Every check is against effective authority (section 6).
 
 ### 8.3 Runs
 
@@ -362,8 +406,17 @@ authority says.
   observability's *load below 40% for 30 minutes*"; "landing into `main`
   needs the forge's *CI passed at this head*".
 - **The authority child domain knows** only which judges each effect
-  needs, and what their verdicts were. It never knows what a requirement
-  means.
+  needs, whether each is guarded by the effect's kind, the freshness of
+  each observed one, and what their verdicts were. It never knows what a
+  requirement means.
+- **Guarded or observed** (connectors.md, section 7). A requirement the
+  effect's own system checks as it applies the effect is guarded, and
+  holds when the effect is applied. Any other is observed: judged when
+  the effect is decided, within a freshness the policy gives it, and it
+  may stop holding before the effect is applied. A requirement that is
+  safety-critical is marked as one that must be guarded, and an effect
+  kind whose system cannot guard it is refused wherever the requirement
+  applies.
 - **Judged by its connector,** from that connector's own facts, for the
   exact state the effect names (connectors.md, section 7):
   - *met:* its facts, read afresh enough, hold;
@@ -395,9 +448,12 @@ Authority, a decision over data, is tested by its step tests: the order
 checked against an independent statement of it over generated values,
 and its laws (reflexive, transitive, fitting never above the order);
 carving and returning budgets over generated trees with funders, the
-spend of a subtree never counted twice and never above what funded it
-but by the overruns; every check's answer over generated verdicts and
-prices, the strictest always winning. The core's world exercises it in
+spend of a subtree never counted twice and never above what funded it,
+with reservations of completions' maxima under many open sessions;
+standing allotments renewed across periods with delegates live; every
+check's answer over generated verdicts, freshness and prices, the
+strictest always winning; effective authority as policy narrows and
+widens around live tasks. The core's world exercises it in
 place (engine.md, section 15), whose referee holds the first promise of
 core.md, section 11.
 

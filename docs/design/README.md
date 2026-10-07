@@ -72,7 +72,10 @@ go deeper into each part. The mechanics are those of skein's
 - **What an application gets** is what is hard to get right, held to the
   promises of `domain/core.md`:
   - authority holds;
-  - every keyed effect is made once, across restarts;
+  - every effect made once, as far as its system allows: keyed and
+    conditional effects at most once, others held for a person when
+    their outcome is uncertain;
+  - recorded spend never passes a budget;
   - nothing leaves the engine before the commit it follows from;
   - order: dependencies first, one writer per resource;
   - nothing is lost, nothing is written over;
@@ -320,8 +323,8 @@ to watchers and answers to a run's read tools.
   generic over the application. The application's domain stays concrete.
 - **The referee looks from outside.** Before a fake system saw any
   effect, that effect's record was durable. No run was assigned without
-  a durable claim. No person was answered ahead of their commit. Every
-  keyed effect was made once.
+  a durable claim.No person was answered ahead of their commit. Every
+  effect was made as its recovery class allows.
 
 ### 6.7 A reference root
 

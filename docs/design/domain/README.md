@@ -128,15 +128,19 @@ hosts depend on smith's domains; nothing in jig names a system.
 | grant | an effect or a read of a connector's kind on a pattern of resources |
 | fit | whether a delegate's authority goes under its creator's, given what it has left |
 | funder | who a task's budget was reserved from: a task, a party's pool, a project's period |
-| price | what a priced effect costs, in the deployment's unit |
+| price | what a priced effect costs at most, in the deployment's unit |
+| effective authority | a task's authority within the rules, policy and adoption access as they stand when it decides |
 | proposal, escalation | an action beyond its proposer's authority; a held task; each waiting for a holder |
 | rules, policy | the deployment's, a project's: the root of authority |
 | requirement, judge, verdict | facts an effect needs; the connector that judges them; met, wait or refuse |
+| guarded, observed | a requirement the effect's own system checks as it applies it; one judged only when the effect is decided, within a freshness |
 | connector | an external system as the engine sees it: the application's |
 | resource | what has an identity on a system, named by a connector's number and a path |
 | hold, pool slot | a resource a task writes alone; one of a pool's counted slots (tasks.md, section 6) |
 | writer slot | the one run that may write a held resource at a time |
 | effect, outbox, key | what the application does on a system; its entries waiting to be made; what finds them again |
+| recovery class | how an effect of a kind whose outcome is uncertain is resolved: keyed, conditional, idempotent, unrecoverable (connectors.md, 4.3) |
+| retry deadline | when an uncertain attempt may be tried again, committed with the attempt |
 | procedure | engine code as an executor, a connector's or the core's |
 | projection, home | what a connector writes of a goal for people to read; where, per project |
 | owned, participating | what the application writes alone; what it writes among others |
@@ -183,6 +187,38 @@ where each is answered:
   again (connectors.md, 4.5).
 - **Restart:** a script the core runs, step by step, through the root
   (engine.md, section 6; root.md, section 8).
+
+Decisions taken after the design's first review (2026-10-07):
+
+- **Once, by recovery class:** each kind of effect is keyed, conditional,
+  idempotent or unrecoverable, as its system allows, and the promise of
+  once is stated per class; an uncertain unrecoverable effect holds its
+  task for a person (connectors.md, 4.3; core.md, section 11).
+- **Retry deadlines are absolute,** committed with each attempt before it
+  is sent, so restarts never postpone an uncertain effect for ever
+  (connectors.md, 4.3).
+- **Guarded and observed requirements:** a guarded one holds when its
+  effect is applied, an observed one when it is decided, within a
+  freshness; a policy may require a guard (authority.md, section 10;
+  connectors.md, section 7).
+- **A hard ceiling on recorded spend:** a run reserves each completion's
+  maximum before making it, a priced effect is charged its maximum; only
+  turns lost with a worker escape it, within a stated bound
+  (authority.md, section 7). It asks a change of smith's `run.md`,
+  section 9 (hosts.md, section 8).
+- **Standing work renews by period:** a standing task's allotment of
+  tasks and spend is carved again each period (authority.md, section 7).
+- **Pools that shrink** keep their holders and admit nobody until they
+  drain; the promise is about admission (tasks.md, 6.6).
+- **Effective authority:** a narrowing of rules, policy or access reaches
+  every later decision, existing tasks' included; committed effects are
+  made; pending proposals are judged at acceptance (authority.md,
+  section 6).
+- **Committed turns survive;** what a worker loses before a commit is
+  done again by the next attempt (hosts.md, section 1).
+- **What the conformance world catches** is stated as what its scenarios
+  reach, with fakes reporting what they observed independently of the
+  root's translation (root.md, section 1; testing.md, section 5).
 
 ## 6. What is open
 

@@ -266,9 +266,11 @@ which may amend, cancel or re-address it.
 - **Past its tries, a task is held.** So it is when its executor stalls
   past its bound, a dependency fails or is cancelled, drift breaks a
   resource it relies on (connectors.md, section 11), an effect it asked
-  for fails for good, its budget or its deadline runs out (authority.md,
-  section 7), a party stops it, it waits for a hold past its bound
-  (6.2), or its procedure says it needs a decision. A hold keeps whatever
+  for fails for good, an effect it asked for is uncertain and of a kind
+  that cannot be recovered (connectors.md, 4.3), its budget or its
+  deadline runs out (authority.md, section 7), a party stops it, it waits
+  for a hold past its bound (6.2), its pool lost its allocation (6.6), or
+  its procedure says it needs a decision. A hold keeps whatever
   the task had: its result while closing, its inbox, its attempt number.
 - **A hold is escalated** (section 9): it waits for the nearest task or
   party above it that may decide, which it wakes. Whoever it reaches may
@@ -314,7 +316,7 @@ which may amend, cancel or re-address it.
 - **A pool slot** is one of a pool's counted slots: an environment from a
   pool of five, a share of a quota. Its connector names the pool, a
   resource of its own, and says how many slots it has, which may change
-  as its facts do.
+  as its facts do (6.6).
 - **Delegates write under their holder's hold.** A procedure's producing
   and repair runs write the resource their procedure's task holds.
 - **Shared resources are not held:** writing into them is ordered by
@@ -334,7 +336,8 @@ which may amend, cancel or re-address it.
   past its bound is held (5.5), and its requester hears why.
 - **Freed holds go to the queue** in the commit that frees them: the
   first waiter whose every hold is now free takes them all and becomes
-  active.
+  active. A pool slot is free only while the pool has fewer holders than
+  the slots it is known to have.
 
 ### 6.3 Writer slots
 
@@ -367,6 +370,21 @@ say, per kind and per way the task ended, as effects of its own: an
 environment provisioned for a task that ended is torn down; a branch a
 change landed from is deleted; one a failed change left is kept for a
 person to read until its tree's root closes.
+
+### 6.6 Pools that shrink
+
+A pool's slots are its system's to say, and may fall below the number of
+tasks holding it: a quota cut, a machine gone.
+
+- **Holders keep their slots.** Nothing the core admitted is taken back
+  by a fact: the tasks holding the pool keep their holds.
+- **The pool is overcommitted,** and admits no holder, from its queue or
+  from a batch, until its holders are fewer than its slots.
+- **A holder whose allocation is gone** is told by the connector, as
+  drift (connectors.md, section 11): its task is held, saying so, and its
+  release frees its slot.
+- **The promise is about admission:** no holder is admitted beyond the
+  slots the pool was known to have when it was admitted.
 
 ## 7. Amending, cancelling, moving
 
@@ -564,7 +582,9 @@ Procedures the core owns, stepped by this child domain:
 The core has no other procedure. A static plan is a batch; waiting for
 several tasks is a dependency; anything that needs a condition over
 results is a coordinator's judgement. A standing task that makes tasks
-from news is a connector's procedure (connectors.md, section 6).
+from news is a connector's procedure (connectors.md, 6.6). Both kinds of
+standing task have their allotment of tasks and spend renewed each
+period (authority.md, section 7).
 
 ## 11. Limits
 
@@ -603,11 +623,15 @@ accepted, and one that stalls and passes up; a chat's goal accepted as
 its person's, outliving the chat; an inbox filling, its news merged,
 words refused, a result still taken; two tasks wanting the last slot of
 a pool, the second waiting and taking it as the first closes; two tasks
-each wanting two holds the other wants, neither waiting in a circle.
+each wanting two holds the other wants, neither waiting in a circle; a
+pool shrinking while its slots are held and a task waits, admitting
+nobody until it drains; a standing task making delegates across many
+periods, its allotment renewed each time.
 
 Its referee: a task starts only after its dependencies are done and its
 holds taken; batches are made whole or not at all; one run at most per
-task; a resource has one holder and a pool no more holders than slots;
+task; a resource has one holder, and a pool admits no holder beyond the
+slots it is known to have;
 no task holds one resource while waiting for another; every result
 reaches its requester once, after the task has closed; a cancel ends
 every task below it, deepest first; no committed message is lost, and

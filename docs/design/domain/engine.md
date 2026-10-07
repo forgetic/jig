@@ -337,10 +337,12 @@ next only once the root says this one is done (root.md, section 8).
    reached the fleet.
 4. **Read afresh.** Each connector reads, for the live tasks that name
    them, the resources its system owns.
-5. **Settle the outboxes.** Each connector looks for every entry not
-   committed as made, by its key, before it is made again; one that
-   cannot yet be found waits until a write's lifetime has passed since
-   the engine started.
+5. **Settle the outboxes.** Each connector resolves every entry not
+   committed as made, as its recovery class says (connectors.md, 4.3):
+   looked for by its key or the state it leads to, written again if it
+   is a set; one not found waits for the retry deadline committed with
+   its last attempt, which the restart keeps; one of a kind that cannot
+   be recovered holds its task for a person.
 6. **Decide afresh.** Every procedure steps once on the facts read;
    every agent task due gets a run; every inbox's messages are relayed or
    wake as their policy says.
@@ -376,7 +378,8 @@ When an agent task is due (tasks.md, 5.2), the core:
      runs of one piece of work find their workspace cached;
    - its charter, in the core's terms: the task's instructions, the
      brief, the tools its authority gives, the outcome its result
-     contract asks for, its budget for the run and its models with their
+     contract asks for, its budget for the run, reserved from what its
+     task has left in the claim's commit, and its models with their
      prices. The host's side translates it into smith's (hosts.md,
      section 8);
    - its transcript, when it resumes, and the calls committed since its
@@ -678,7 +681,12 @@ cancelled with runs live and effects in flight, closing deepest first; a
 tool call whose answer is lost with the channel and the engine, asked
 again after a restart and answered from its record, made once; a run
 handing a held resource to a procedure while it still holds the writer
-slot; two tasks queued for a pool's last slot; a note written, corrected
+slot; two tasks queued for a pool's last slot, and the pool shrinking
+under them; an uncertain effect across restarts made before its retry
+deadline; an effect of a kind that cannot be recovered, uncertain and
+held for a person; a judge's facts changing between its verdict and the
+effect; a policy narrowed while a proposal waits, an entry is committed
+and a run is live; a note written, corrected
 by a person and recalled; a recurring task across a period's reset; a
 person's words to a running run; drift holding a task, and the client
 told why.

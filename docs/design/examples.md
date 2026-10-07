@@ -88,12 +88,21 @@ application is before its protocol layer (`README.md`, section 11).
   - services: their replicas, version, and state;
   - environments, named by pool and name;
   - quotas: a pool's capacity, a team's budget in money.
-- **Effects:**
-  - restarting a service;
-  - scaling it;
-  - rolling it back to a version;
-  - creating an environment, which is a keyed creation;
-  - tearing an environment down.
+- **Effects,** each with its recovery class (`domain/connectors.md`,
+  4.3):
+  - restarting a service: keyed in the fake production, which takes an
+    operation's id with each restart; on a backend that offers none,
+    such as systemd's units, unrecoverable, so an uncertain restart
+    holds its task for the person on call;
+  - scaling it: a set of its replicas, conditional on the count decided
+    from;
+  - rolling it back to a version: conditional, only from the version
+    decided on;
+  - creating an environment: keyed;
+  - tearing an environment down: conditional on the environment being
+    the one created under its key.
+- **Prices:** an environment is priced at its maximum, for the time asked
+  for; one torn down early returns the rest.
 - **Write holds:** a service being remediated is held by the task that
   remediates it, so two incidents never restart it at once.
 - **Scarce resources:** a pool's environments are a quota. A task that
@@ -115,14 +124,22 @@ application is before its protocol layer (`README.md`, section 11).
 
 The infrastructure connector's effects need observability's facts:
 
-- a restart is verified by the service's health;
-- a scale-down is allowed only while its load is below a threshold.
+- a restart in production needs a healthy replica elsewhere;
+- a scale-down needs its load below a threshold for half an hour.
 
-This is a requirement whose facts are one connector's while the effect
+These are requirements whose facts are one connector's while the effect
 is another's (`domain/authority.md`, section 10). The policy names
-observability as the judge of infrastructure's restarts and scale-downs;
-the core asks it for its verdict through the root, and observability
-judges from its own facts (`domain/connectors.md`, section 7).
+observability as their judge; the core asks it for its verdict through
+the root, and observability judges from its own facts
+(`domain/connectors.md`, section 7). Both are *observed:* infrastructure
+cannot check observability's facts as it applies the effect, so each
+holds when the effect is decided, within a freshness of a minute, and
+load may rise before the scale-down lands. `ops`'s policy accepts that;
+a policy that could not would mark them as needing a guard, and these
+effects would be refused.
+
+A remediation's own wait for the service to be healthy afterwards is
+its procedure's mechanics, not a requirement.
 
 ## 4. Its root
 
@@ -225,6 +242,9 @@ Q, a developer
 - **A night with no agent:** a recurring task scales staging down at
   night, if its load allows (3.3), and up in the morning. This is the
   first shape of `README.md`, section 9: procedures only.
+- **Load rising after the verdict:** the night's scale-down is decided on
+  a met verdict, and load rises before it lands. The scale-down is made,
+  as its requirement is observed; the next night's verdict says wait.
 - **A queue for the pool:** two developers ask for an environment when
   one slot is left. The second request waits for the slot, and is
   provisioned once the first environment is torn down.
@@ -233,11 +253,28 @@ Q, a developer
   finishes without restarting it.
 - **An environment deleted by hand:** E's environment disappears. E is
   held and the client says why. Nothing is recreated without a decision.
+- **A pool that shrinks:** staging's quota falls from five to two while
+  four environments are held and a request waits. Nobody is evicted; the
+  pool admits nobody until two are torn down; the waiting request goes
+  first after that.
+- **An uncertain restart:** a restart's answer is lost, and the engine
+  restarts twice before its retry deadline. The fake production finds
+  the restart by its operation's id, and nothing is restarted twice; on
+  the systemd backend, R is held for P instead.
+- **Policy narrowed:** an owner forbids restarts in production while one
+  is proposed, one is committed and a triage is running. The proposal is
+  refused when P accepts it, the committed one is made, and the owner
+  cancels its task to stop it.
+- **A month of alerts:** the watch runs across a period's reset; its
+  allotment of triage tasks is renewed, and the triages still live keep
+  the period that funded them.
 - **Crashes at every commit:** jig's conformance world runs every story
   above, crashing the engine at each commit and failing commits. The
   referee checks jig's promises from outside: each creation was made
   once, each restart was made only after its proposal's acceptance was
-  durable, and every effect was within authority.
+  durable, every effect was within authority as it stood when decided,
+  and the effect the fake production observed was the one the core
+  decided.
 
 ## 8. Its client
 

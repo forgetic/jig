@@ -29,9 +29,11 @@ still open is listed in section 16.
   pattern. A connector says which kinds take holds, exclusive or pooled,
   and whether a taken hold refuses or waits.
 - **Effects** are committed into the outbox with the decision that asks
-  for them, and made after the commit, keyed so that a write repeated
-  after an uncertain failure finds what the first made. A connector
-  describes each effect for authority, priced when it costs.
+  for them, and made after the commit, keyed. Each kind declares a
+  recovery class, which says how an effect whose outcome is uncertain is
+  resolved and how strong its promise of once is (4.3). A connector
+  describes each effect for authority, priced at its maximum when it
+  costs.
 - **Facts are read afresh; events are hints.** A connector keeps a
   working set of what its system owns of the live work, and publishes
   what changed on topics, classified for each subscriber.
@@ -39,7 +41,10 @@ still open is listed in section 16.
   machines, level-triggered, their state committed with each step.
 - **Requirements are judged by their connector** (section 7): asked
   about an effect's exact state, it answers met, wait or refuse from its
-  own facts, whichever connector makes the effect.
+  own facts, whichever connector makes the effect. A guarded requirement
+  is checked again by the effect's own system as it applies the effect;
+  an observed one holds only when the effect is decided, within its
+  freshness.
 - **What the application does there belongs to it.** A connector records
   what it made by key, writes only to what is owned (or as a
   participant, or through its own mechanics into what is shared), and
@@ -126,7 +131,9 @@ connector says what they apply to:
   *exclusive* (one holder: a service being remediated, a branch being
   written) or *pooled* (counted slots: a pool's environments);
 - **for a pooled resource, its slots,** from its facts or its
-  configuration, told to the core whenever they change;
+  configuration, told to the core whenever they change. A pool that
+  shrinks below its holders keeps them, and the connector says which
+  holder's allocation is gone, which is drift (tasks.md, 6.6);
 - **whether a taken hold refuses or waits** (tasks.md, 6.2);
 - **what a release does** to the resource, per way its task ended (4.6).
 
@@ -153,10 +160,10 @@ which it keeps. What the core gets is its **description:**
   version decided on, a merge at exactly a head);
 - **its form:** a **creation** (an environment, a pull request, a
   comment), a **transition** (a rollback, a merge, a scale to a size), or
-  a **set** (a body, a label, a silence's end), which decides how it is
-  found again (4.3);
-- **its price,** if its kind is priced, in the deployment's unit
-  (authority.md, section 7);
+  a **set** (a body, a label, a silence's end);
+- **its recovery class,** which its kind declares (4.3);
+- **its price,** if its kind is priced: its maximum, in the deployment's
+  unit (authority.md, section 7);
 - **the state its requirements are judged at:** what the judges are
   asked about (section 7).
 
@@ -169,6 +176,8 @@ which it keeps. What the core gets is its **description:**
   make it: in commit order per resource and one at a time on each, in
   parallel across resources within the connector's limits and request
   budget.
+- **Each attempt is committed before it is sent,** with its absolute
+  retry deadline (4.3), so no restart forgets when an attempt went out.
 - **Its outcome is committed in turn:** made, with what it made; failed,
   typed; or uncertain. A task closing waits until every entry it asked
   for has settled (tasks.md, 5.1).
@@ -181,21 +190,45 @@ which it keeps. What the core gets is its **description:**
   the entry went out. An entry that went out is never withdrawn: what may
   have been made counts.
 
-### 4.3 Uncertainty
+### 4.3 Uncertainty and recovery classes
 
 - **Only what provably never reached the system did nothing.** Any other
   failure (a timeout, a reset after sending, an answer that does not
-  decode) is uncertain: the write may still take effect, until a
-  **lifetime** after it went out.
-- **Found, not repeated.** An uncertain entry is looked for before it is
-  tried again:
-  - a creation by its key, which the system keeps with the object;
-  - a transition by the state it leads to: the service at the version
-    rolled back to, a pull request merged and at which commit;
-  - a set is written again, as sets are idempotent.
-- **One not found** is tried again once its lifetime has passed. A new
-  engine treats every entry it loads as uncertain (engine.md,
-  section 6), so the lifetime is counted from when it started.
+  decode) is uncertain: the write may still take effect, even after the
+  connector has tried again.
+- **Each kind of effect declares its recovery class,** from what its
+  system offers, and the connector's world shows the class holds
+  (section 15):
+  - *keyed:* the system keeps the effect's key, or an operation's id,
+    and refuses or returns a second request with the same one. An
+    uncertain entry is looked for by its key, and tried again with the
+    same key if not found; a late copy finds the first. **At most
+    once.**
+  - *conditional:* the system applies the effect only from the state it
+    was decided against (a rollback only from the version decided on, a
+    merge only at the head decided on), and the state it leads to can be
+    told from any other's. An uncertain entry is looked for by that
+    state, and tried again under the same condition; a late copy fails
+    its condition. **At most once in effect.**
+  - *idempotent:* a set, which may be applied twice to the same final
+    state. It is written again. Where the system offers a version to
+    check, the set carries it, so a late copy cannot land over a newer
+    write; where it does not, the kind says a late copy may.
+    **The same final state, possibly more than once.**
+  - *unrecoverable:* none of the above, such as a restart through an
+    interface that gives no operation's id. An uncertain entry is never
+    tried again by the engine: its task is held, saying so, for a person
+    to decide whether to make it again (tasks.md, 5.5). **At most once,
+    by holding.**
+- **Retry deadlines are absolute.** Each attempt to make an entry is
+  committed, with its deadline (the wall time it is sent, plus the
+  system's lifetime for a write, plus a margin for the clock), before it
+  is sent. An uncertain entry that was not found is tried again once its
+  deadline has passed, and only by committing a new attempt. A restart
+  keeps the deadlines it loads, rather than counting a lifetime from its
+  own start, so restarting never postpones an entry for ever. A clock
+  that moved back only delays a retry; the margin covers a clock that
+  moved forward by as much as the deployment configures.
 
 ### 4.4 Keys
 
@@ -371,20 +404,31 @@ on call.
   date with the base*. The policy names them as judges of other kinds of
   effect (authority.md, section 10), and the judging connector keeps
   their parameters as its own configuration.
+- **Guarded or observed.** A requirement is *guarded* when the effect's
+  own system checks it as it applies the effect, as the effect's
+  condition (4.1): a branch's head, a service's version. It holds when
+  the effect is applied. Every other requirement is *observed:* judged
+  when the effect is decided, by whichever connector owns its facts,
+  within a freshness the policy gives it, and it may stop holding before
+  the effect is applied, as load may rise before a scale-down. The
+  policy may mark a requirement as one that must be guarded; an effect
+  kind whose system cannot guard it is then refused (authority.md,
+  section 10).
 - **Asked for a verdict,** the judge is given the requirement, the
   effect's resource names and the state the effect names. It finds the
   subject of its facts from those names, by its own configuration, and
   answers from its working set, in the same step:
-  - *met:* its facts, fresh enough for this requirement, hold;
-  - *wait:* its facts are unknown, stale or pending, saying what it waits
-    for; it reads afresh, and its news on the subject lets the asker ask
-    again;
+  - *met:* its facts, read within the requirement's freshness, hold;
+  - *wait:* its facts are unknown, older than the freshness, or pending,
+    saying what it waits for; it reads afresh, and its news on the
+    subject lets the asker ask again;
   - *refuse:* a fact failed, saying which.
 - **Judged twice,** as the mechanics in the procedure that waits for its
   requirements, and as the rule at the effect (authority.md, section 10).
-- **Pinned.** A verdict is for the exact state the effect names (a
-  version, a head), so it stays true while the effect is made under its
-  condition (4.1).
+- **Pinned, where guarded.** A guarded verdict is for the exact state the
+  effect names (a version, a head), which the effect's condition holds
+  its system to as it applies it. An observed verdict promises only what
+  its judge saw, within the freshness.
 
 ## 8. Projections
 
@@ -493,7 +537,8 @@ procedure, but a mechanism of the connector's, keyed to the goal.
   deployment's objects already live under that prefix.
 - **What may be done is read again** when the system refuses something
   the connector believed it could, and the project's ceiling narrows
-  with it.
+  with it, for every later decision, existing tasks' included
+  (authority.md, section 6).
 
 ## 13. Load
 
@@ -531,13 +576,17 @@ below it and the root scripted above it; and the application's, where it
 runs with the core and every other connector on jig's conformance world
 (testing.md, section 5). What every connector's world checks, beyond its
 own stories: keyed effects made once across restarts at drawn moments,
-uncertain entries found rather than repeated; procedures that decide the
-same when stepped twice on the same facts; verdicts that never say met
-on stale facts; topics whose news reaches every subscriber once,
-classified; values it keeps for the root handed over once, or dropped
-when the core drops their token; and a load that follows change, the
-system preloaded with ten times the history making the same calls while
-idle.
+uncertain entries resolved as their recovery class says, with copies
+arriving late, after their deadline and after a retry, and targets that
+another hand reached too; deadlines that survive restarts made before
+they pass; procedures that decide the same when stepped twice on the
+same facts; verdicts that never say met on facts older than their
+freshness; facts that change between a verdict and its effect; pools
+that shrink while held and while waited for; topics whose news reaches
+every subscriber once, classified; values it keeps for the root handed
+over once, or dropped when the core drops their token; and a load that
+follows change, the system preloaded with ten times the history making
+the same calls while idle.
 
 ## 16. Open questions
 
@@ -548,6 +597,5 @@ idle.
 - **Classifying news with an LLM:** whether a cheap model should judge
   relevance where a connector's rules do not tell (tasks.md,
   section 13).
-- **Verdicts that need a fresh read on every ask:** whether a judge may
-  cache a verdict for a time, and how the policy says how fresh is
-  fresh enough.
+- **Freshness defaults:** how fresh each kind of observed requirement
+  must be by default, before a policy says.

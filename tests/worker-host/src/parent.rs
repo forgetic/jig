@@ -630,8 +630,9 @@ impl Parent {
                     RunFailure::Policy,
                     RunFailure::Cancelled,
                     RunFailure::Stale,
+                    RunFailure::Exhausted,
                 ];
-                Fate::Failed(kinds[usize::try_from(self.rng.below(5)).expect("fits")])
+                Fate::Failed(kinds[usize::try_from(self.rng.below(6)).expect("fits")])
             }
             3 => Fate::Exited,
             4 => Fate::Hung,

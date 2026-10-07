@@ -29,7 +29,7 @@ fn rough(seed: u64) -> Settings {
 fn random_worlds_settle_and_reach_every_ending() {
     let mut reached = BTreeSet::new();
     let mut seen = BTreeSet::new();
-    for seed in 0..300 {
+    for seed in 0..1_000 {
         let stats = run(&rough(seed)).stats();
         for ending in stats.endings.keys() {
             reached.insert(*ending);

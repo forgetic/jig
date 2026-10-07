@@ -172,7 +172,7 @@ pub enum Request {
     },
     StartV2 {
         owner: Token,
-        workspace: Token,
+        workspace: Option<Token>,
         charter: Box<[u8]>,
         transcript: Option<Box<[u8]>>,
         grants: Box<[Grant]>,
@@ -235,12 +235,11 @@ pub enum Request {
     Abort {
         owner: Token,
     },
-    /// Start an agent on `charter`, resumed from `snapshot` if there is one,
-    /// in the prepared workspace `workspace`, which says where the
-    /// the agent can work.
+    /// Start an agent on `charter`, resumed from `snapshot` if there is one.
+    /// A run without workspace items starts with no workspace.
     Start {
         owner: Token,
-        workspace: Token,
+        workspace: Option<Token>,
         charter: Box<[u8]>,
         snapshot: Option<Box<[u8]>>,
         grants: Box<[Grant]>,
@@ -290,12 +289,37 @@ pub enum Request {
 /// section 6). These requests carry no process or channel vocabulary.
 #[derive(PartialEq, Eq, Debug)]
 pub enum ToAgent {
-    StartV2 { owner: Token, workspace: Token, charter: Box<[u8]>, transcript: Option<Box<[u8]>>, grants: Box<[Grant]> },
-    Start { owner: Token, workspace: Token, charter: Box<[u8]>, snapshot: Option<Box<[u8]>>, grants: Box<[Grant]> },
-    Message { agent: Token, name: Token, event: Box<[u8]> },
-    Answer { agent: Token, call: Token, reply: Reply },
-    Grant { agent: Token, grant: Grant },
-    Cancel { agent: Token },
+    StartV2 {
+        owner: Token,
+        workspace: Option<Token>,
+        charter: Box<[u8]>,
+        transcript: Option<Box<[u8]>>,
+        grants: Box<[Grant]>,
+    },
+    Start {
+        owner: Token,
+        workspace: Option<Token>,
+        charter: Box<[u8]>,
+        snapshot: Option<Box<[u8]>>,
+        grants: Box<[Grant]>,
+    },
+    Message {
+        agent: Token,
+        name: Token,
+        event: Box<[u8]>,
+    },
+    Answer {
+        agent: Token,
+        call: Token,
+        reply: Reply,
+    },
+    Grant {
+        agent: Token,
+        grant: Grant,
+    },
+    Cancel {
+        agent: Token,
+    },
 }
 
 /// What the agent capability reports back to the host. Its root translates
@@ -372,7 +396,8 @@ pub struct Assignment {
     /// The engine's names for the run and for this attempt at it.
     pub run: Token,
     pub attempt: Token,
-    pub workspace: Workspace,
+    /// Nothing when the run has no workspace items to prepare.
+    pub workspace: Option<Workspace>,
     /// Whether the workspace must save unfinished work before release.
     pub save: bool,
     /// What the agent's run is given, passed through.

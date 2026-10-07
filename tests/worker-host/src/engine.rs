@@ -288,7 +288,7 @@ impl Engine {
             grants: Box::new([]),
             run,
             attempt,
-            workspace: Workspace { workstream: run.raw(), items: Token::new(run.raw().saturating_add(1000)) },
+            workspace: Some(Workspace { workstream: run.raw(), items: Token::new(run.raw().saturating_add(1000)) }),
             save: self.rng.chance(self.script.saves),
             charter,
             snapshot,

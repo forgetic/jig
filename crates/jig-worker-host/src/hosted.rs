@@ -59,18 +59,18 @@ enum State {
     /// Cancelled for `reason` as it was prepared: it answers once the prepare
     /// has settled.
     Cancelling { reply_to: ReplyTo, reason: Reason },
-    /// Its agent is starting in `workspace`.
-    Starting { reply_to: ReplyTo, workspace: Token, held: Queue<NamedEvent> },
+    /// Its agent is starting, with a workspace when it has items.
+    Starting { reply_to: ReplyTo, workspace: Option<Token>, held: Queue<NamedEvent> },
     /// Cancelled for `reason` as its agent started: the agent is stopped once
     /// it has started.
-    Unwanted { reply_to: ReplyTo, workspace: Token, reason: Reason },
-    /// Its agent `agent` is at work.
-    Active { reply_to: ReplyTo, workspace: Token, agent: Token },
+    Unwanted { reply_to: ReplyTo, workspace: Option<Token>, reason: Reason },
+    /// Its agent `agent` is at work, with a workspace when it has items.
+    Active { reply_to: ReplyTo, workspace: Option<Token>, agent: Token },
     /// It yielded, and waits for its next inbound event.
-    Waiting { reply_to: ReplyTo, workspace: Token, agent: Token },
+    Waiting { reply_to: ReplyTo, workspace: Option<Token>, agent: Token },
     /// It ends with `ending` once its agent has gone (`gone`) and its delivery in
     /// flight has settled.
-    Stopping { reply_to: ReplyTo, workspace: Token, agent: Token, ending: Ending, gone: bool },
+    Stopping { reply_to: ReplyTo, workspace: Option<Token>, agent: Token, ending: Ending, gone: bool },
     /// Its unfinished work is being saved; it ends with `ending` once it is.
     Saving { reply_to: ReplyTo, workspace: Token, ending: Ending },
     /// Terminal: holds nothing.
@@ -165,7 +165,7 @@ fn assign_runtime(
         attempt,
         grants,
         refreshed: false,
-        save,
+        save: save && workspace.is_some(),
         left: None,
         relays: Set::with_capacity(env.limits.run_calls),
         delivery: None,
@@ -176,7 +176,10 @@ fn assign_runtime(
     let named = names.insert(run, id).expect("a name for every slot");
     assert!(named.is_none(), "checked the run is not hosted above");
     facts.push(Fact::Admitted { run, attempt });
-    out.push(Request::Prepare { owner: id.token(), workspace });
+    match workspace {
+        Some(workspace) => out.push(Request::Prepare { owner: id.token(), workspace }),
+        None => start_prepared(domain, id.token(), None, out),
+    }
 }
 
 pub(crate) fn inbound(
@@ -331,10 +334,17 @@ pub(crate) fn report(domain: &Domain, out: &mut Queue<Request>) {
 }
 
 pub(crate) fn prepared(domain: &mut Domain, owner: Token, workspace: Token, out: &mut Queue<Request>) {
+    start_prepared(domain, owner, Some(workspace), out);
+}
+
+fn start_prepared(domain: &mut Domain, owner: Token, workspace: Option<Token>, out: &mut Queue<Request>) {
     let Domain { hosted, facts, .. } = domain;
     let id = Id::<Hosted>::from_token(owner);
     let entry = hosted.get_mut(id).expect("a run lives until its prepare has settled");
-    facts.push(Fact::Prepared { run: entry.run, attempt: entry.attempt });
+    match workspace {
+        Some(_) => facts.push(Fact::Prepared { run: entry.run, attempt: entry.attempt }),
+        None => {}
+    }
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
         State::Preparing { reply_to, charter, snapshot, held } => {
@@ -661,7 +671,9 @@ pub(crate) fn saved(domain: &mut Domain, owner: Token, at: Option<Token>, out: &
     let entry = hosted.get_mut(id).expect("a run lives until its save settles");
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Saving { reply_to, workspace, ending } => release(entry, facts, reply_to, workspace, ending, at, out),
+        State::Saving { reply_to, workspace, ending } => {
+            release(entry, facts, reply_to, Some(workspace), ending, at, out)
+        }
         State::Preparing { .. }
         | State::Cancelling { .. }
         | State::Starting { .. }
@@ -793,7 +805,7 @@ fn settle(
     facts: &mut Facts,
     id: Id<Hosted>,
     reply_to: ReplyTo,
-    workspace: Token,
+    workspace: Option<Token>,
     ending: Ending,
     out: &mut Queue<Request>,
 ) -> State {
@@ -801,12 +813,12 @@ fn settle(
         Ending::Ended { .. } => entry.left.is_some(),
         Ending::Parked { .. } | Ending::Failed { .. } | Ending::Stopped { .. } => false,
     };
-    let save = entry.save && !delivered_end;
-    if save {
-        out.push(Request::Save { owner: id.token(), workspace });
-        State::Saving { reply_to, workspace, ending }
-    } else {
-        release(entry, facts, reply_to, workspace, ending, None, out)
+    match workspace {
+        Some(workspace) if entry.save && !delivered_end => {
+            out.push(Request::Save { owner: id.token(), workspace });
+            State::Saving { reply_to, workspace, ending }
+        }
+        Some(_) | None => release(entry, facts, reply_to, workspace, ending, None, out),
     }
 }
 
@@ -815,12 +827,15 @@ fn release(
     entry: &Hosted,
     facts: &mut Facts,
     reply_to: ReplyTo,
-    workspace: Token,
+    workspace: Option<Token>,
     ending: Ending,
     saved: Option<Token>,
     out: &mut Queue<Request>,
 ) -> State {
-    out.push(Request::Release { workspace });
+    match workspace {
+        Some(workspace) => out.push(Request::Release { workspace }),
+        None => {}
+    }
     answer(entry, facts, reply_to, ending, saved, out)
 }
 
@@ -886,7 +901,7 @@ fn serve(
     entry: &mut Hosted,
     calls: &mut Slab<Call>,
     id: Id<Hosted>,
-    workspace: Token,
+    workspace: Option<Token>,
     agent: Token,
     call: Token,
     ask: Ask,
@@ -894,6 +909,14 @@ fn serve(
     out: &mut Queue<Request>,
 ) {
     if !ask_mode(&entry.runtime, &ask) {
+        out.push(Request::Reply { agent, call, reply: Reply::Unavailable });
+        return;
+    }
+    let delivery = match &ask {
+        Ask::Deliver { .. } | Ask::DeliverV2 { .. } => true,
+        Ask::Relay { .. } => false,
+    };
+    if delivery && workspace.is_none() {
         out.push(Request::Reply { agent, call, reply: Reply::Unavailable });
         return;
     }
@@ -916,10 +939,6 @@ fn serve(
         }
     }
     let in_flight = entry.relays.len().saturating_add(u32::from(entry.delivery.is_some()));
-    let delivery = match &ask {
-        Ask::Deliver { .. } | Ask::DeliverV2 { .. } => true,
-        Ask::Relay { .. } => false,
-    };
     // A delivery changes a workspace: one at a time.
     if in_flight >= limits.run_calls || (delivery && entry.delivery.is_some()) {
         out.push(Request::Reply { agent, call, reply: Reply::Busy });
@@ -935,11 +954,20 @@ fn serve(
     match ask {
         Ask::Deliver { message } => {
             entry.delivery = Some(call_id);
-            out.push(Request::DeliverWorkspace { owner: call_id.token(), workspace, message });
+            out.push(Request::DeliverWorkspace {
+                owner: call_id.token(),
+                workspace: workspace.expect("a delivery has a workspace"),
+                message,
+            });
         }
         Ask::DeliverV2 { title, body } => {
             entry.delivery = Some(call_id);
-            out.push(Request::DeliverV2 { owner: call_id.token(), workspace, title, body });
+            out.push(Request::DeliverV2 {
+                owner: call_id.token(),
+                workspace: workspace.expect("a delivery has a workspace"),
+                title,
+                body,
+            });
         }
         Ask::Relay { body } => {
             let added = entry.relays.insert(call_id).expect("checked the run's calls for room above");

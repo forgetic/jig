@@ -527,7 +527,7 @@ impl World {
                     grants: Box::new([]),
                     run,
                     attempt,
-                    workspace: host::Workspace { workstream: run.raw(), items: Token::new(0) },
+                    workspace: Some(host::Workspace { workstream: run.raw(), items: Token::new(0) }),
                     save: false,
                     charter: Box::from(&b"again"[..]),
                     snapshot: None,

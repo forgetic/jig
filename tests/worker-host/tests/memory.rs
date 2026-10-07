@@ -129,7 +129,7 @@ fn assignment(run: u64, limits: &Limits) -> Assignment {
             .collect(),
         run: Token::new(run),
         attempt: Token::new(run + 1000),
-        workspace: Workspace { workstream: run, items: Token::new(run + 2000) },
+        workspace: Some(Workspace { workstream: run, items: Token::new(run + 2000) }),
         save: true,
         charter: bytes(limits.charter_bytes),
         snapshot: Some(bytes(limits.snapshot_bytes)),

@@ -64,7 +64,7 @@ impl Harness {
         let [Request::Start { owner: started, workspace: prepared, .. }] = &*requests else {
             panic!("expected start: {requests:?}")
         };
-        assert_eq!((*started, *prepared), (owner, workspace));
+        assert_eq!((*started, *prepared), (owner, Some(workspace)));
         let agent = Token::new(run.checked_add(300).expect("small run"));
         assert!(self.step(Event::Started { owner, agent }).is_empty());
         (owner, workspace, agent)
@@ -75,7 +75,7 @@ fn assignment(run: u64) -> Assignment {
     Assignment {
         run: Token::new(run),
         attempt: Token::new(run.checked_add(1000).expect("small run")),
-        workspace: Workspace { workstream: run, items: Token::new(run.checked_add(100).expect("small run")) },
+        workspace: Some(Workspace { workstream: run, items: Token::new(run.checked_add(100).expect("small run")) }),
         save: true,
         charter: Box::from(&b"charter"[..]),
         snapshot: None,
@@ -90,6 +90,37 @@ fn a_run_prepares_and_starts_from_opaque_workspace_items() {
     assert_eq!(h.domain.hosting(owner).expect("run is hosted").run, Token::new(1));
     assert_eq!(workspace, Token::new(201));
     assert_eq!(agent, Token::new(301));
+}
+
+#[test]
+fn an_itemless_run_starts_and_ends_without_a_workspace() {
+    let mut h = Harness::new();
+    let mut assignment = assignment(1);
+    assignment.workspace = None;
+    let run = assignment.run;
+    let attempt = assignment.attempt;
+    let requests = h.step(Event::Assign { reply_to: ReplyTo::new(run), assignment });
+    let [Request::Start { owner, workspace: None, .. }] = &*requests else {
+        panic!("an itemless run starts without preparation: {requests:?}");
+    };
+    let owner = *owner;
+    let agent = Token::new(301);
+    assert!(h.step(Event::Started { owner, agent }).is_empty());
+    let call = Token::new(42);
+    assert_eq!(
+        &*h.step(Event::Called { owner, call, ask: Ask::Deliver { message: Box::from(&b"work"[..]) } }),
+        [Request::Reply { agent, call, reply: Reply::Unavailable }]
+    );
+    assert_eq!(
+        &*h.step(Event::Finished { owner, finish: Finish::Ended { outcome: Box::from(&b"done"[..]) } }),
+        [Request::Stop { agent }]
+    );
+    let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
+    assert!(matches!(
+        &*requests,
+        [Request::Answer { run: answered, attempt: answered_attempt, answer: Answer::Ended { work: Work { left: None, saved: None }, .. }, .. }]
+            if (*answered, *answered_attempt) == (run, attempt)
+    ));
 }
 
 #[test]
@@ -148,6 +179,35 @@ fn a_delivery_is_answered_after_the_workspace_reports_what_it_left() {
         panic!("expected release and answer: {requests:?}")
     };
     assert_eq!((*released, work.left, work.saved), (workspace, Some(left), None));
+}
+
+#[test]
+fn stopping_waits_for_a_delivery_even_after_the_agent_is_gone() {
+    let mut h = Harness::new();
+    let (owner, workspace, agent) = h.live(1);
+    let call = Token::new(42);
+    let requests = h.step(Event::Called { owner, call, ask: Ask::Deliver { message: Box::from(&b"ship"[..]) } });
+    let [Request::DeliverWorkspace { owner: delivery, .. }] = &*requests else {
+        panic!("delivery is in flight: {requests:?}")
+    };
+    let delivery = *delivery;
+    assert_eq!(
+        &*h.step(Event::Finished { owner, finish: Finish::Ended { outcome: Box::from(&b"done"[..]) } }),
+        [Request::Stop { agent }]
+    );
+    assert!(h.step(Event::Gone { owner, detail: Box::new([]) }).is_empty());
+    let changed = Delivery { outcome: DeliveryOutcome::Delivered, left: Token::new(900), changed: true };
+    let requests = h.step(Event::Delivered { owner: delivery, delivery: changed });
+    let [
+        Request::Reply { agent: answered_agent, call: answered_call, reply: Reply::Delivered(outcome) },
+        Request::Release { workspace: released },
+        Request::Answer { answer: Answer::Ended { work, .. }, .. },
+    ] = &*requests
+    else {
+        panic!("the delivery settles before release and answer: {requests:?}")
+    };
+    assert_eq!((*answered_agent, *answered_call, *outcome), (agent, call, changed));
+    assert_eq!((*released, work.left), (workspace, Some(changed.left)));
 }
 
 #[test]

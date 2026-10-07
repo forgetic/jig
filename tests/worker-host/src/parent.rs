@@ -275,7 +275,9 @@ impl Parent {
                 self.tally.aborts += 1;
                 Vec::new()
             }
-            Request::Start { owner, workspace, charter: _, snapshot: _, grants: _ } => self.start(owner, workspace),
+            Request::Start { owner, workspace, charter: _, snapshot: _, grants: _ } => {
+                self.start(owner, workspace.expect("the scripted assignments have workspace items"))
+            }
             Request::Deliver { agent, name: _, event: _ } => self.deliver(agent),
             Request::Reply { agent, call: _, reply: _ } => self.reply(agent),
             Request::Stop { agent } => self.stop(agent),

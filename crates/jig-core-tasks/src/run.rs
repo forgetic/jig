@@ -60,6 +60,7 @@ pub(crate) fn prepare(domain: &mut Domain, env: &Env<Limits>, to: ReplyTo, numbe
     out.push(Request::Done { reply_to: to });
 }
 
+#[expect(clippy::too_many_arguments, reason = "claim carries the caller's bounded write set")]
 pub(crate) fn claim(
     domain: &mut Domain,
     env: &Env<Limits>,
@@ -67,26 +68,33 @@ pub(crate) fn claim(
     number: u64,
     attempt: u64,
     budget: u64,
+    writes: &[crate::Name],
     out: &mut Queue<Request>,
 ) {
     let to = match entrance(domain, to, number) {
         Ok(to) => to,
         Err((to, why)) => return refused(to, Some(number), why, out),
     };
-    let task = task_mut(domain, number).expect("entrance names task");
-    if attempt <= task.record.attempt {
+    let task = record(domain, number).expect("entrance names task");
+    if attempt <= task.attempt {
         return refused(to, Some(number), Refusal::Attempt, out);
     }
-    if task.record.phase != Phase::Active(Active::Preparing) {
+    if task.phase != Phase::Active(Active::Preparing) {
         return refused(to, Some(number), Refusal::State, out);
     }
-    let fits = match crate::funders::available(task.record.numbers) {
+    let fits = match crate::funders::available(task.numbers) {
         Some(left) => budget != 0 && budget <= left,
         None => false,
     };
     if !fits {
         return refused(to, Some(number), Refusal::Funding, out);
     }
+    match crate::writers::claim(domain, &env.limits, number, attempt, writes, out) {
+        Ok(()) => {}
+        Err(Some(resource)) => return out.push(Request::WriterWaiting { reply_to: to, task: Some(number), resource }),
+        Err(None) => return refused(to, Some(number), Refusal::Holds, out),
+    }
+    let task = task_mut(domain, number).expect("entrance names task");
     task.record.numbers.reserved = task.record.numbers.reserved.checked_add(budget).expect("available budget");
     task.record.run_reserved = budget;
     task.record.attempt = attempt;
@@ -275,6 +283,10 @@ pub(crate) fn activation(
     if !saved_within(saved.as_deref(), &env.limits) {
         return refused(to, Some(number), Refusal::Contract, out);
     }
+    let lost_writer = match &end {
+        End::Failed(Class::Lost) => true,
+        End::Failed(_) | End::Parked | End::Refused | End::Finished { .. } | End::FinishedWithFollowups { .. } => false,
+    };
     let held = match old.phase {
         Phase::Held { why, .. } => Some(why),
         Phase::Waiting | Phase::Active(_) | Phase::Closing(_) | Phase::Ended(_) => None,
@@ -369,6 +381,7 @@ pub(crate) fn activation(
         Some(why) => Phase::Held { was: was(next), why },
         None => next,
     };
+    crate::writers::answered(domain, number, attempt, lost_writer, out);
     publish(domain, env, number, out);
     if narrowed && record(domain, number).expect("amended task live").phase == Phase::Active(Active::Due) {
         crate::domain::activate(domain, number, out);

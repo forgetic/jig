@@ -627,6 +627,24 @@ pub enum Holding {
     Slot { pool: Name, kind: u16 },
 }
 
+/// The one writer of an exclusively held resource (domain/tasks.md, 6.3).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Writer {
+    /// A claimed agent run, fenced by its attempt.
+    Run { task: u64, attempt: u64 },
+    /// A connector-owned outbox effect.
+    Effect { entry: u64 },
+}
+
+/// Durable writer slot. A lost run retains the slot until its connector reads afresh.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct WriterSlot {
+    pub number: u64,
+    pub resource: Name,
+    pub writer: Writer,
+    pub lost: bool,
+}
+
 /// One connector's configured resource kind.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Kind {
@@ -788,6 +806,8 @@ pub enum Key {
     Stub(u64),
     /// Logical finite period/pool row.
     Ledger(/** Actual period/pool source identity. */ Funder),
+    /// One occupied writer slot for a held resource.
+    Writer(u64),
 }
 
 /// Tasks-to-root persistence row or root-to-tasks live restore input; only `Live` and `Ledger`
@@ -817,6 +837,8 @@ pub enum Stored {
         /** Finite period/pool accounting owned by tasks and admitted at startup under `Limits::funders`. */
         crate::FundingRecord,
     ),
+    /// Occupied writer slot, restored before claims are adopted.
+    Writer(WriterSlot),
 }
 
 impl Stored {
@@ -831,6 +853,7 @@ impl Stored {
             Stored::Ended(record) => Key::Ended(record.number),
             Stored::Stub(stub) => Key::Stub(stub.task),
             Stored::Ledger(record) => Key::Ledger(record.funder),
+            Stored::Writer(slot) => Key::Writer(slot.number),
         }
     }
 }
@@ -1162,7 +1185,15 @@ pub enum Event {
         attempt: u64,
         /// Root-checked allowance reserved from the task at this claim.
         budget: u64,
+        /// Complete set of held resources this run will write, in one atomic claim.
+        writes: Box<[Name]>,
     },
+    /// A connector has read a lost run's resource afresh; its slot may now be freed.
+    ReadAfresh { resource: Name },
+    /// Claim the writer slot for a connector-owned effect until it settles.
+    EffectInFlight { reply_to: ReplyTo, task: u64, resource: Name, entry: u64 },
+    /// A connector-owned effect's terminal frees its matching writer slot.
+    EffectSettled { resource: Name, entry: u64 },
     /// Notification changing only the matching `Claimed` attempt to `Running`; absent/stale inputs
     /// are ignored and no reply is owed.
     Started {
@@ -1238,6 +1269,8 @@ pub enum Request {
     Taken { task: u64, holdings: Box<[Holding]> },
     /// One task entered or changed position in a resource's waiting queue.
     Waiting { task: u64, resource: Name, place: u32 },
+    /// A writer slot was busy; the caller may pause and retry without a failed attempt.
+    WriterWaiting { reply_to: ReplyTo, task: Option<u64>, resource: Name },
     /// Terminal for one admitted person-origin goal proposal.
     PersonProposed { reply_to: ReplyTo, proposal: u64 },
     /// Terminal for one person-origin goal decision.

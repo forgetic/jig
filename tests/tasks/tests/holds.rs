@@ -1,6 +1,6 @@
 use jig_core_tasks::{
-    Hold, HoldKind, Holding, Kind, MessageKind, Name, NoticeState, Party, Phase, Refusal, Subscription,
-    SubscriptionKind, Taken,
+    Class, End, Event, Funder, Hold, HoldKind, Holding, Kind, MessageKind, Name, NoticeState, Party, Phase, Refusal,
+    Stored, Subscription, SubscriptionKind, Taken, Writer,
 };
 use jig_tasks_world::{LIMITS, Reply, World, task};
 use skein_lib::{Duration, ReplyTo, Token};
@@ -97,4 +97,76 @@ fn the_higher_priority_goal_gets_a_freed_hold_first() {
     world.settle(1);
     assert!(world.record(3).holds_taken);
     assert!(!world.record(2).holds_taken);
+}
+
+#[test]
+fn a_run_hands_a_held_resource_to_a_procedure_while_it_still_holds_the_writer_slot() {
+    let mut world = configured(305);
+    let held = resource(4);
+    let Holding::Write { resource: name, .. } = &held else { unreachable!() };
+    let name = name.clone();
+    let mut parent = task(1, &[]);
+    parent.numbers.budget = 200;
+    parent.authority.budget.spend = 200;
+    parent.holdings = Box::new([held.clone()]);
+    assert_eq!(world.make(Party::Person(1), vec![parent]), Reply::Made(vec![1]));
+    assert_eq!(world.claim_budget_writing(1, 1, 50, Box::new([name.clone()])), Reply::Done);
+
+    let mut procedure = task(2, &[]);
+    procedure.funder = Funder::Task(1);
+    procedure.holdings = Box::new([held]);
+    assert_eq!(world.make(Party::Task(1), vec![procedure]), Reply::Made(vec![2]));
+    assert!(world.record(1).holdings.is_empty());
+    assert!(world.record(2).holds_taken);
+    assert!(world.records.values().any(|row| matches!(row, Stored::Writer(slot)
+        if slot.resource == name && slot.writer == Writer::Run { task: 1, attempt: 1 })));
+    assert_eq!(world.claim_budget_writing(2, 2, 50, Box::new([name.clone()])), Reply::WriterWaiting(name.clone()));
+
+    world.send(Event::PreparationFailed { task: 2 });
+    assert_eq!(world.terminal(1, End::Parked), Reply::Acknowledged(jig_core_tasks::Accepted::New));
+    assert!(!world.records.values().any(|row| matches!(row, Stored::Writer(slot) if slot.resource == name)));
+    world.elapse(Duration::from_secs(2));
+    assert_eq!(world.claim_budget_writing(2, 3, 50, Box::new([name.clone()])), Reply::Done);
+}
+
+#[test]
+fn a_lost_writer_keeps_its_slot_across_restart_until_its_connector_reads_afresh() {
+    let mut world = configured(306);
+    let held = resource(5);
+    let Holding::Write { resource: name, .. } = &held else { unreachable!() };
+    let name = name.clone();
+    let mut task = task(1, &[]);
+    task.holdings = Box::new([held]);
+    assert_eq!(world.make(Party::Person(1), vec![task]), Reply::Made(vec![1]));
+    assert_eq!(world.claim_budget_writing(1, 1, 50, Box::new([name.clone()])), Reply::Done);
+    assert_eq!(world.terminal(1, End::Failed(Class::Lost)), Reply::Acknowledged(jig_core_tasks::Accepted::New));
+    world.restart();
+    assert!(world.records.values().any(|row| matches!(row, Stored::Writer(slot)
+        if slot.resource == name && slot.lost)));
+    world.send(Event::ReadAfresh { resource: name.clone() });
+    assert!(!world.records.values().any(|row| matches!(row, Stored::Writer(slot) if slot.resource == name)));
+}
+
+#[test]
+fn a_connector_effect_waits_for_a_run_and_owns_the_writer_until_it_settles() {
+    let mut world = configured(307);
+    let held = resource(6);
+    let Holding::Write { resource: name, .. } = &held else { unreachable!() };
+    let name = name.clone();
+    let mut task = task(1, &[]);
+    task.holdings = Box::new([held]);
+    assert_eq!(world.make(Party::Person(1), vec![task]), Reply::Made(vec![1]));
+    assert_eq!(world.claim_budget_writing(1, 1, 50, Box::new([name.clone()])), Reply::Done);
+    let reply_to = world.to();
+    world.send(Event::EffectInFlight { reply_to, task: 1, resource: name.clone(), entry: 99 });
+    assert_eq!(world.replies.last_key_value().expect("effect reply").1, &Reply::WriterWaiting(name.clone()));
+    assert_eq!(world.terminal(1, End::Parked), Reply::Acknowledged(jig_core_tasks::Accepted::New));
+    let reply_to = world.to();
+    world.send(Event::EffectInFlight { reply_to, task: 1, resource: name.clone(), entry: 99 });
+    assert_eq!(world.replies.last_key_value().expect("effect reply").1, &Reply::Done);
+    world.restart();
+    assert!(world.records.values().any(|row| matches!(row, Stored::Writer(slot)
+        if slot.resource == name && slot.writer == Writer::Effect { entry: 99 })));
+    world.send(Event::EffectSettled { resource: name.clone(), entry: 99 });
+    assert!(!world.records.values().any(|row| matches!(row, Stored::Writer(slot) if slot.resource == name)));
 }

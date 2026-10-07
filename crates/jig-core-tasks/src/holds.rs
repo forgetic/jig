@@ -82,6 +82,27 @@ fn holder(domain: &Domain, holding: &Holding) -> Option<u64> {
     None
 }
 
+/// Current task that owns an exclusive resource, including a handed-down one.
+pub(crate) fn writer_holder(domain: &Domain, resource: &Name) -> Option<u64> {
+    for (number, _) in &domain.names {
+        let row = record(domain, *number).expect("indexed live task");
+        if row.holds_taken {
+            for held in &row.holdings {
+                if let Holding::Write { resource: name, .. } = held
+                    && name == resource
+                {
+                    return Some(*number);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn valid_name(limits: &Limits, resource: &Name) -> bool {
+    shape(limits, resource)
+}
+
 fn waiting_count(domain: &Domain, holding: &Holding) -> u32 {
     let mut count = 0_u32;
     for (number, _) in &domain.names {
@@ -99,7 +120,7 @@ fn waiting_count(domain: &Domain, holding: &Holding) -> u32 {
 }
 
 /// Preflight a complete batch without granting any of its resources.
-pub(crate) fn check_batch(domain: &Domain, limits: &Limits, batch: &[New]) -> Result<(), Problem> {
+pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batch: &[New]) -> Result<(), Problem> {
     for (at, new) in batch.iter().enumerate() {
         if new.holdings.len() > usize::try_from(limits.holdings).expect("u32 fits usize") {
             return Err(Problem::new(Some(new.number), Refusal::Holds));
@@ -132,7 +153,14 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, batch: &[New]) -> Re
                     }
                 }
             }
-            if let Some(blocker) = occupied {
+            let handed_down = match creator {
+                Party::Task(parent) => occupied == Some(parent),
+                Party::Person(_) | Party::Deployment { .. } => false,
+            };
+            if handed_down && !new.dependencies.is_empty() {
+                return Err(Problem::new(Some(new.number), Refusal::Holds));
+            }
+            if let Some(blocker) = if handed_down { None } else { occupied } {
                 match taken {
                     Taken::Refuses => {
                         return Err(Problem {
@@ -152,8 +180,41 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, batch: &[New]) -> Re
                     }
                 }
             }
-            if queued >= limits.hold_waiters && occupied.is_some() {
+            if queued >= limits.hold_waiters && occupied.is_some() && !handed_down {
                 return Err(Problem::new(Some(new.number), Refusal::Holds));
+            }
+        }
+        let mut handing_down = false;
+        if let Party::Task(parent) = creator {
+            for needed in &new.holdings {
+                if holder(domain, needed) == Some(parent) {
+                    handing_down = true;
+                    break;
+                }
+            }
+        }
+        if handing_down {
+            for needed in &new.holdings {
+                let mut earlier_holder = false;
+                for earlier in batch.iter().take(at) {
+                    for prior in &earlier.holdings {
+                        if same(prior, needed) {
+                            earlier_holder = true;
+                            break;
+                        }
+                    }
+                }
+                if earlier_holder {
+                    return Err(Problem::new(Some(new.number), Refusal::HoldTaken));
+                }
+                if let Some(owner) = holder(domain, needed)
+                    && match creator {
+                        Party::Task(parent) => owner != parent,
+                        Party::Person(_) | Party::Deployment { .. } => true,
+                    }
+                {
+                    return Err(Problem::new(Some(new.number), Refusal::HoldTaken));
+                }
             }
         }
     }

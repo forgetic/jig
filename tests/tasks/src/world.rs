@@ -87,6 +87,7 @@ pub enum Reply {
     Refused(Problem),
     Acknowledged(Accepted),
     Turn(Accepted),
+    WriterWaiting(tasks::Name),
 }
 
 /// Complete frozen run evidence, including internal deterministic state and all
@@ -303,6 +304,7 @@ impl World {
             }
             Request::Taken { .. }
             | Request::Waiting { .. }
+            | Request::WriterWaiting { .. }
             | Request::Sent { .. }
             | Request::RecurringDue { .. }
             | Request::Relay { .. }
@@ -340,6 +342,9 @@ impl World {
             Event::Turn { task, cumulative, .. }
             | Event::Activation { task, cause: Cause::Priced { cumulative }, .. } => Some((*task, *cumulative)),
             Event::Kinds { .. }
+            | Event::ReadAfresh { .. }
+            | Event::EffectInFlight { .. }
+            | Event::EffectSettled { .. }
             | Event::OpenPeriod { .. }
             | Event::TickRecurring { .. }
             | Event::RecurringBatch { .. }
@@ -394,6 +399,9 @@ impl World {
                 self.message = self.message.max(word.number);
             }
             Event::Kinds { .. }
+            | Event::ReadAfresh { .. }
+            | Event::EffectInFlight { .. }
+            | Event::EffectSettled { .. }
             | Event::OpenPeriod { .. }
             | Event::TickRecurring { .. }
             | Event::RecurringBatch { .. }
@@ -556,7 +564,8 @@ impl World {
                 | Request::Sent { .. }
                 | Request::Relay { .. }
                 | Request::Notify { .. }
-                | Request::Timer { .. } => {}
+                | Request::Timer { .. }
+                | Request::WriterWaiting { .. } => {}
             }
         }
         if self.pending.iter().any(|request| {
@@ -586,6 +595,7 @@ impl World {
                     depth: record.depth,
                 }),
                 Stored::Live(_)
+                | Stored::Writer(_)
                 | Stored::Ended(_)
                 | Stored::Stub(_)
                 | Stored::Ledger(_)
@@ -622,6 +632,9 @@ impl World {
                 | Request::ProposalStalled { .. }
                 | Request::EscalationStalled { .. }
                 | Request::Release { .. } => {}
+                Request::WriterWaiting { reply_to, resource, .. } => {
+                    self.reply(reply_to, Reply::WriterWaiting(resource));
+                }
                 Request::PersonProposed { reply_to, .. }
                 | Request::PersonProposalDecided { reply_to, .. }
                 | Request::Sent { reply_to, .. }
@@ -668,6 +681,7 @@ impl World {
             .filter_map(|row| match row {
                 Stored::Live(record) => Some(*record.clone()),
                 Stored::Ended(_)
+                | Stored::Writer(_)
                 | Stored::Stub(_)
                 | Stored::Ledger(_)
                 | Stored::History(_)
@@ -693,7 +707,12 @@ impl World {
     pub fn record(&self, number: u64) -> &tasks::TaskRecord {
         match &self.records[&Key::Live(number)] {
             Stored::Live(record) => record,
-            Stored::Ended(_) | Stored::Stub(_) | Stored::Ledger(_) | Stored::History(_) | Stored::PersonProposal(_) => {
+            Stored::Ended(_)
+            | Stored::Writer(_)
+            | Stored::Stub(_)
+            | Stored::Ledger(_)
+            | Stored::History(_)
+            | Stored::PersonProposal(_) => {
                 unreachable!("live key")
             }
         }
@@ -712,6 +731,7 @@ impl World {
             .filter_map(|key| match key {
                 Key::Live(number) if !before.contains(key) => Some(*number),
                 Key::Live(_)
+                | Key::Writer(_)
                 | Key::Ended(_)
                 | Key::Stub(_)
                 | Key::Ledger(_)
@@ -730,6 +750,10 @@ impl World {
     }
 
     pub fn claim_budget(&mut self, task: u64, attempt: u64, budget: u64) {
+        assert_eq!(self.claim_budget_writing(task, attempt, budget, Box::new([])), Reply::Done);
+    }
+
+    pub fn claim_budget_writing(&mut self, task: u64, attempt: u64, budget: u64, writes: Box<[tasks::Name]>) -> Reply {
         assert!(self.activations.remove(&task), "activated before preparation");
         let context = &self.contexts[&task];
         let record = self.record(task);
@@ -740,11 +764,14 @@ impl World {
         self.send(Event::Prepare { reply_to, task });
         let reply_to = self.to();
         let call = self.call;
-        self.send(Event::Claim { reply_to, task, attempt, budget });
-        assert_eq!(self.replies[&call], Reply::Done);
-        assert!(self.runs.insert(task, attempt).is_none());
-        self.observe(Seen::Assigned { task, attempt, after: self.commit, adopted: false });
-        self.send(Event::Started { task, attempt });
+        self.send(Event::Claim { reply_to, task, attempt, budget, writes });
+        let reply = self.replies[&call].clone();
+        if reply == Reply::Done {
+            assert!(self.runs.insert(task, attempt).is_none());
+            self.observe(Seen::Assigned { task, attempt, after: self.commit, adopted: false });
+            self.send(Event::Started { task, attempt });
+        }
+        reply
     }
 
     pub fn terminal(&mut self, task: u64, end: End) -> Reply {
@@ -766,7 +793,11 @@ impl World {
             .values()
             .filter_map(|row| match row {
                 Stored::Live(record) | Stored::Ended(record) => Some(record.attempt),
-                Stored::Ledger(_) | Stored::Stub(_) | Stored::History(_) | Stored::PersonProposal(_) => None,
+                Stored::Ledger(_)
+                | Stored::Writer(_)
+                | Stored::Stub(_)
+                | Stored::History(_)
+                | Stored::PersonProposal(_) => None,
             })
             .max()
             .unwrap_or(0)
@@ -851,7 +882,7 @@ impl World {
         let rows = self
             .records
             .values()
-            .filter(|row| matches!(row, Stored::Live(_) | Stored::Ledger(_) | Stored::Stub(_)))
+            .filter(|row| matches!(row, Stored::Live(_) | Stored::Ledger(_) | Stored::Stub(_) | Stored::Writer(_)))
             .cloned()
             .collect::<Vec<_>>();
         for record in rows {

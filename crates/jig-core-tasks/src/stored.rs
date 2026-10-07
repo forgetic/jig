@@ -582,6 +582,11 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>, stored: Stored, ou
             }
             domain.stubs.insert(stub.task, stub).expect("bounded restored stub");
         }
+        Stored::Writer(slot) => {
+            if !crate::writers::restore(domain, &env.limits, slot) {
+                failed(domain, None, Refusal::Restore, out);
+            }
+        }
         // Historical ended rows stay outside the live arena;
         // they cannot accidentally return an ended task to the live arena.
         Stored::Ended(task) => failed(domain, Some(task.number), Refusal::Restore, out),
@@ -716,7 +721,8 @@ pub(crate) fn restored(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
             return failed(domain, Some(*number), Refusal::Restore, out);
         }
     }
-    if !crate::batch::acyclic(domain, &env.limits, Party::Person(0), &[])
+    if !crate::writers::valid_restored(domain, env.limits.depth.saturating_add(1))
+        || !crate::batch::acyclic(domain, &env.limits, Party::Person(0), &[])
         || !crate::funders::links(domain, env.limits.tasks)
     {
         return failed(domain, None, Refusal::Restore, out);

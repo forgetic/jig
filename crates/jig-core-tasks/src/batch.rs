@@ -106,7 +106,7 @@ fn check_with_result_proposal(
         Party::Person(_) | Party::Deployment { .. } => None,
     };
     check_members(domain, limits, creator, batch, parent)?;
-    crate::holds::check_batch(domain, limits, batch)?;
+    crate::holds::check_batch(domain, limits, creator, batch)?;
     if !crate::funders::can_reserve(domain, creator, batch, result_proposal, direct_finish) {
         return Err(problem(None, Refusal::Funding));
     }

@@ -20,7 +20,7 @@ fn make_and_claim_have_independent_before_and_after_durable_cuts() {
     let reply_to = w.to();
     w.send(Event::Prepare { reply_to, task: 2 });
     let reply_to = w.to();
-    w.stage(Event::Claim { reply_to, task: 2, attempt: 10, budget: 100 });
+    w.stage(Event::Claim { reply_to, task: 2, attempt: 10, budget: 100, writes: Box::new([]) });
     assert!(w.runs.is_empty());
     w.restart();
     assert_eq!(w.record(2).attempt, 0);
@@ -28,7 +28,7 @@ fn make_and_claim_have_independent_before_and_after_durable_cuts() {
     let reply_to = w.to();
     w.send(Event::Prepare { reply_to, task: 2 });
     let reply_to = w.to();
-    w.stage(Event::Claim { reply_to, task: 2, attempt: 11, budget: 100 });
+    w.stage(Event::Claim { reply_to, task: 2, attempt: 11, budget: 100, writes: Box::new([]) });
     w.durable();
     assert!(w.runs.is_empty());
     w.restart();
@@ -44,7 +44,7 @@ fn stale_claims_and_replayed_terminal_are_typed_and_do_not_mutate() {
     w.make(Party::Person(1), vec![task(1, &[])]);
     w.claim(1, 4);
     let reply_to = w.to();
-    w.send(Event::Claim { reply_to, task: 1, attempt: 4, budget: 100 });
+    w.send(Event::Claim { reply_to, task: 1, attempt: 4, budget: 100, writes: Box::new([]) });
     assert!(
         matches!(w.replies.last_key_value().expect("reply").1, Reply::Refused(problem) if problem.why == Refusal::Attempt)
     );
@@ -368,7 +368,12 @@ fn restore_refuses_task_funding_outside_its_requester_ancestry() {
             Stored::Live(task) if task.number == 1 => task.numbers.reserved = 100,
             Stored::Live(task) if task.number == 2 => task.funder = Funder::Task(1),
             Stored::Ledger(ledger) => ledger.numbers.reserved = 100,
-            Stored::Live(_) | Stored::Ended(_) | Stored::Stub(_) | Stored::History(_) | Stored::PersonProposal(_) => {}
+            Stored::Live(_)
+            | Stored::Ended(_)
+            | Stored::Writer(_)
+            | Stored::Stub(_)
+            | Stored::History(_)
+            | Stored::PersonProposal(_) => {}
         }
     }
     let mut domain = Domain::new(&LIMITS, 34, Box::new([1]));

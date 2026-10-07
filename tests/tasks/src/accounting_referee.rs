@@ -116,6 +116,7 @@ impl Accounting {
                                 Some(child.numbers.budget)
                             }
                             Stored::Live(_)
+                            | Stored::Writer(_)
                             | Stored::Ended(_)
                             | Stored::Stub(_)
                             | Stored::Ledger(_)
@@ -150,6 +151,7 @@ impl Accounting {
                                 Some(pool.numbers.budget)
                             }
                             Stored::Live(_)
+                            | Stored::Writer(_)
                             | Stored::Ended(_)
                             | Stored::Stub(_)
                             | Stored::Ledger(_)
@@ -179,7 +181,11 @@ impl Accounting {
                         return Err("original source identity changed");
                     }
                 }
-                Stored::Ended(_) | Stored::Stub(_) | Stored::History(_) | Stored::PersonProposal(_) => {}
+                Stored::Ended(_)
+                | Stored::Writer(_)
+                | Stored::Stub(_)
+                | Stored::History(_)
+                | Stored::PersonProposal(_) => {}
             }
         }
         self.before = rows.clone();

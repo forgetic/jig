@@ -42,6 +42,8 @@ pub struct Domain {
     pub(crate) escalation_alarms: Deadlines<u64>,
     pub(crate) hold_alarms: Deadlines<u64>,
     pub(crate) hold_kinds: Map<crate::holds::KindKey, crate::HoldKind>,
+    pub(crate) writers: Map<crate::Name, crate::WriterSlot>,
+    pub(crate) next_writer: u64,
     pub(crate) funding: Map<crate::Funder, crate::FundingRecord>,
     pub(crate) person_proposals: Map<u64, crate::PersonProposal>,
     pub(crate) charters: Box<[u32]>,
@@ -115,6 +117,8 @@ impl Domain {
             escalation_alarms: Deadlines::with_capacity(limits.tasks),
             hold_alarms: Deadlines::with_capacity(limits.tasks),
             hold_kinds: Map::with_capacity(limits.hold_kinds),
+            writers: Map::with_capacity(limits.tasks.checked_mul(limits.holdings).expect("writer room")),
+            next_writer: 0,
             funding: Map::with_capacity(limits.funders),
             person_proposals: Map::with_capacity(limits.tasks),
             charters,
@@ -154,6 +158,18 @@ impl Domain {
     #[must_use]
     pub fn task(&self, number: u64) -> Option<&TaskRecord> {
         record(self, number)
+    }
+
+    /// Current authentic holder of an opaque exclusive resource.
+    #[must_use]
+    pub fn holder(&self, resource: &crate::Name) -> Option<u64> {
+        crate::holds::writer_holder(self, resource)
+    }
+
+    /// Current authentic writer slot, including a lost attempt awaiting a fresh read.
+    #[must_use]
+    pub fn writer(&self, resource: &crate::Name) -> Option<&crate::WriterSlot> {
+        self.writers.get(resource)
     }
 
     /// Current deployment-owned core recurring task identities for one project.
@@ -414,9 +430,14 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             crate::recurring::after_delegate(domain, env, task, out);
         }
         Event::Prepare { reply_to, task } => crate::run::prepare(domain, env, reply_to, task, out),
-        Event::Claim { reply_to, task, attempt, budget } => {
-            crate::run::claim(domain, env, reply_to, task, attempt, budget, out);
+        Event::Claim { reply_to, task, attempt, budget, writes } => {
+            crate::run::claim(domain, env, reply_to, task, attempt, budget, &writes, out);
         }
+        Event::ReadAfresh { resource } => crate::writers::read_afresh(domain, &resource, out),
+        Event::EffectInFlight { reply_to, task, resource, entry } => {
+            crate::writers::effect_in_flight(domain, &env.limits, reply_to, task, resource, entry, out);
+        }
+        Event::EffectSettled { resource, entry } => crate::writers::effect_settled(domain, &resource, entry, out),
         Event::Turn { reply_to, task, attempt, turn, read, offered, cumulative } => {
             crate::admission::turn(domain, env, reply_to, task, attempt, turn, read, offered, cumulative, out);
         }
@@ -722,7 +743,45 @@ pub(crate) fn make_admitted(
         numbers.push(new.number).expect("batch admitted");
     }
     let count = numbers.len();
+    let mut handed = List::with_capacity(env.limits.batch);
     if let Some(number) = parent {
+        let creator = record(domain, number).expect("creator admitted");
+        let creator_holds = creator.holds_taken;
+        let held = creator.holdings.clone();
+        let mut remaining = List::with_capacity(env.limits.holdings);
+        for holding in &held {
+            let mut to = None;
+            for new in &batch {
+                if !creator_holds {
+                    break;
+                }
+                for wanted in &new.holdings {
+                    if wanted == holding {
+                        to = Some(new.number);
+                        break;
+                    }
+                }
+                if to.is_some() {
+                    break;
+                }
+            }
+            match to {
+                Some(child) => {
+                    let mut known = false;
+                    for existing in &handed {
+                        if *existing == child {
+                            known = true;
+                            break;
+                        }
+                    }
+                    if !known {
+                        handed.push(child).expect("one handed recipient per batch member");
+                    }
+                }
+                None => remaining.push(holding.clone()).expect("retained held set fits"),
+            }
+        }
+        task_mut(domain, number).expect("creator admitted").record.holdings = remaining.into_boxed();
         let old = task_mut(domain, number).expect("creator admitted");
         old.record.delegates = append(env.limits.delegates, &old.record.delegates, &batch);
         // Count each made task in all ancestors, so ending a delegate does not
@@ -805,8 +864,22 @@ pub(crate) fn make_admitted(
         let id = domain.tasks.insert(task).expect("batch slab room admitted");
         let indexed = domain.names.insert(number, id);
         assert!(indexed == Ok(None), "batch names admitted");
+        let mut inherited = false;
+        for child in &handed {
+            if *child == number {
+                inherited = true;
+                break;
+            }
+        }
+        if inherited {
+            crate::holds::take(domain, env, number, out);
+            task_mut(domain, number).expect("handed child live").record.phase = Phase::Active(Active::Due);
+        }
         publish(domain, env, number, out);
         fact(domain, Fact::Made { task: number, requester: creator });
+        if inherited {
+            activate(domain, number, out);
+        }
     }
     numbers.into_boxed()
 }

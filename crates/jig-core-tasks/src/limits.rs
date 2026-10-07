@@ -189,6 +189,13 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .ok()?
         .checked_add(u64::from(limits.message_bytes).checked_mul(2)?)?
         .checked_add(u64::from(limits.batch).checked_mul(proposed_member)?)?;
+    // The writer map owns both its opaque key and a durable slot row with a
+    // second copy of that name. Count their nested segment vectors and bytes.
+    let writer_names = u64::from(limits.tasks).checked_mul(u64::from(limits.holdings))?.checked_mul(2)?.checked_mul(
+        u64::from(limits.hold_segments)
+            .checked_mul(u64::try_from(size_of::<Box<[u8]>>()).ok()?)?
+            .checked_add(u64::from(limits.hold_bytes))?,
+    )?;
     Slab::<Task>::worst_case(limits.tasks)?
         .checked_add(Map::<crate::Funder, crate::FundingRecord>::worst_case(limits.funders)?)?
         .checked_add(Map::<u64, Id<Task>>::worst_case(limits.tasks)?)?
@@ -196,6 +203,8 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Map::<crate::holds::KindKey, crate::HoldKind>::worst_case(limits.hold_kinds)?)?
+        .checked_add(Map::<crate::Name, crate::WriterSlot>::worst_case(limits.tasks.checked_mul(limits.holdings)?)?)?
+        .checked_add(writer_names)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks.checked_mul(limits.subscriptions)?)?)?

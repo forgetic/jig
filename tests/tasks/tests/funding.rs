@@ -29,7 +29,12 @@ fn end(world: &mut World, task: u64, attempt: u64, end: End, cumulative: u64) ->
 fn ledger(world: &World, funder: Funder) -> tasks::FundingRecord {
     match world.records[&Key::Ledger(funder)] {
         Stored::Ledger(record) => record,
-        Stored::Live(_) | Stored::Ended(_) | Stored::Stub(_) | Stored::History(_) | Stored::PersonProposal(_) => {
+        Stored::Live(_)
+        | Stored::Ended(_)
+        | Stored::Writer(_)
+        | Stored::Stub(_)
+        | Stored::History(_)
+        | Stored::PersonProposal(_) => {
             unreachable!()
         }
     }

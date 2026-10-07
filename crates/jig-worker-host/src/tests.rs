@@ -4,8 +4,8 @@ use alloc::boxed::Box;
 use skein_lib::{Env, List, Queue, ReplyTo, Time, Token, Wall};
 
 use crate::{
-    Answer, Ask, Assignment, Delivery, DeliveryOutcome, Domain, Event, Failure, Finish, Invalid, Limits, Preparation,
-    Reason, Refusal, Reply, Request, Workspace, max_out, step,
+    Answer, Ask, Assignment, Bounce, Delivery, DeliveryOutcome, Domain, Event, Failure, Finish, Invalid, Limits,
+    Preparation, Reason, Refusal, Reply, Request, Work, Workspace, max_out, step,
 };
 
 const LIMITS: Limits = Limits {
@@ -162,4 +162,59 @@ fn cancelling_a_preparing_run_waits_for_the_workspace_terminal() {
     else {
         panic!("expected cancelled answer: {requests:?}")
     };
+}
+
+#[test]
+fn messages_held_during_a_failed_prepare_are_returned_by_name() {
+    let mut h = Harness::new();
+    let (owner, _) = h.assign(1);
+    let run = Token::new(1);
+    let attempt = Token::new(1001);
+    let name = Token::new(42);
+    assert!(h.step(Event::Inbound { run, attempt, name, event: Box::from(&b"question"[..]) }).is_empty());
+    let requests = h.step(Event::Unprepared { owner, failure: Preparation::Transient, detail: Box::new([]) });
+    assert_eq!(
+        &*requests,
+        [
+            Request::Bounced { run, attempt, name, bounce: Bounce::Ending },
+            Request::Answer {
+                to: ReplyTo::new(run),
+                run,
+                attempt,
+                answer: Answer::Failed {
+                    failure: Failure::Unprepared(Preparation::Transient),
+                    detail: Box::new([]),
+                    work: Work { left: None, saved: None },
+                },
+            },
+        ]
+    );
+}
+
+#[test]
+fn cancellation_returns_messages_held_before_the_agent_starts() {
+    let mut h = Harness::new();
+    let (owner, workspace) = h.assign(1);
+    let run = Token::new(1);
+    let attempt = Token::new(1001);
+    let name = Token::new(42);
+    let requests = h.step(Event::Prepared { owner, workspace });
+    assert!(matches!(&*requests, [Request::Start { .. }]));
+    assert!(h.step(Event::Inbound { run, attempt, name, event: Box::from(&b"question"[..]) }).is_empty());
+    assert_eq!(
+        &*h.step(Event::Cancel { run, attempt }),
+        [Request::Bounced { run, attempt, name, bounce: Bounce::Ending }]
+    );
+    let agent = Token::new(301);
+    assert_eq!(&*h.step(Event::Started { owner, agent }), [Request::Stop { agent }]);
+    let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
+    assert_eq!(&*requests, [Request::Save { owner, workspace }]);
+    let requests = h.step(Event::Saved { owner, at: None });
+    assert!(matches!(
+        &*requests,
+        [
+            Request::Release { .. },
+            Request::Answer { answer: Answer::Failed { failure: Failure::Cancelled(Reason::Engine), .. }, .. }
+        ]
+    ));
 }

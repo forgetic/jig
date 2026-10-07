@@ -386,7 +386,8 @@ pub(crate) fn unprepared(
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
         // Nothing of the workspace is held: nothing to release.
-        State::Preparing { reply_to, .. } => {
+        State::Preparing { reply_to, held, .. } => {
+            bounce_held(held, entry.run, entry.attempt, out);
             let detail = tail(detail, &env.limits);
             let ending = Ending::Failed { failure: Failure::Unprepared(failure), detail };
             answer(entry, facts, reply_to, ending, None, out)
@@ -603,7 +604,8 @@ pub(crate) fn gone(domain: &mut Domain, env: &Env<Limits>, owner: Token, detail:
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
         // Nothing ran: nothing to save.
-        State::Starting { reply_to, workspace, held: _ } => {
+        State::Starting { reply_to, workspace, held } => {
+            bounce_held(held, entry.run, entry.attempt, out);
             let ending = Ending::Failed { failure: Failure::Agent(AgentFailure::Unstarted), detail };
             release(entry, facts, reply_to, workspace, ending, None, out)
         }
@@ -703,11 +705,15 @@ fn stop(domain: &mut Domain, _env: &Env<Limits>, id: Id<Hosted>, reason: Reason,
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
         // A prepare in flight is abandoned, and its end waited for.
-        State::Preparing { reply_to, .. } => {
+        State::Preparing { reply_to, held, .. } => {
+            bounce_held(held, entry.run, entry.attempt, out);
             out.push(Request::Abort { owner: id.token() });
             State::Cancelling { reply_to, reason }
         }
-        State::Starting { reply_to, workspace, held: _ } => State::Unwanted { reply_to, workspace, reason },
+        State::Starting { reply_to, workspace, held } => {
+            bounce_held(held, entry.run, entry.attempt, out);
+            State::Unwanted { reply_to, workspace, reason }
+        }
         State::Active { reply_to, workspace, agent } | State::Waiting { reply_to, workspace, agent } => {
             let ending = Ending::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
             leave(&entry.relays, calls, out);
@@ -862,6 +868,14 @@ fn hold(held: &mut Queue<NamedEvent>, event: NamedEvent, run: Token, attempt: To
     let name = event.name;
     if held.try_push(event).is_err() {
         out.push(Request::Bounced { run, attempt, name, bounce: Bounce::Full });
+    }
+}
+
+/// Return messages accepted during preparation when the run cannot start.
+fn bounce_held(mut held: Queue<NamedEvent>, run: Token, attempt: Token, out: &mut Queue<Request>) {
+    for _ in 0..held.len() {
+        let event = held.pop().expect("the queue held this many messages");
+        out.push(Request::Bounced { run, attempt, name: event.name, bounce: Bounce::Ending });
     }
 }
 

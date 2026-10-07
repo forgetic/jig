@@ -124,7 +124,7 @@ fn effect() -> Effect {
     Effect {
         connector: 1,
         kind: 1,
-        name: Name { segments: Box::new([copy_of(b"repo")]) },
+        name: Name { segments: Box::new([copy_of(b"object")]) },
         state: [1; 32],
         price: None,
         access: EffectAccess::Owned,
@@ -433,6 +433,72 @@ fn generic_judges_obey_guard_and_observation_cells() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn generated_verdicts_freshness_and_prices_choose_the_strictest_answer() {
+    let domain = domain();
+    let statuses = [Verdict::Met, Verdict::Wait, Verdict::Refuse];
+    for seed in 0..96_u64 {
+        let first = statuses[usize::try_from(seed % 3).unwrap()];
+        let second = statuses[usize::try_from(seed / 3 % 3).unwrap()];
+        let stale = seed / 9 % 2 == 1;
+        let price = seed * 17 % 121;
+        let spent = seed * 11 % 61;
+        let mut ask = EffectAsk {
+            project: 1,
+            authority: authority(),
+            numbers: Numbers { budget: 100, spent, spent_below: 0, reserved: 10 },
+            effect: effect(),
+            now: Wall::from_nanos(2_000_000_000),
+        };
+        ask.effect.price = Some(price);
+        let mut deployment = fact(7, first);
+        deployment.at = if stale { Wall::EPOCH } else { ask.now };
+        let mut project = fact(8, second);
+        project.at = if stale { Wall::EPOCH } else { ask.now };
+        let expected = if price > 100 || first == Verdict::Refuse || second == Verdict::Refuse {
+            Answer::Refuse
+        } else if price > 90 - spent {
+            Answer::Propose
+        } else if first == Verdict::Wait || second == Verdict::Wait || stale {
+            Answer::Wait
+        } else {
+            Answer::Allow
+        };
+        let mut why = findings(&domain);
+        assert_eq!(check_effect(&domain, &ask, &[deployment, project], &mut why), expected, "seed {seed}");
+    }
+}
+
+#[test]
+fn generated_live_tasks_observe_policy_narrowing_and_replacement() {
+    for seed in 0..32_u64 {
+        let mut domain = domain();
+        let mut task = authority();
+        if seed % 2 == 1 {
+            task.grants = Box::new([]);
+        }
+        let ask = EffectAsk { project: 1, authority: task, numbers: numbers(100), effect: effect(), now: Wall::EPOCH };
+        let given = [fact(7, Verdict::Met), fact(8, Verdict::Met)];
+        let initial = if seed % 2 == 0 { Answer::Allow } else { Answer::Propose };
+        let mut why = findings(&domain);
+        assert_eq!(check_effect(&domain, &ask, &given, &mut why), initial);
+        let mut narrowed = authority();
+        narrowed.grants = Box::new([]);
+        assert_eq!(
+            apply(&mut domain, Event::Policy { project: 1, policy: policy(narrowed) }),
+            PolicyFact::Changed { project: 1 }
+        );
+        let mut why = findings(&domain);
+        assert_eq!(check_effect(&domain, &ask, &given, &mut why), Answer::Refuse);
+        assert_eq!(
+            apply(&mut domain, Event::Policy { project: 1, policy: policy(authority()) }),
+            PolicyFact::Changed { project: 1 }
+        );
+        let mut why = findings(&domain);
+        assert_eq!(check_effect(&domain, &ask, &given, &mut why), initial, "policy widening does not edit task {seed}");
     }
 }
 
@@ -933,7 +999,7 @@ fn fitting_laws_needs_and_holder_depth_use_separate_current_inputs() {
     let effect_need = needs(&Action::Effect(effect())).unwrap();
     assert_eq!(
         effect_need.grants[0].pattern.last,
-        Last::Exact(copy_of(b"repo")),
+        Last::Exact(copy_of(b"object")),
         "a proposed effect needs only its exact name"
     );
     assert_eq!(effect_need.budget.spend, 0);

@@ -105,3 +105,57 @@ fn a_new_period_does_not_clear_the_reservations_of_its_predecessor() {
     assert_eq!(charge(fresh(80), 110), None);
     assert_eq!(current.reserved, 0);
 }
+
+#[test]
+fn generated_open_maxima_settle_without_losing_or_reusing_spend() {
+    for seed in 0..64_u64 {
+        let mut maxima = [0_u64; 5];
+        for (index, maximum) in maxima.iter_mut().enumerate() {
+            *maximum = 12 + remainder(seed * 7 + u64::try_from(index).unwrap() * 13, 23);
+        }
+        let mut funder = carve(fresh(200), &maxima).unwrap();
+        let mut expected = 0_u64;
+        let mut open = 0_u64;
+        for maximum in maxima {
+            open = add(open, maximum);
+        }
+        for index in [3, 0, 4, 1, 2] {
+            let maximum = maxima[index];
+            let actual = remainder(seed * 11 + u64::try_from(index).unwrap() * 17, maximum + 1);
+            let completion = charge(fresh(maximum), actual).unwrap();
+            funder = settle(funder, completion).unwrap();
+            expected += actual;
+            open -= maximum;
+            assert_eq!(funder.spent_below, expected, "seed {seed}, completion {index}");
+            assert_eq!(funder.reserved, open, "seed {seed}, completion {index}");
+            assert_eq!(left(funder), 200 - expected - open, "seed {seed}, completion {index}");
+            assert_eq!(charge(funder, left(funder) + 1), None, "an open maximum cannot fund another charge");
+        }
+    }
+}
+
+#[test]
+fn generated_standing_periods_keep_live_delegates_with_their_original_funder() {
+    for seed in 0..64_u64 {
+        let old_actual = remainder(seed * 7, 21);
+        let new_actual = remainder(seed * 13, 21);
+        let mut old_period = carve(fresh(100), &[60]).unwrap();
+        let mut old_standing = carve(fresh(60), &[20]).unwrap();
+        let old_delegate = charge(fresh(20), old_actual).unwrap();
+
+        // A renewed allotment is funded by the new period while the old delegate stays open.
+        let mut new_period = carve(fresh(100), &[60]).unwrap();
+        let new_standing = settle(carve(fresh(60), &[20]).unwrap(), charge(fresh(20), new_actual).unwrap()).unwrap();
+        new_period = settle(new_period, new_standing).unwrap();
+        assert_eq!(old_period.reserved, 60, "new settlement cannot release the old period");
+        assert_eq!(old_standing.reserved, 20, "old delegate remains live");
+        assert_eq!(new_period.spent_below, new_actual);
+        assert_eq!(new_period.reserved, 0);
+
+        old_standing = settle(old_standing, old_delegate).unwrap();
+        old_period = settle(old_period, old_standing).unwrap();
+        assert_eq!(old_period.spent_below, old_actual);
+        assert_eq!(old_period.reserved, 0);
+        assert_eq!(new_period.spent_below, new_actual, "late old settlement cannot debit the new period");
+    }
+}

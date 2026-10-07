@@ -210,18 +210,18 @@ fn implication_tables_are_bounded_closed_and_connector_scoped() {
 #[test]
 fn terminals_are_literal_and_grants_cover_only_their_connector_and_kinds() {
     let table = implications();
-    let grant = Grant { connector: 1, kind: 3, pattern: pattern(&[b"repo"], Last::Exact(copy_of(b"c42"))) };
-    let name = Name { segments: segments(&[b"repo", b"c42"]) };
+    let grant = Grant { connector: 1, kind: 3, pattern: pattern(&[b"object"], Last::Exact(copy_of(b"c42"))) };
+    let name = Name { segments: segments(&[b"object", b"c42"]) };
     assert!(grant_covers(&grant, 1, 1, &name, &table), "exact terminal and implied kind");
-    let descendant = Name { segments: segments(&[b"repo", b"c42", b"child"]) };
+    let descendant = Name { segments: segments(&[b"object", b"c42", b"child"]) };
     assert!(!grant_covers(&grant, 1, 1, &descendant, &table), "exact terminal excludes descendants");
     assert!(!grant_covers(&grant, 2, 1, &name, &table), "connector must agree");
     assert!(!grant_covers(&grant, 1, 4, &name, &table), "unrelated kinds do not follow");
-    let sibling = Name { segments: segments(&[b"repo", b"c420"]) };
+    let sibling = Name { segments: segments(&[b"object", b"c420"]) };
     assert!(!grant_covers(&grant, 1, 3, &sibling, &table), "exact bytes exclude continuations");
     assert!(pattern_at_most(&grant.pattern, &grant.pattern), "one exact name fits itself");
-    let open = pattern(&[b"repo"], Last::Open(copy_of(b"r42-")));
-    let run = Name { segments: segments(&[b"repo", b"r42-1", b"saved"]) };
+    let open = pattern(&[b"object"], Last::Open(copy_of(b"r42-")));
+    let run = Name { segments: segments(&[b"object", b"r42-1", b"saved"]) };
     assert!(pattern_covers(&open, &run), "open terminals include byte continuations and descendants");
     let literal = pattern(&[b"\xff/\0"], Last::Exact(copy_of(b"")));
     assert!(
@@ -229,17 +229,17 @@ fn terminals_are_literal_and_grants_cover_only_their_connector_and_kinds() {
         "non-UTF8, slash, nul and empty bytes are literal"
     );
     let prefixes = [
-        pattern(&[b"repo"], Last::Open(copy_of(b"a"))),
-        pattern(&[b"repo"], Last::Open(copy_of(b"aa"))),
-        pattern(&[b"repo"], Last::Exact(copy_of(b"aa"))),
-        pattern(&[b"repo", b"aa"], Last::Exact(copy_of(b"child"))),
+        pattern(&[b"object"], Last::Open(copy_of(b"a"))),
+        pattern(&[b"object"], Last::Open(copy_of(b"aa"))),
+        pattern(&[b"object"], Last::Exact(copy_of(b"aa"))),
+        pattern(&[b"object", b"aa"], Last::Exact(copy_of(b"child"))),
     ];
     let witnesses = [
-        Name { segments: segments(&[b"repo", b"a"]) },
-        Name { segments: segments(&[b"repo", b"aa"]) },
-        Name { segments: segments(&[b"repo", b"aaa"]) },
-        Name { segments: segments(&[b"repo", b"ab"]) },
-        Name { segments: segments(&[b"repo", b"aa", b"child"]) },
+        Name { segments: segments(&[b"object", b"a"]) },
+        Name { segments: segments(&[b"object", b"aa"]) },
+        Name { segments: segments(&[b"object", b"aaa"]) },
+        Name { segments: segments(&[b"object", b"ab"]) },
+        Name { segments: segments(&[b"object", b"aa", b"child"]) },
     ];
     for left in &prefixes {
         for right in &prefixes {

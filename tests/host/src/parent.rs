@@ -30,7 +30,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use jig_worker_host::{
+use jig_host::{
     AgentFailure, Ask, Delivery, DeliveryOutcome, Event, Finish, Limits, Preparation, Request, RunFailure, Workspace,
 };
 use skein_lib::{Duration, Rng, Token};
@@ -262,15 +262,15 @@ impl Parent {
     #[expect(clippy::needless_pass_by_value, reason = "the world takes ownership of emitted requests")]
     pub fn take(&mut self, request: Request) -> Vec<Out> {
         match request {
-            jig_worker_host::Request::RelayTyped { .. }
-            | jig_worker_host::Request::DeliverTyped { .. }
-            | jig_worker_host::Request::ReplyTyped { .. }
-            | jig_worker_host::Request::StartTyped { .. }
-            | jig_worker_host::Request::Turn { .. }
-            | jig_worker_host::Request::DeliverV2 { .. }
-            | jig_worker_host::Request::RelayV2 { .. }
-            | jig_worker_host::Request::AnswerV2 { .. }
-            | jig_worker_host::Request::StartV2 { .. }
+            jig_host::Request::RelayTyped { .. }
+            | jig_host::Request::DeliverTyped { .. }
+            | jig_host::Request::ReplyTyped { .. }
+            | jig_host::Request::StartTyped { .. }
+            | jig_host::Request::Turn { .. }
+            | jig_host::Request::DeliverV2 { .. }
+            | jig_host::Request::RelayV2 { .. }
+            | jig_host::Request::AnswerV2 { .. }
+            | jig_host::Request::StartV2 { .. }
             | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
 
             Request::Prepare { owner, workspace } => self.prepare(owner, &workspace),
@@ -463,7 +463,7 @@ impl Parent {
 
     fn call(&mut self, agent: Token, ask: Ask) -> Out {
         match ask {
-            Ask::RelayTyped { .. } | jig_worker_host::Ask::DeliverV2 { .. } => {
+            Ask::RelayTyped { .. } | jig_host::Ask::DeliverV2 { .. } => {
                 unreachable!("this script runs version one")
             }
 

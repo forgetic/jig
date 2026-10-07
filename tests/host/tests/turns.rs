@@ -1,8 +1,8 @@
 //! Version-two worker host peers: engine commits, a lossy link, and an
 //! agent and workspace that settle through the host's requests.
 
-use jig_worker_host::{AnsweredCall, DeliveryOutcome, EndingV2, Failure, Reason, SettledAnswer};
-use jig_worker_host_world::turn_world::World;
+use jig_host::{AnsweredCall, DeliveryOutcome, EndingV2, Failure, Reason, SettledAnswer};
+use jig_host_world::turn_world::World;
 use skein_lib::{Duration, Token};
 
 #[test]

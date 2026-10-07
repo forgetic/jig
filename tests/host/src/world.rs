@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use jig_worker_host::{
+use jig_host::{
     self as host, AgentFailure, Event, Fact, Failure, Finish, Limits, Reason, Reply, Request, RunFailure,
 };
 use skein_lib::{Duration, ReplyTo, Rng, Time, Token};
@@ -561,13 +561,13 @@ impl World {
             return Taken::Stale;
         }
         match event {
-            jig_worker_host::Event::InboundTyped { .. }
-            | jig_worker_host::Event::CalledTyped { .. }
-            | jig_worker_host::Event::WithdrawnTyped { .. }
-            | jig_worker_host::Event::AssignTyped { .. }
-            | jig_worker_host::Event::AssignV2 { .. }
-            | jig_worker_host::Event::Turn { .. }
-            | jig_worker_host::Event::FinishedV2 { .. }
+            jig_host::Event::InboundTyped { .. }
+            | jig_host::Event::CalledTyped { .. }
+            | jig_host::Event::WithdrawnTyped { .. }
+            | jig_host::Event::AssignTyped { .. }
+            | jig_host::Event::AssignV2 { .. }
+            | jig_host::Event::Turn { .. }
+            | jig_host::Event::FinishedV2 { .. }
             | Event::AcknowledgeTurn { .. } => unreachable!("this script runs version one"),
 
             Event::Assign { reply_to: _, assignment } => {
@@ -576,7 +576,7 @@ impl World {
             Event::Started { owner, agent } => Taken::Started { owner: *owner, agent: *agent },
             Event::Called { owner, call, ask } => {
                 let delivery = match ask {
-                    jig_worker_host::Ask::DeliverV2 { .. } | host::Ask::RelayTyped { .. } => {
+                    jig_host::Ask::DeliverV2 { .. } | host::Ask::RelayTyped { .. } => {
                         unreachable!("this script runs version one")
                     }
 
@@ -694,15 +694,15 @@ impl World {
     /// `run`'s attempt `attempt`: a refusal, or a prepare that admits it.
     fn assigned(&mut self, run: Token, attempt: Token, request: &Request) {
         match request {
-            jig_worker_host::Request::RelayTyped { .. }
-            | jig_worker_host::Request::DeliverTyped { .. }
-            | jig_worker_host::Request::ReplyTyped { .. }
-            | jig_worker_host::Request::StartTyped { .. }
-            | jig_worker_host::Request::Turn { .. }
-            | jig_worker_host::Request::DeliverV2 { .. }
-            | jig_worker_host::Request::RelayV2 { .. }
-            | jig_worker_host::Request::AnswerV2 { .. }
-            | jig_worker_host::Request::StartV2 { .. }
+            jig_host::Request::RelayTyped { .. }
+            | jig_host::Request::DeliverTyped { .. }
+            | jig_host::Request::ReplyTyped { .. }
+            | jig_host::Request::StartTyped { .. }
+            | jig_host::Request::Turn { .. }
+            | jig_host::Request::DeliverV2 { .. }
+            | jig_host::Request::RelayV2 { .. }
+            | jig_host::Request::AnswerV2 { .. }
+            | jig_host::Request::StartV2 { .. }
             | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
 
             Request::Answer { to: _, run: answered, attempt: of, answer } => {
@@ -747,15 +747,15 @@ impl World {
     fn route(&mut self, request: Request) {
         self.trace.log(self.now, format!("host -> {request:?}"));
         match request {
-            jig_worker_host::Request::RelayTyped { .. }
-            | jig_worker_host::Request::DeliverTyped { .. }
-            | jig_worker_host::Request::ReplyTyped { .. }
-            | jig_worker_host::Request::StartTyped { .. }
-            | jig_worker_host::Request::Turn { .. }
-            | jig_worker_host::Request::DeliverV2 { .. }
-            | jig_worker_host::Request::RelayV2 { .. }
-            | jig_worker_host::Request::AnswerV2 { .. }
-            | jig_worker_host::Request::StartV2 { .. }
+            jig_host::Request::RelayTyped { .. }
+            | jig_host::Request::DeliverTyped { .. }
+            | jig_host::Request::ReplyTyped { .. }
+            | jig_host::Request::StartTyped { .. }
+            | jig_host::Request::Turn { .. }
+            | jig_host::Request::DeliverV2 { .. }
+            | jig_host::Request::RelayV2 { .. }
+            | jig_host::Request::AnswerV2 { .. }
+            | jig_host::Request::StartV2 { .. }
             | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
 
             Request::Answer { to, run, attempt, answer } => {

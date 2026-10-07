@@ -21,7 +21,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use jig_worker_host::{
+use jig_host::{
     AgentFailure, Answer, Assignment, Bounce, Event, Failure, Hosting, Invalid, Limits, Preparation, Reason, Refusal,
     Request, RunFailure, Workspace,
 };
@@ -187,15 +187,15 @@ impl Engine {
     /// Takes the host's request `request`, which is for the engine.
     pub fn take(&mut self, request: Request) -> Vec<Act> {
         match request {
-            jig_worker_host::Request::RelayTyped { .. }
-            | jig_worker_host::Request::DeliverTyped { .. }
-            | jig_worker_host::Request::ReplyTyped { .. }
-            | jig_worker_host::Request::StartTyped { .. }
-            | jig_worker_host::Request::Turn { .. }
-            | jig_worker_host::Request::DeliverV2 { .. }
-            | jig_worker_host::Request::RelayV2 { .. }
-            | jig_worker_host::Request::AnswerV2 { .. }
-            | jig_worker_host::Request::StartV2 { .. }
+            jig_host::Request::RelayTyped { .. }
+            | jig_host::Request::DeliverTyped { .. }
+            | jig_host::Request::ReplyTyped { .. }
+            | jig_host::Request::StartTyped { .. }
+            | jig_host::Request::Turn { .. }
+            | jig_host::Request::DeliverV2 { .. }
+            | jig_host::Request::RelayV2 { .. }
+            | jig_host::Request::AnswerV2 { .. }
+            | jig_host::Request::StartV2 { .. }
             | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
 
             Request::Answer { to, run, attempt, answer } => {

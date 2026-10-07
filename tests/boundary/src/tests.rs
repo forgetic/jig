@@ -174,7 +174,7 @@ fn core_and_children_use_only_the_kit_and_foundation_even_when_empty() {
 fn hosts_use_no_core_crates_even_when_empty() {
     let failures: Vec<_> = manifests()
         .into_iter()
-        .filter(|manifest| manifest.name == "jig-local-host" || manifest.name == "jig-worker-host")
+        .filter(|manifest| manifest.name == "jig-local-host" || manifest.name == "jig-host")
         .flat_map(|manifest| {
             manifest
                 .dependencies

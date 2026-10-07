@@ -1,5 +1,5 @@
 [package]
-name = "jig-worker-host-world"
+name = "jig-host-world"
 description = "The host child domain's world: a simulation with a scripted engine, workspaces and agents"
 version.workspace = true
 edition.workspace = true
@@ -8,7 +8,7 @@ publish.workspace = true
 
 [dependencies]
 skein-lib.workspace = true
-jig-worker-host.workspace = true
+jig-host.workspace = true
 skein-world.workspace = true
 
 # Ordinary Rust (programming-model.md, 10.2), so not the step crates' lints.

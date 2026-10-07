@@ -25,9 +25,15 @@
 //! after a stop; and the report on coming back lists exactly the runs
 //! admitted and not answered. Once it settles: nothing in flight, every slot
 //! free, no call open, every workspace released and every agent gone.
+//!
+//! The version-two peer world in [`turn_world`] adds a committing engine,
+//! a link that loses and restores contact, and the host's agent and workspace
+//! capabilities. It checks the retained turns, their replay and exact ACKs,
+//! read credit, answer order, and best-effort agent facts (hosts.md, 11).
 
 pub mod engine;
 pub mod parent;
+pub mod turn_world;
 mod world;
 
 pub use skein_world::domain::Span;

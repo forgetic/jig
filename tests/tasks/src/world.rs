@@ -23,6 +23,12 @@ pub const LIMITS: Limits = Limits {
     subscriptions: 8,
     batch: 8,
     dependencies: 8,
+    holdings: 4,
+    hold_kinds: 4,
+    hold_segments: 4,
+    hold_bytes: 64,
+    hold_waiters: 8,
+    hold_wait: Duration::from_secs(10),
     inputs: 4,
     spec_bytes: 64,
     parameters: 4,
@@ -67,6 +73,7 @@ pub fn task(number: u64, dependencies: &[u64]) -> New {
         numbers: Numbers { budget: 100, spent: 0, spent_below: 0, reserved: 0 },
         funder: Funder::Period { project: 1, period: 0 },
         dependencies: dependencies.into(),
+        holdings: Box::new([]),
         wake: tasks::WakePolicy::DEFAULT,
         recurring: None,
         tracked: None,
@@ -103,6 +110,7 @@ pub struct Frozen {
     /// Committed requester outcomes (domain/tasks.md, 5.6).
     pub results: BTreeMap<u64, Ending>,
     deadlines: BTreeMap<u64, (Wall, Time)>,
+    kinds: Vec<tasks::Kind>,
     restoring: bool,
     facts: Vec<Fact>,
     consume_facts: bool,
@@ -147,6 +155,7 @@ pub struct World {
     priced: Option<(u64, u64)>,
     restoring: bool,
     deadlines: BTreeMap<u64, (Wall, Time)>,
+    kinds: Vec<tasks::Kind>,
 }
 
 impl World {
@@ -177,6 +186,7 @@ impl World {
             priced: None,
             restoring: true,
             deadlines: BTreeMap::new(),
+            kinds: Vec::new(),
         };
         world.send(Event::Restored);
         world.open_period(0, 100_000);
@@ -197,6 +207,7 @@ impl World {
             closing: self.closing.clone(),
             results: self.results.clone(),
             deadlines: self.deadlines.clone(),
+            kinds: self.kinds.clone(),
             restoring: self.restoring,
             facts: self.facts.clone(),
             consume_facts: self.consume_facts,
@@ -218,6 +229,12 @@ impl World {
     pub fn open_period(&mut self, period: u64, budget: u64) {
         let reply_to = self.to();
         self.send(Event::OpenPeriod { reply_to, project: 1, period, budget });
+    }
+
+    /// Install connector hold rules, replayed before live rows on restart.
+    pub fn configure_holds(&mut self, connector: u16, kinds: Vec<tasks::Kind>) {
+        self.kinds.extend_from_slice(&kinds);
+        self.send(Event::Kinds { connector, kinds: kinds.into_boxed_slice() });
     }
 
     pub fn carve_pool(&mut self, period: u64, budget: u64) {
@@ -284,7 +301,9 @@ impl World {
                     &mut self.out,
                 );
             }
-            Request::Sent { .. }
+            Request::Taken { .. }
+            | Request::Waiting { .. }
+            | Request::Sent { .. }
             | Request::RecurringDue { .. }
             | Request::Relay { .. }
             | Request::EscalationsInspected { .. }
@@ -315,11 +334,13 @@ impl World {
         }
     }
 
+    #[expect(clippy::too_many_lines, reason = "the world records every closed task input family")]
     fn remember_input(&mut self, event: &Event) {
         self.priced = match event {
             Event::Turn { task, cumulative, .. }
             | Event::Activation { task, cause: Cause::Priced { cumulative }, .. } => Some((*task, *cumulative)),
-            Event::OpenPeriod { .. }
+            Event::Kinds { .. }
+            | Event::OpenPeriod { .. }
             | Event::TickRecurring { .. }
             | Event::RecurringBatch { .. }
             | Event::Procedure { .. }
@@ -372,7 +393,8 @@ impl World {
             Event::Message { word, .. } | Event::DelegateResult { word, .. } | Event::Notice { word, .. } => {
                 self.message = self.message.max(word.number);
             }
-            Event::OpenPeriod { .. }
+            Event::Kinds { .. }
+            | Event::OpenPeriod { .. }
             | Event::TickRecurring { .. }
             | Event::RecurringBatch { .. }
             | Event::Procedure { .. }
@@ -506,7 +528,9 @@ impl World {
                 Request::Acknowledged { task, attempt, accepted: Accepted::New, .. } => {
                     terminals.push((*task, *attempt));
                 }
-                Request::Made { .. }
+                Request::Taken { .. }
+                | Request::Waiting { .. }
+                | Request::Made { .. }
                 | Request::RecurringDue { .. }
                 | Request::Refused { .. }
                 | Request::Done { .. }
@@ -584,7 +608,9 @@ impl World {
     pub fn deliver(&mut self) {
         for request in std::mem::take(&mut self.pending) {
             match request {
-                Request::Save { .. }
+                Request::Taken { .. }
+                | Request::Waiting { .. }
+                | Request::Save { .. }
                 | Request::RecurringDue { .. }
                 | Request::Erase { .. }
                 | Request::Ended { .. }
@@ -773,63 +799,16 @@ impl World {
 
     pub fn advance(&mut self) {
         let at = self.deadlines.values().map(|(_, at)| *at).min().expect("backoff pending");
-        self.env.wall = Wall::from_nanos(
-            self.env.wall.as_nanos().saturating_add(at.as_nanos().saturating_sub(self.env.now.as_nanos())),
-        );
-        self.env.now = at;
+        self.elapse(Duration::from_nanos(at.as_nanos().saturating_sub(self.env.now.as_nanos())));
+    }
+
+    /// Advance the controlled world clock and run the task timers once.
+    pub fn elapse(&mut self, by: Duration) {
+        self.env.wall = Wall::from_nanos(self.env.wall.as_nanos().saturating_add(by.as_nanos()));
+        self.env.now = self.env.now.saturating_add(by);
         tasks::fire(&mut self.domain, &self.env, &mut self.out);
         while let Some(request) = self.out.pop() {
-            match &request {
-                Request::Timer { task, subscription } => {
-                    self.message = self.message.checked_add(1).expect("message number room");
-                    tasks::step(
-                        &mut self.domain,
-                        &self.env,
-                        Event::Notice {
-                            task: *task,
-                            word: Word {
-                                number: self.message,
-                                from: Party::Task(*task),
-                                kind: MessageKind::Timer { subscription: *subscription },
-                                words: Box::new([]),
-                                at: self.env.wall,
-                                hits: 1,
-                                eligible: false,
-                            },
-                        },
-                        &mut self.out,
-                    );
-                }
-                Request::Notify { .. }
-                | Request::RecurringDue { .. }
-                | Request::Save { .. }
-                | Request::Erase { .. }
-                | Request::Ended { .. }
-                | Request::EscalationNeeded { .. }
-                | Request::Sent { .. }
-                | Request::Relay { .. }
-                | Request::Made { .. }
-                | Request::Refused { .. }
-                | Request::Done { .. }
-                | Request::Acknowledged { .. }
-                | Request::TurnAcknowledged { .. }
-                | Request::Activate { .. }
-                | Request::Stop { .. }
-                | Request::Adopt { .. }
-                | Request::Close { .. }
-                | Request::Release { .. }
-                | Request::RestoreRefused { .. }
-                | Request::EscalationsInspected { .. }
-                | Request::EscalationsRechecked { .. }
-                | Request::EscalationInspected { .. }
-                | Request::EscalationDecided { .. }
-                | Request::ProposalDecided { .. }
-                | Request::PersonProposed { .. }
-                | Request::PersonProposalDecided { .. }
-                | Request::ProposalRerouteNeeded { .. }
-                | Request::ProposalStalled { .. }
-                | Request::EscalationStalled { .. } => {}
-            }
+            self.route_hint(&request);
             self.pending.push(request);
         }
         self.durable();
@@ -861,6 +840,10 @@ impl World {
         self.deadlines.clear();
         self.accounting_referee.reset(&self.records);
         self.domain = Domain::new(&self.env.limits, self.seed, Box::new([1]));
+        let kinds = self.kinds.clone();
+        for configured in kinds {
+            self.send(Event::Kinds { connector: configured.connector, kinds: Box::new([configured]) });
+        }
         self.activations.clear();
         self.contexts.clear();
         self.stops.clear();

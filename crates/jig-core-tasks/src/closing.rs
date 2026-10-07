@@ -231,10 +231,16 @@ pub(crate) fn progress(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
                         }
                     }
                     if ready {
-                        task_mut(domain, number).expect("waiting task live").record.phase = Phase::Active(Active::Due);
-                        publish(domain, env, number, out);
-                        activate(domain, number, out);
-                        changed = true;
+                        if task.holdings.is_empty() {
+                            crate::holds::take(domain, env, number, out);
+                            task_mut(domain, number).expect("waiting task live").record.phase =
+                                Phase::Active(Active::Due);
+                            publish(domain, env, number, out);
+                            activate(domain, number, out);
+                            changed = true;
+                        } else {
+                            crate::holds::wait(domain, env, number, out);
+                        }
                     }
                 }
                 Phase::Closing(closing) => match closing.stage {
@@ -268,6 +274,13 @@ pub(crate) fn progress(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
                 Phase::Active(_) | Phase::Held { .. } | Phase::Ended(_) => {}
             }
         }
+        if let Some(number) = crate::holds::next_ready(domain, &env.limits) {
+            crate::holds::take(domain, env, number, out);
+            task_mut(domain, number).expect("waiting task live").record.phase = Phase::Active(Active::Due);
+            publish(domain, env, number, out);
+            activate(domain, number, out);
+            changed = true;
+        }
         if !changed {
             break;
         }
@@ -300,6 +313,7 @@ fn end_task(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue
     ended.phase = Phase::Ended(ending.clone());
     ended.ended_at = Some(env.wall);
     let id = domain.names.remove(&number).expect("ending name exists");
+    crate::holds::release(domain, number);
     crate::refs::end(domain, env, number, out);
     domain.tasks.retire(id);
     domain.alarms.cancel(number);

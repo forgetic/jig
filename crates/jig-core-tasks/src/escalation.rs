@@ -408,8 +408,10 @@ pub(crate) fn decide(
                     }
                 };
                 task.record.phase = match was {
-                    Was::Waiting if task.record.waiting_on.is_empty() => Phase::Active(Active::Due),
-                    Was::Waiting => Phase::Waiting,
+                    Was::Waiting => {
+                        task.record.hold_wait_since = None;
+                        Phase::Waiting
+                    }
                     Was::Active(active) => Phase::Active(active),
                     Was::Closing(closing) => Phase::Closing(closing),
                 };

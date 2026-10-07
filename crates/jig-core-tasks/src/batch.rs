@@ -106,6 +106,7 @@ fn check_with_result_proposal(
         Party::Person(_) | Party::Deployment { .. } => None,
     };
     check_members(domain, limits, creator, batch, parent)?;
+    crate::holds::check_batch(domain, limits, batch)?;
     if !crate::funders::can_reserve(domain, creator, batch, result_proposal, direct_finish) {
         return Err(problem(None, Refusal::Funding));
     }
@@ -137,6 +138,7 @@ fn matches_result_action(parent: &crate::TaskRecord, number: u64, batch: &[New])
             || old.authority != new.authority
             || old.numbers != new.numbers
             || old.dependencies != new.dependencies
+            || old.holdings != new.holdings
             || old.wake != new.wake
             || old.recurring != new.recurring
             || old.tracked != new.tracked

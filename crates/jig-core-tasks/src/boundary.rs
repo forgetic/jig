@@ -591,6 +591,50 @@ pub enum Phase {
     Ended(/** Historical final ending; this phase is excluded from the live restore arena. */ Ending),
 }
 
+/// A connector resource name opaque to the tasks hub (domain/tasks.md, 6.1).
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Name {
+    /// Connector number assigned by the application's root.
+    pub connector: u16,
+    /// Literal path segments with no connector-specific interpretation here.
+    pub path: Box<[Box<[u8]>]>,
+}
+
+/// Whether a busy resource refuses admission or queues its next holder.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Taken {
+    /// Refuse a batch needing this resource and name its holder.
+    Refuses,
+    /// Admit the task with no holds until the complete set is free.
+    Waits,
+}
+
+/// Connector-configured admission rule for one resource kind.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum HoldKind {
+    /// One task holds the resource.
+    Exclusive { taken: Taken },
+    /// Up to the connector's current number of slots hold the pool.
+    Pooled { taken: Taken },
+}
+
+/// One resource a task needs before it may become active.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub enum Holding {
+    /// Exclusive write resource and its connector-defined kind.
+    Write { resource: Name, kind: u16 },
+    /// Counted pool resource and its connector-defined kind.
+    Slot { pool: Name, kind: u16 },
+}
+
+/// One connector's configured resource kind.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Kind {
+    pub connector: u16,
+    pub kind: u16,
+    pub hold: HoldKind,
+}
+
 /// Root-authorized member of an atomic creation batch; tasks preflights the whole graph, payloads,
 /// capacity and actual finite reservations before mutation. (domain/tasks.md, sections 3–4).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -615,6 +659,8 @@ pub struct New {
     /// Distinct immutable dependencies, at most `Limits::dependencies`: members of this batch or
     /// the creator's current live delegates.
     pub dependencies: Box<[u64]>,
+    /// Connector resources taken together when the task first becomes active.
+    pub holdings: Box<[Holding]>,
     /// Creator-selected policy for wakes and batching.
     pub wake: WakePolicy,
     /// Present only for the core recurring procedure; template members cannot recur.
@@ -626,6 +672,7 @@ pub struct New {
 /// Owned durable task state emitted to root storage; root uses `RunContext` for preparation and
 /// does not maintain a mutable copy of this ledger. (domain/tasks.md, sections 3 and 5).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
+#[expect(clippy::struct_excessive_bools, reason = "independent durable lifecycle facts are explicit")]
 pub struct TaskRecord {
     /// Injected creation time used to order active person tasks in derived inboxes.
     pub created_at: Wall,
@@ -680,6 +727,12 @@ pub struct TaskRecord {
     /// per dependency end in the same decision. `Restore` checks count/uniqueness/subset before
     /// retention and complete live coverage after all pages.
     pub waiting_on: Box<[u64]>,
+    /// Immutable resources needed before activation.
+    pub holdings: Box<[Holding]>,
+    /// True only after the whole requested set has been taken.
+    pub holds_taken: bool,
+    /// First wall time at which dependencies cleared but a hold was unavailable.
+    pub hold_wait_since: Option<Wall>,
     /// Current live direct delegates, bounded by `Limits::delegates`; requester ending waits until
     /// they are gone.
     pub delegates: Box<[u64]>,
@@ -844,6 +897,12 @@ pub enum Refusal {
     /// Authentic finite source/reservation or eventual actual-chain arithmetic cannot admit the
     /// whole decision.
     Funding,
+    /// A task names an unknown, malformed, or mismatched resource kind.
+    HoldKind,
+    /// A required exclusive resource is busy and its kind refuses waiting.
+    HoldTaken,
+    /// A task's hold list or a resource's waiting queue exceeds its bound.
+    Holds,
 }
 
 /// `Refusal` location and reason returned to the root; batch-wide failures may have no single task
@@ -888,6 +947,8 @@ pub enum Accepted {
 /// notifications have no reply destination and may be ignored if stale. (domain/tasks.md, sections 4–5).
 #[derive(PartialEq, Eq, Debug)]
 pub enum Event {
+    /// Root installs one connector's bounded resource-kind configuration.
+    Kinds { connector: u16, kinds: Box<[Kind]> },
     /// Connector facts changed for one idle procedure; a due step is offered once.
     WakeProcedure { task: u64 },
     /// Root admits a person's goal proposal after validating policy and shape.
@@ -1173,6 +1234,10 @@ pub enum Event {
 /// saves/erases with effects and delays outward replies until durability. (domain/tasks.md, section 5).
 #[derive(PartialEq, Eq, Debug)]
 pub enum Request {
+    /// The complete requested set became held in this commit.
+    Taken { task: u64, holdings: Box<[Holding]> },
+    /// One task entered or changed position in a resource's waiting queue.
+    Waiting { task: u64, resource: Name, place: u32 },
     /// Terminal for one admitted person-origin goal proposal.
     PersonProposed { reply_to: ReplyTo, proposal: u64 },
     /// Terminal for one person-origin goal decision.

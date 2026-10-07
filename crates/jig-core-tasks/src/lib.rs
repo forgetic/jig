@@ -53,6 +53,7 @@ mod escalation;
 mod facts;
 mod failures;
 mod funders;
+mod holds;
 mod inbox;
 mod limits;
 mod moving;
@@ -72,10 +73,11 @@ mod wake;
 pub use batch::{valid_authority, valid_contract, valid_spec};
 pub use boundary::{
     Accepted, Active, Cause, Closing, Contract, DelegateState, DelegationContext, End, Ending, Event, Executor, Hold,
-    InvalidResult, Key, MessageKind, New, NewsClass, NoticeState, Parameter, Party, PersonAddress, Phase, Problem,
-    ProcedureDecision, QuestionCredit, RecurringOverlap, RecurringState, RecurringTemplate, Refusal, Request,
-    ResultFollowups, ResultKind, ResultsWake, RunContext, SavedResource, Spec, Stage, Status, Stored, Stub,
-    Subscription, SubscriptionKind, TaskRecord, TaskResult, Verdict, WakePolicy, WakeRule, Was, Word,
+    HoldKind, Holding, InvalidResult, Key, Kind, MessageKind, Name, New, NewsClass, NoticeState, Parameter, Party,
+    PersonAddress, Phase, Problem, ProcedureDecision, QuestionCredit, RecurringOverlap, RecurringState,
+    RecurringTemplate, Refusal, Request, ResultFollowups, ResultKind, ResultsWake, RunContext, SavedResource, Spec,
+    Stage, Status, Stored, Stub, Subscription, SubscriptionKind, Taken, TaskRecord, TaskResult, Verdict, WakePolicy,
+    WakeRule, Was, Word,
 };
 pub use control::{Amendment, Change, Control, History};
 pub use domain::{Domain, ViewTask, fire, max_out, step, view_phase};

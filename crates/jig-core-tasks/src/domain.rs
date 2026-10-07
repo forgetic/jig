@@ -40,6 +40,8 @@ pub struct Domain {
     pub(crate) wakes: Deadlines<u64>,
     pub(crate) proposal_alarms: Deadlines<u64>,
     pub(crate) escalation_alarms: Deadlines<u64>,
+    pub(crate) hold_alarms: Deadlines<u64>,
+    pub(crate) hold_kinds: Map<crate::holds::KindKey, crate::HoldKind>,
     pub(crate) funding: Map<crate::Funder, crate::FundingRecord>,
     pub(crate) person_proposals: Map<u64, crate::PersonProposal>,
     pub(crate) charters: Box<[u32]>,
@@ -111,6 +113,8 @@ impl Domain {
             wakes: Deadlines::with_capacity(limits.tasks),
             proposal_alarms: Deadlines::with_capacity(limits.tasks),
             escalation_alarms: Deadlines::with_capacity(limits.tasks),
+            hold_alarms: Deadlines::with_capacity(limits.tasks),
+            hold_kinds: Map::with_capacity(limits.hold_kinds),
             funding: Map::with_capacity(limits.funders),
             person_proposals: Map::with_capacity(limits.tasks),
             charters,
@@ -267,6 +271,7 @@ pub(crate) fn output_bound(limits: &Limits) -> Option<u32> {
         .checked_add(limits.funders.checked_mul(3)?)?
         .checked_add(limits.tasks.checked_mul(limits.subscriptions)?.checked_mul(2)?)?
         .checked_add(crate::limits::stub_capacity(limits)?)?
+        .checked_add(limits.tasks.checked_mul(limits.holdings)?.checked_mul(3)?)?
         .checked_add(8)
 }
 
@@ -286,6 +291,7 @@ pub fn max_out(limits: &Limits) -> u32 {
 #[expect(clippy::too_many_lines, reason = "the closed task event vocabulary dispatches to focused handlers")]
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
+        Event::Kinds { connector, kinds } => crate::holds::kinds(domain, &env.limits, connector, &kinds),
         Event::WakeProcedure { task } => {
             let wake = match record(domain, task) {
                 Some(row) => match row.executor {
@@ -444,6 +450,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         }
     }
     if domain.ready() {
+        crate::holds::expire(domain, env, out);
         crate::closing::progress(domain, env, out);
     }
 }
@@ -459,6 +466,7 @@ pub fn fire(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>) {
     crate::wake::fire(domain, env, out);
     crate::proposals::fire(domain, env, out);
     crate::escalation::fire(domain, env, out);
+    crate::holds::expire(domain, env, out);
     if let Some(number) = domain.alarms.expire(env.now)
         && let Some(task) = task_mut(domain, number)
     {
@@ -689,6 +697,7 @@ fn make_result_followups(
 
 /// Construct a whole batch after its entrance and funding were preflighted in this decision.
 #[expect(clippy::manual_map, reason = "the subset uses a closed match instead of a closure")]
+#[expect(clippy::too_many_lines, reason = "one whole admitted batch constructs every durable member")]
 pub(crate) fn make_admitted(
     domain: &mut Domain,
     env: &Env<Limits>,
@@ -768,6 +777,9 @@ pub(crate) fn make_admitted(
                 numbers: new.numbers,
                 funder: new.funder,
                 waiting_on: new.dependencies.clone(),
+                holdings: new.holdings,
+                holds_taken: false,
+                hold_wait_since: None,
                 dependencies: new.dependencies,
                 delegates: Box::new([]),
                 references: Box::new([]),

@@ -32,6 +32,18 @@ pub struct Limits {
     /// Maximum immutable dependency identities per task; also bounds its remaining live
     /// `waiting_on` subset.
     pub dependencies: u32,
+    /// Maximum resources required by one task.
+    pub holdings: u32,
+    /// Maximum connector resource kinds installed in this deployment.
+    pub hold_kinds: u32,
+    /// Maximum literal segments in one resource name.
+    pub hold_segments: u32,
+    /// Maximum aggregate literal bytes in one resource name.
+    pub hold_bytes: u32,
+    /// Maximum tasks waiting on any one resource.
+    pub hold_waiters: u32,
+    /// Wall-clock bound before a task waiting for holds is held for review.
+    pub hold_wait: skein_lib::Duration,
     /// Shape bound for typed historical input identities checked by the root before delegation.
     pub inputs: u32,
     /// Maximum combined specification words and byte-valued parameter bytes per task.
@@ -83,6 +95,7 @@ pub(crate) fn stub_capacity(limits: &Limits) -> Option<u32> {
 /// on overflow or invalid task/batch/tree/retry settings. Validates output-bound arithmetic; caller
 /// separately counts incoming data, `RunContext`/saved-row copies and `Request` queues.
 #[must_use]
+#[expect(clippy::too_many_lines, reason = "one checked bound includes every retained task and hold container")]
 pub fn worst_case(limits: &Limits) -> Option<u64> {
     crate::domain::output_bound(limits)?;
     if limits.tasks == 0
@@ -92,6 +105,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         || limits.inbox_bytes == 0
         || limits.message_bytes == 0
         || limits.message_bytes > limits.inbox_bytes
+        || limits.hold_wait == skein_lib::Duration::ZERO
         || limits.proposal_stall == skein_lib::Duration::ZERO
         || limits.escalation_stall == skein_lib::Duration::ZERO
     {
@@ -130,6 +144,16 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(u64::from(limits.parameters).checked_mul(u64::try_from(size_of::<Parameter>()).ok()?)?)?
         .checked_add(u64::from(limits.inputs).checked_mul(8)?)?
         .checked_add(u64::from(limits.dependencies).checked_mul(16)?)?
+        .checked_add(
+            u64::from(limits.holdings).checked_mul(
+                u64::try_from(size_of::<crate::Holding>())
+                    .ok()?
+                    .checked_add(
+                        u64::from(limits.hold_segments).checked_mul(u64::try_from(size_of::<Box<[u8]>>()).ok()?)?,
+                    )?
+                    .checked_add(u64::from(limits.hold_bytes))?,
+            )?,
+        )?
         .checked_add(u64::from(limits.delegates).checked_mul(8)?)?
         .checked_add(u64::from(limits.references).checked_mul(8)?)?
         .checked_add(
@@ -150,6 +174,16 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(u64::from(limits.spec_bytes))?
         .checked_add(u64::from(limits.authority_bytes))?
         .checked_add(u64::from(limits.dependencies).checked_mul(8)?)?
+        .checked_add(
+            u64::from(limits.holdings).checked_mul(
+                u64::try_from(size_of::<crate::Holding>())
+                    .ok()?
+                    .checked_add(
+                        u64::from(limits.hold_segments).checked_mul(u64::try_from(size_of::<Box<[u8]>>()).ok()?)?,
+                    )?
+                    .checked_add(u64::from(limits.hold_bytes))?,
+            )?,
+        )?
         .checked_add(u64::from(limits.contract_choices).checked_mul(u64::try_from(size_of::<Verdict>()).ok()?)?)?;
     let proposal_payload = u64::try_from(size_of::<crate::Proposal>())
         .ok()?
@@ -160,6 +194,8 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(Map::<u64, Id<Task>>::worst_case(limits.tasks)?)?
         .checked_add(Map::<u64, crate::Stub>::worst_case(stub_capacity(limits)?)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
+        .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
+        .checked_add(Map::<crate::holds::KindKey, crate::HoldKind>::worst_case(limits.hold_kinds)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks.checked_mul(limits.subscriptions)?)?)?

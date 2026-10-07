@@ -3,7 +3,7 @@
 //! Measures existing ownership without allocating or cloning; shape admission
 //! remains with tasks and authority decisions remain with root policy checks.
 use crate::{
-    Authority, Contract, End, Ending, Last, Parameter, PersonProposalState, Phase, Proposal, ProposalAction,
+    Authority, Contract, End, Ending, Holding, Last, Parameter, PersonProposalState, Phase, Proposal, ProposalAction,
     ProposalState, ResultFollowups, Spec, Stored, TaskRecord, TaskResult, Was,
 };
 use core::mem::{size_of, size_of_val};
@@ -65,13 +65,29 @@ fn batch_bytes(batch: &[crate::New]) -> Option<u64> {
             .checked_add(spec_bytes(&member.spec)?)?
             .checked_add(authority_bytes(&member.authority)?)?
             .checked_add(contract_bytes(&member.contract)?)?
-            .checked_add(bytes(size_of_val(&*member.dependencies))?)?;
+            .checked_add(bytes(size_of_val(&*member.dependencies))?)?
+            .checked_add(holdings_bytes(&member.holdings)?)?;
     }
     Some(total)
 }
 
 fn bytes(length: usize) -> Option<u64> {
     u64::try_from(length).ok()
+}
+
+fn holdings_bytes(holdings: &[Holding]) -> Option<u64> {
+    let mut total = bytes(size_of_val(holdings))?;
+    for holding in holdings {
+        let path = match holding {
+            Holding::Write { resource, .. } => &resource.path,
+            Holding::Slot { pool, .. } => &pool.path,
+        };
+        total = total.checked_add(bytes(size_of_val(&**path))?)?;
+        for segment in path {
+            total = total.checked_add(bytes(segment.len())?)?;
+        }
+    }
+    Some(total)
 }
 
 fn spec_bytes(spec: &Spec) -> Option<u64> {
@@ -170,7 +186,8 @@ fn proposal_bytes(proposal: &Proposal) -> Option<u64> {
                     .checked_add(spec_bytes(&member.spec)?)?
                     .checked_add(authority_bytes(&member.authority)?)?
                     .checked_add(contract_bytes(&member.contract)?)?
-                    .checked_add(bytes(size_of_val(&*member.dependencies))?)?;
+                    .checked_add(bytes(size_of_val(&*member.dependencies))?)?
+                    .checked_add(holdings_bytes(&member.holdings)?)?;
             }
         }
         ProposalAction::Amend { amendment, .. } => {
@@ -213,7 +230,8 @@ fn task_bytes(task: &TaskRecord) -> Option<u64> {
                         .checked_add(spec_bytes(&member.spec)?)?
                         .checked_add(authority_bytes(&member.authority)?)?
                         .checked_add(contract_bytes(&member.contract)?)?
-                        .checked_add(bytes(size_of_val(&*member.dependencies))?)?;
+                        .checked_add(bytes(size_of_val(&*member.dependencies))?)?
+                        .checked_add(holdings_bytes(&member.holdings)?)?;
                 }
                 total
             }
@@ -234,6 +252,7 @@ fn task_bytes(task: &TaskRecord) -> Option<u64> {
             None => 0,
         })?
         .checked_add(bytes(size_of_val(&*task.dependencies))?)?
+        .checked_add(holdings_bytes(&task.holdings)?)?
         .checked_add(bytes(size_of_val(&*task.delegates))?)?
         .checked_add(bytes(size_of_val(&*task.references))?)?
         .checked_add(bytes(size_of_val(&*task.questions))?)?

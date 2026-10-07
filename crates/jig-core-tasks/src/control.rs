@@ -364,6 +364,9 @@ pub(crate) fn apply(
             };
             let task = task_mut(domain, number).expect("entrance found live task");
             task.record.phase = next;
+            if task.record.phase == Phase::Waiting {
+                task.record.hold_wait_since = None;
+            }
             task.record.tries = Tries::NONE;
             task.record.refusals = 0;
             history(domain, number, by, Change::Released, &[], out);

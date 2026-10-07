@@ -103,3 +103,72 @@ fn an_amendment_while_gathering_drops_every_section_gathered() {
     assert!(done.is_empty());
     assert!(world.closed(Token::new(2)) && world.closed(Token::new(3)));
 }
+
+#[test]
+fn sections_that_do_not_fit_are_cut_in_their_kinds_order_and_say_how_much() {
+    let mut world = World::new(LIMITS);
+    let attempts = b"early attempt\nrecent attempt\n";
+    let asked = begin(
+        &mut world,
+        Box::new([
+            Planned::Core {
+                kind: Core::TranscriptTail,
+                text: b"last transcript turn".as_slice().into(),
+                limit: 30,
+                priority: 2,
+                required: false,
+            },
+            Planned::Core {
+                kind: Core::Task,
+                text: b"do work\n".as_slice().into(),
+                limit: 40,
+                priority: 0,
+                required: true,
+            },
+            Planned::Core {
+                kind: Core::Attempts,
+                text: attempts.as_slice().into(),
+                limit: 25,
+                priority: 1,
+                required: false,
+            },
+        ]),
+        33,
+    );
+    assert!(referee::within_budget(&asked, 33));
+    let [GatherRequest::Complete { order, .. }] = asked.as_slice() else { panic!("completed typed brief: {asked:?}") };
+    let [
+        GatherPlaced::CoreMissing { kind: Core::TranscriptTail, why: GatherMissing::Budget },
+        GatherPlaced::Core { kind: Core::Task, text: task },
+        GatherPlaced::Core { kind: Core::Attempts, text: cut },
+    ] = order.as_ref()
+    else {
+        panic!("source order retained: {order:?}")
+    };
+    assert_eq!(task.as_ref(), b"do work\n");
+    assert!(cut.len() <= 25);
+    assert!(cut.ends_with(b"attempt\n"), "newest attempt bytes retained: {cut:?}");
+    let mut counted = false;
+    for lost in 1..attempts.len() {
+        let marker = format!("[{lost} bytes cut]\n");
+        if cut.starts_with(marker.as_bytes()) {
+            assert_eq!(&cut[marker.len()..], &attempts[lost..]);
+            counted = true;
+        }
+    }
+    assert!(counted, "cut names exactly the omitted bytes: {cut:?}");
+}
+
+#[test]
+fn a_required_section_missing_at_the_deadline_fails_before_completion() {
+    let mut world = World::new(LIMITS);
+    let token = Token::new(2);
+    world.put(token, b"required words");
+    world.pause(token);
+    let asked = begin(&mut world, Box::new([connector(2, true, 0)]), 40);
+    assert!(matches!(asked.as_slice(), [GatherRequest::Gather { .. }]));
+    let expired = world.fire(Time::ZERO.saturating_add(Duration::from_secs(10)));
+    let done = world.settle(expired);
+    assert_eq!(done, [GatherRequest::Failed { brief: Token::new(1), why: GatherMissing::Late }]);
+    assert!(world.closed(token));
+}

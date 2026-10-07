@@ -2,11 +2,11 @@
 //! a counting allocator: the host with every slot holding an assignment of
 //! exactly its limits, then every run ending with as much as it may hold.
 
-use skein_lib::{Duration, Env, Queue, ReplyTo, Time, Token, Wall};
 use jig_worker_host::{
-    AgentFailure, Answer, Ask, Assignment, Bounce, Delivery, DeliveryOutcome, Domain, Event, Finish, Grant, Invalid, Limits,
-    Preparation, Reason, Refusal, Request, Workspace, max_out, resume, step, worst_case,
+    AgentFailure, Answer, Ask, Assignment, Bounce, Delivery, DeliveryOutcome, Domain, Event, Finish, Grant, Invalid,
+    Limits, Preparation, Reason, Refusal, Request, Workspace, max_out, resume, step, worst_case,
 };
+use skein_lib::{Duration, Env, Queue, ReplyTo, Time, Token, Wall};
 use skein_world::domain::heap::{self, Meter};
 
 #[global_allocator]
@@ -178,12 +178,18 @@ fn fill(limits: Limits) {
             usize::try_from(limits.held).expect("fits")
         );
         assert!(host.step(Event::Yielded { owner: *owner }).is_empty(), "waiting");
-        let [Asked::Delivery { owner: delivery }] =
-            host.step(Event::Called { owner: *owner, call: Token::new(1), ask: Ask::Deliver { message: bytes(64) } })[..]
-        else {
+        let [Asked::Delivery { owner: delivery }] = host.step(Event::Called {
+            owner: *owner,
+            call: Token::new(1),
+            ask: Ask::Deliver { message: bytes(64) },
+        })[..] else {
             panic!("delivered");
         };
-        assert_eq!(host.step(Event::Delivered { owner: delivery, delivery: delivered }), [Asked::Other], "landed everywhere");
+        assert_eq!(
+            host.step(Event::Delivered { owner: delivery, delivery: delivered }),
+            [Asked::Other],
+            "landed everywhere"
+        );
         let mut calls = Vec::new();
         for call in 2..=u64::from(limits.run_calls) {
             let ask = Ask::Relay { body: bytes(64) };

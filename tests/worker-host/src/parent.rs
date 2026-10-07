@@ -28,12 +28,12 @@
 //! workspace with no agent yet, and nothing saved or released while the
 //! workspace's agent may still be running or a delivery or save is in flight.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use skein_lib::{Duration, Rng, Token};
 use jig_worker_host::{
     AgentFailure, Ask, Delivery, DeliveryOutcome, Event, Finish, Limits, Preparation, Request, RunFailure, Workspace,
 };
+use skein_lib::{Duration, Rng, Token};
 use skein_world::domain::Span;
 
 /// How the parent's capabilities behave.
@@ -192,7 +192,7 @@ pub struct Parent {
     rng: Rng,
     names: u64,
     /// Workspaces asked for, by the hosted run's token, until prepared.
-    preparing: BTreeMap<Token, ()>,
+    preparing: BTreeSet<Token>,
     /// Workspaces, by their tokens.
     spaces: BTreeMap<Token, Space>,
     /// Agents, by their tokens.
@@ -211,7 +211,7 @@ impl Parent {
             limits,
             rng: Rng::new(seed),
             names: 0,
-            preparing: BTreeMap::new(),
+            preparing: BTreeSet::new(),
             spaces: BTreeMap::new(),
             agents: BTreeMap::new(),
             delivering: BTreeMap::new(),
@@ -229,7 +229,7 @@ impl Parent {
     /// gone, with nothing in flight.
     #[must_use]
     pub fn settled(&self, owner: Token) -> bool {
-        if self.preparing.contains_key(&owner) {
+        if self.preparing.contains(&owner) {
             return false;
         }
         for space in self.spaces.values() {
@@ -259,6 +259,7 @@ impl Parent {
     }
 
     /// Takes the host's request `request`, which is for the parent.
+    #[expect(clippy::needless_pass_by_value, reason = "the world takes ownership of emitted requests")]
     pub fn take(&mut self, request: Request) -> Vec<Out> {
         match request {
             jig_worker_host::Request::Turn { .. }
@@ -331,7 +332,7 @@ impl Parent {
 
     fn prepare(&mut self, owner: Token, workspace: &Workspace) -> Vec<Out> {
         self.tally.prepares += 1;
-        assert!(self.preparing.insert(owner, ()).is_none(), "a run's workspace is prepared once");
+        assert!(self.preparing.insert(owner), "a run's workspace is prepared once");
         let after = self.script.prepare.draw(&mut self.rng);
         let event = if self.rng.chance(self.script.transient) {
             self.unprepared(owner, Preparation::Transient)
@@ -580,7 +581,7 @@ impl Parent {
 
     /// The prepare of `owner` has ended, as the host takes its terminal.
     pub fn prepared(&mut self, owner: Token) {
-        assert!(self.preparing.remove(&owner).is_some(), "a prepare ends once");
+        assert!(self.preparing.remove(&owner), "a prepare ends once");
     }
 
     /// The delivery `call` has ended, as the world delivers its `Delivered`.

@@ -1,8 +1,8 @@
 //! The host in its world: scenarios, replay, and a sweep of random worlds.
 
-use skein_lib::Duration;
 use jig_worker_host::Limits;
 use jig_worker_host_world::{Outage, Settings, Span, Stats, World};
+use skein_lib::Duration;
 
 const ITERATIONS: u32 = 200_000;
 
@@ -46,8 +46,7 @@ fn assignments_beyond_the_slots_are_refused_as_busy() {
 #[test]
 fn assignments_beyond_the_limits_are_refused_as_invalid_and_never_admitted() {
     let calm = Settings::calm(3);
-    let settings =
-        Settings { engine: jig_worker_host_world::engine::Script { invalid: 1000, ..calm.engine }, ..calm };
+    let settings = Settings { engine: jig_worker_host_world::engine::Script { invalid: 1000, ..calm.engine }, ..calm };
     let stats = run(&settings).stats();
     assert_eq!(count(&stats, "refused: invalid"), 8, "{stats:?}");
     assert_eq!(stats.parent.prepares, 0, "{stats:?}");

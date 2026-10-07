@@ -21,11 +21,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use skein_lib::{Duration, ReplyTo, Rng, Token};
 use jig_worker_host::{
-    AgentFailure, Answer, Assignment, Bounce, Event, Failure, Hosting, Invalid, Limits, Preparation, Reason,
-    Refusal, Request, RunFailure, Workspace,
+    AgentFailure, Answer, Assignment, Bounce, Event, Failure, Hosting, Invalid, Limits, Preparation, Reason, Refusal,
+    Request, RunFailure, Workspace,
 };
+use skein_lib::{Duration, ReplyTo, Rng, Token};
 use skein_world::domain::Span;
 
 /// How the engine behaves.

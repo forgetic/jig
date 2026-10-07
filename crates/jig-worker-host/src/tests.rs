@@ -1,12 +1,11 @@
 //! Exercise hosted runs through the public boundary (domain/hosts.md, section 6).
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-use skein_lib::{Env, Queue, ReplyTo, Time, Token, Wall};
+use skein_lib::{Env, List, Queue, ReplyTo, Time, Token, Wall};
 
 use crate::{
-    Answer, Ask, Assignment, Delivery, DeliveryOutcome, Domain, Event, Failure, Finish, Invalid, Limits,
-    Preparation, Reason, Refusal, Reply, Request, Workspace, max_out, step,
+    Answer, Ask, Assignment, Delivery, DeliveryOutcome, Domain, Event, Failure, Finish, Invalid, Limits, Preparation,
+    Reason, Refusal, Reply, Request, Workspace, max_out, step,
 };
 
 const LIMITS: Limits = Limits {
@@ -41,19 +40,22 @@ impl Harness {
 
     fn step(&mut self, event: Event) -> Box<[Request]> {
         step(&mut self.domain, &self.env, event, &mut self.out);
-        let mut requests = Vec::new();
+        let mut requests = List::with_capacity(max_out(&LIMITS));
         while let Some(request) = self.out.pop() {
-            requests.push(request);
+            requests.push(request).expect("bounded output");
         }
-        requests.into_boxed_slice()
+        requests.into_boxed()
     }
 
     fn assign(&mut self, run: u64) -> (Token, Token) {
         let assignment = assignment(run);
         let requests = self.step(Event::Assign { reply_to: ReplyTo::new(assignment.run), assignment });
         let [Request::Prepare { owner, workspace }] = &*requests else { panic!("expected prepare: {requests:?}") };
-        assert_eq!(*workspace, Workspace { workstream: run, items: Token::new(run + 100) });
-        (*owner, Token::new(run + 200))
+        assert_eq!(
+            *workspace,
+            Workspace { workstream: run, items: Token::new(run.checked_add(100).expect("small run")) }
+        );
+        (*owner, Token::new(run.checked_add(200).expect("small run")))
     }
 
     fn live(&mut self, run: u64) -> (Token, Token, Token) {
@@ -63,7 +65,7 @@ impl Harness {
             panic!("expected start: {requests:?}")
         };
         assert_eq!((*started, *prepared), (owner, workspace));
-        let agent = Token::new(run + 300);
+        let agent = Token::new(run.checked_add(300).expect("small run"));
         assert!(self.step(Event::Started { owner, agent }).is_empty());
         (owner, workspace, agent)
     }
@@ -72,8 +74,8 @@ impl Harness {
 fn assignment(run: u64) -> Assignment {
     Assignment {
         run: Token::new(run),
-        attempt: Token::new(run + 1000),
-        workspace: Workspace { workstream: run, items: Token::new(run + 100) },
+        attempt: Token::new(run.checked_add(1000).expect("small run")),
+        workspace: Workspace { workstream: run, items: Token::new(run.checked_add(100).expect("small run")) },
         save: true,
         charter: Box::from(&b"charter"[..]),
         snapshot: None,
@@ -110,7 +112,14 @@ fn a_preparation_failure_answers_without_starting_an_agent() {
         failure: Preparation::Permanent { resource: Some(Token::new(77)) },
         detail: Box::new([]),
     });
-    let [Request::Answer { answer: Answer::Failed { failure: Failure::Unprepared(Preparation::Permanent { resource: Some(resource) }), .. }, .. }] = &*requests else {
+    let [
+        Request::Answer {
+            answer:
+                Answer::Failed { failure: Failure::Unprepared(Preparation::Permanent { resource: Some(resource) }), .. },
+            ..
+        },
+    ] = &*requests
+    else {
         panic!("expected typed preparation failure: {requests:?}")
     };
     assert_eq!(*resource, Token::new(77));
@@ -133,7 +142,9 @@ fn a_delivery_is_answered_after_the_workspace_reports_what_it_left() {
     let requests = h.step(Event::Finished { owner, finish: Finish::Ended { outcome: Box::from(&b"done"[..]) } });
     assert_eq!(&*requests, [Request::Stop { agent }]);
     let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
-    let [Request::Release { workspace: released }, Request::Answer { answer: Answer::Ended { work, .. }, .. }] = &*requests else {
+    let [Request::Release { workspace: released }, Request::Answer { answer: Answer::Ended { work, .. }, .. }] =
+        &*requests
+    else {
         panic!("expected release and answer: {requests:?}")
     };
     assert_eq!((*released, work.left, work.saved), (workspace, Some(left), None));
@@ -146,7 +157,9 @@ fn cancelling_a_preparing_run_waits_for_the_workspace_terminal() {
     let requests = h.step(Event::Cancel { run: Token::new(1), attempt: Token::new(1001) });
     assert_eq!(&*requests, [Request::Abort { owner }]);
     let requests = h.step(Event::Unprepared { owner, failure: Preparation::Transient, detail: Box::new([]) });
-    let [Request::Answer { answer: Answer::Failed { failure: Failure::Cancelled(Reason::Engine), .. }, .. }] = &*requests else {
+    let [Request::Answer { answer: Answer::Failed { failure: Failure::Cancelled(Reason::Engine), .. }, .. }] =
+        &*requests
+    else {
         panic!("expected cancelled answer: {requests:?}")
     };
 }

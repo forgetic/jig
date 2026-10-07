@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use skein_lib::{Duration, ReplyTo, Rng, Time, Token};
 use jig_worker_host::{
     self as host, AgentFailure, Event, Fact, Failure, Finish, Limits, Reason, Reply, Request, RunFailure,
 };
+use skein_lib::{Duration, ReplyTo, Rng, Time, Token};
 use skein_world::domain::{Ledger, Schedule, Span, Stage, Trace};
 
 use crate::engine::{self, Act, Engine, Plan};
@@ -204,10 +204,6 @@ pub struct Stats {
 
 /// Something on its way, delivered at its time.
 #[derive(Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "fixed diagnostic tails keep boundary records bounded without allocation"
-)]
 enum Delivery {
     /// An event reaching the host: `stale` when it names an attempt never
     /// assigned, so it must change nothing.
@@ -821,7 +817,10 @@ impl World {
                 self.hosted.get_mut(&owner).expect("a start is of a hosted run").launch = Launch::Asked;
                 self.parcel(request);
             }
-            Request::DeliverWorkspace { .. } | Request::Save { .. } | Request::Release { .. } | Request::Grant { .. } => {
+            Request::DeliverWorkspace { .. }
+            | Request::Save { .. }
+            | Request::Release { .. }
+            | Request::Grant { .. } => {
                 self.parcel(request);
             }
         }

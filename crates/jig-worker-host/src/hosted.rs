@@ -11,8 +11,8 @@ use skein_lib::{Env, Id, List, Map, Queue, ReplyTo, Set, Slab, Token};
 
 use crate::assignment::{self, len};
 use crate::boundary::{
-    AgentFailure, Answer, Ask, Assignment, Bounce, Delivery, Failure, Finish, Grant, Hosting,
-    Phase, Preparation, Reason, Refusal, Reply, Request, RunFailure, Work,
+    AgentFailure, Answer, Ask, Assignment, Bounce, Delivery, Failure, Finish, Grant, Hosting, Phase, Preparation,
+    Reason, Refusal, Reply, Request, RunFailure, Work,
 };
 use crate::call::{self, Call};
 use crate::domain::Domain;
@@ -659,9 +659,7 @@ pub(crate) fn saved(domain: &mut Domain, owner: Token, at: Option<Token>, out: &
     let entry = hosted.get_mut(id).expect("a run lives until its save settles");
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Saving { reply_to, workspace, ending } => {
-            release(entry, facts, reply_to, workspace, ending, at, out)
-        }
+        State::Saving { reply_to, workspace, ending } => release(entry, facts, reply_to, workspace, ending, at, out),
         State::Preparing { .. }
         | State::Cancelling { .. }
         | State::Starting { .. }
@@ -798,12 +796,11 @@ fn settle(
         Ending::Parked { .. } | Ending::Failed { .. } | Ending::Stopped { .. } => false,
     };
     let save = entry.save && !delivered_end;
-    match save {
-        true => {
-            out.push(Request::Save { owner: id.token(), workspace });
-            State::Saving { reply_to, workspace, ending }
-        }
-        false => release(entry, facts, reply_to, workspace, ending, None, out),
+    if save {
+        out.push(Request::Save { owner: id.token(), workspace });
+        State::Saving { reply_to, workspace, ending }
+    } else {
+        release(entry, facts, reply_to, workspace, ending, None, out)
     }
 }
 
@@ -893,7 +890,9 @@ fn serve(
                 let pending = calls.get(*pending).expect("the run owns every relay");
                 let name = match pending.state {
                     call::State::Relayed { call, .. } | call::State::Settling { call } => call,
-                    call::State::Delivering { .. } | call::State::Closed => unreachable!("the run keeps relay waits only"),
+                    call::State::Delivering { .. } | call::State::Closed => {
+                        unreachable!("the run keeps relay waits only")
+                    }
                 };
                 if name == call {
                     out.push(Request::Reply { agent, call, reply: Reply::Busy });
@@ -991,7 +990,9 @@ fn leave(relays: &Set<Id<Call>>, calls: &mut Slab<Call>, out: &mut Queue<Request
                 out.push(Request::CancelRelay { call: call_id.token() });
             }
             call::State::Settling { .. } => {}
-            call::State::Delivering { .. } | call::State::Closed => unreachable!("the run holds only its pending relays"),
+            call::State::Delivering { .. } | call::State::Closed => {
+                unreachable!("the run holds only its pending relays")
+            }
         }
     }
 }

@@ -155,7 +155,6 @@ pub enum Event {
 
 /// host -> parent
 #[derive(PartialEq, Eq, Debug)]
-#[expect(clippy::large_enum_variant, reason = "bounded diagnostics stay inline and are included in worst_case")]
 pub enum Request {
     /// Stable agent name on the engine wire; delivery identifies this local wait.
     RelayV2 {
@@ -287,6 +286,73 @@ pub enum Request {
     },
 }
 
+/// The host's agent capability, translated by the worker root (hosts.md,
+/// section 6). These requests carry no process or channel vocabulary.
+#[derive(PartialEq, Eq, Debug)]
+pub enum ToAgent {
+    StartV2 { owner: Token, workspace: Token, charter: Box<[u8]>, transcript: Option<Box<[u8]>>, grants: Box<[Grant]> },
+    Start { owner: Token, workspace: Token, charter: Box<[u8]>, snapshot: Option<Box<[u8]>>, grants: Box<[Grant]> },
+    Message { agent: Token, name: Token, event: Box<[u8]> },
+    Answer { agent: Token, call: Token, reply: Reply },
+    Grant { agent: Token, grant: Grant },
+    Cancel { agent: Token },
+}
+
+/// What the agent capability reports back to the host. Its root translates
+/// the application agent's own vocabulary into these events.
+#[derive(PartialEq, Eq, Debug)]
+pub enum FromAgent {
+    Turn { owner: Token, turn: Turn },
+    FinishedV2 { owner: Token, turns: u32, spent: u64, finish: FinishV2 },
+    Started { owner: Token, agent: Token },
+    Called { owner: Token, call: Token, ask: Ask },
+    Withdrawn { owner: Token, call: Token },
+    Bounced { owner: Token, name: Token, bounce: Bounce },
+    Yielded { owner: Token },
+    Finished { owner: Token, finish: Finish },
+    Faulted { owner: Token, fault: AgentFailure },
+    Gone { owner: Token, detail: Box<[u8]> },
+}
+
+impl Event {
+    /// Bring an agent capability's report into the host's event stream.
+    #[must_use]
+    pub fn from_agent(event: FromAgent) -> Event {
+        match event {
+            FromAgent::Turn { owner, turn } => Event::Turn { owner, turn },
+            FromAgent::FinishedV2 { owner, turns, spent, finish } => Event::FinishedV2 { owner, turns, spent, finish },
+            FromAgent::Started { owner, agent } => Event::Started { owner, agent },
+            FromAgent::Called { owner, call, ask } => Event::Called { owner, call, ask },
+            FromAgent::Withdrawn { owner, call } => Event::Withdrawn { owner, call },
+            FromAgent::Bounced { owner, name, bounce } => Event::Bounced { owner, name, bounce },
+            FromAgent::Yielded { owner } => Event::Yielded { owner },
+            FromAgent::Finished { owner, finish } => Event::Finished { owner, finish },
+            FromAgent::Faulted { owner, fault } => Event::Faulted { owner, fault },
+            FromAgent::Gone { owner, detail } => Event::Gone { owner, detail },
+        }
+    }
+}
+
+impl Request {
+    /// Take an agent request for translation by the worker root, returning
+    /// any request addressed to another capability unchanged.
+    pub fn to_agent(self) -> Result<ToAgent, Request> {
+        match self {
+            Request::StartV2 { owner, workspace, charter, transcript, grants } => {
+                Ok(ToAgent::StartV2 { owner, workspace, charter, transcript, grants })
+            }
+            Request::Start { owner, workspace, charter, snapshot, grants } => {
+                Ok(ToAgent::Start { owner, workspace, charter, snapshot, grants })
+            }
+            Request::Deliver { agent, name, event } => Ok(ToAgent::Message { agent, name, event }),
+            Request::Reply { agent, call, reply } => Ok(ToAgent::Answer { agent, call, reply }),
+            Request::Grant { agent, grant } => Ok(ToAgent::Grant { agent, grant }),
+            Request::Stop { agent } => Ok(ToAgent::Cancel { agent }),
+            other => Err(other),
+        }
+    }
+}
+
 /// What the engine gives the worker for one run (domain/hosts.md, section 2).
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct Assignment {
@@ -369,7 +435,6 @@ pub enum Ask {
 
 /// The answer to a host call.
 #[derive(PartialEq, Eq, Hash, Debug)]
-#[expect(clippy::large_enum_variant, reason = "bounded diagnostics stay inline and are included in worst_case")]
 pub enum Reply {
     /// The engine's answer to a relayed call, as it is.
     Relayed { answer: Box<[u8]> },

@@ -35,7 +35,7 @@ listed in section 10.
 | Tier | Real | Faked |
 |---|---|---|
 | step tests | one step function; authority's checks | its events, by hand |
-| a child's world | one child domain of the core, or the local host, or the worker host | its parent, scripted; its neighbours |
+| a child's world | one child domain of the core, or the hub | its parent, scripted; its neighbours |
 | the core's world | the core with every child, under a root of jig's own | the test connector, scripted hosts, scripted parties, the store |
 | the conformance world | an application's engine domain, root and all | jig's fakes, the application's fakes, the faults |
 | an application's system worlds | its engine, its workers and its agents' domains together | its systems' fakes, at their domain faces |
@@ -56,7 +56,8 @@ referee in the loop, the heap counted at every iteration
 - **brief:** sections planned, gathered, cut by size, a required one
   missing; connectors' sections as sizes and tokens only.
 - **notes, views, accounts:** each its own concern.
-- **the local host and the worker host:** hosts.md, section 11.
+- **the hub,** with agents of both kinds, processes and the inline agent:
+  hosts.md, section 11.
 
 Each child's world plays its parent and the store as engine.md, 5.6
 says: it keeps saved records, commits at the end of each step, and
@@ -186,7 +187,7 @@ more than one world needs them (testing-strategy.md, section 4):
 - **scripted workers:** each a host that speaks the contract of
   hosts.md, section 2, playing a run's script, keeping turns and answers
   until acknowledged, losing its channel and coming back, or vanishing;
-- **the local host's runs:** smith's real domain over skein's fake LLM,
+- **the inline agent's runs:** smith's real domain over skein's fake LLM,
   with a script per charter;
 - **scripted parties:** sign-ins and requests, by script or at random
   within their role;

@@ -48,7 +48,8 @@ root does with all of it is root.md. The mechanics are those of skein's
 application root     the journal, routing, translation; faces the protocol layer
 ├── core             tasks, authority, people, fleet, accounts, brief, notes, views
 ├── <connectors>     the application's
-├── local host       jig's host inside the engine, if the application runs agents there (hosts.md)
+├── jig-host         jig's hub, for runs on the engine's own slots, if the application runs agents there (hosts.md)
+├── inline agent     the hub's agent in the engine: smith's domains in this process
 └── …                the application's own children
 ```
 
@@ -57,9 +58,9 @@ application root     the journal, routing, translation; faces the protocol layer
   core's vocabulary; everything it asks for leaves through the root,
   which translates it and puts it into the journal (root.md).
 - **Hosts are reached through the root:** workers over the channel, which
-  the protocol layer carries; the host inside the engine as a sibling the
-  root routes to (hosts.md, section 5). The core's fleet does not tell
-  them apart beyond what placement needs.
+  the protocol layer carries; the engine's own hub as a sibling the root
+  routes to (hosts.md, 6.1). Both speak the same vocabulary. The core's
+  fleet does not tell them apart beyond what placement needs.
 - **The engine never reads a system** but through its connectors; what a
   workspace holds is for the run to find.
 - **The store is the engine's alone.** Nothing else reads or writes it,
@@ -492,8 +493,9 @@ The fleet child domain knows the hosts and the runs they host:
 
 - **Hosts of two kinds** (hosts.md, section 3): workers, which dial in
   with their slots and the workstreams their workspaces hold; and the
-  engine's own slots, a configured number, for the host inside the
-  engine. A charter says which kinds may run it. A run goes to a host
+  engine's own slots, a configured number, hosted by the engine's own hub
+  (hosts.md, section 6), present from construction. A charter says which
+  kinds may run it. A run goes to a host
   with a free slot of a kind its charter allows, preferring a worker that
   holds its workstream. A refusal as busy is no failure.
 - **Attempts are fenced.** Everything a host sends is dropped unless its

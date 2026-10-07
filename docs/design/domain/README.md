@@ -29,8 +29,8 @@ skein's `programming-model.md`.
 7. **people.md:** parties: identity, roles, requests, inboxes, chats,
    person tasks, notifications.
 8. **hosts.md:** agents and their hosts: the contract, the three shapes,
-   the host inside the engine, the worker host, workspaces, and what the
-   core takes from smith.
+   the agent's two kinds, the one host for runs wherever their agents
+   run, workspaces, and what the core takes from smith.
 9. **testing.md:** the worlds, the conformance world and its referee.
 
 `../examples.md` is the example application, `ops`, which each document
@@ -51,13 +51,14 @@ an application's engine
 │   ├── jig-core-notes          notes
 │   └── jig-core-views          live streams
 ├── <connector>…                the application's (connectors.md)
-├── jig-local-host              agents in the engine, if any (hosts.md)
+├── jig-host                    hosted runs on the engine's slots, if it runs agents (hosts.md)
+├── jig-inline-agent            their agent: smith's domains in this process
 └── …                           the application's own child domains
 
 an application's worker, if it has workers
 <application>-worker            the worker's root: the application's
-├── jig-worker-host             hosted runs (hosts.md)
-├── smith-host-domain           agent processes, smith's
+├── jig-host                    hosted runs (hosts.md)
+├── smith-host-domain           their agent: processes, smith's
 └── <workspace>                 the application's
 
 skein-lib's journal             the commit barrier every root holds (root.md, section 4)
@@ -65,7 +66,8 @@ skein-lib's journal             the commit barrier every root holds (root.md, se
 
 The crate graph is the role graph: no jig crate depends on an
 application's; the core and its children depend on skein-lib alone; the
-hosts depend on smith's domains; nothing in jig names a system.
+hub depends on skein-lib alone too, and only the inline agent and the
+charter's translation link smith; nothing in jig names a system.
 
 ## 3. Conventions
 
@@ -145,7 +147,8 @@ hosts depend on smith's domains; nothing in jig names a system.
 | projection, home | what a connector writes of a goal for people to read; where, per project |
 | owned, participating | what the application writes alone; what it writes among others |
 | drift | a change the application did not make to what it owns and relies on |
-| host | where a run runs: the local host in the engine, or a worker |
+| host, hub | where a run runs: the engine's own slots, or a worker; `jig-host`, the one hub hosting runs on either (hosts.md, section 6) |
+| inline agent | smith's domains run in the engine's process, the agent capability of the engine's hub (hosts.md, 5.2) |
 | workspace, item | what a run works in; what a connector names for it to hold |
 | workstream | the key a workspace is cached under: the holding task's number |
 | delivery | a run's hand-over through its workspace, made by the application's workspace |
@@ -176,10 +179,11 @@ where each is answered:
   and makes requests, but no chat (people.md, section 3).
 - **Sign-in providers:** the application's; the core knows an identity as
   a provider and a subject (people.md, section 3).
-- **The host inside the engine:** jig's local host, a child of the
-  application's root, whose slots the fleet places on like a worker's
-  (hosts.md, section 5; engine.md, section 8).
-- **The worker:** jig ships the worker host; the worker's root and its
+- **Hosting runs inside the engine:** the same hub as on a worker, a
+  child of the application's root, whose slots the fleet places on like
+  a worker's, with the inline agent as its agent (hosts.md, sections 5
+  and 6; engine.md, section 8).
+- **The worker:** jig ships the hub; the worker's root and its
   workspaces are the application's (hosts.md, sections 4 and 7).
 - **Costs beyond LLMs:** a connector may price kinds of effect, charged
   at the decision (authority.md, section 7).
@@ -219,6 +223,11 @@ Decisions taken after the design's first review (2026-10-07):
 - **What the conformance world catches** is stated as what its scenarios
   reach, with fakes reporting what they observed independently of the
   root's translation (root.md, section 1; testing.md, section 5).
+- **One host:** runs are hosted by one hub, `jig-host`, in the engine and
+  on workers alike, its agent a capability of two kinds (processes, or
+  the inline agent in the engine), its link to the core its root's. The
+  run's lifecycle is built and tested once (hosts.md, sections 1 and 4
+  to 6).
 
 ## 6. What is open
 

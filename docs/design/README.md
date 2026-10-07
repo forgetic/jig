@@ -104,7 +104,7 @@ go deeper into each part. The mechanics are those of skein's
 people    a client: the application's, around jig's client domain
 engine    where work is decided: the application's process, around jig's core
 store     skein-kv inside the engine: jig's records and the application's, committed together
-workers   if any: execution hosts, the application's process, around jig's worker host
+workers   if any: execution hosts, the application's process, around jig's host
 agents    if any: smith's, inside the engine or one run per agent process on a worker
 systems   what the application's connectors drive
 ```
@@ -408,7 +408,8 @@ and the conformance world crashes the application at every commit.
   its charters.
 - **The core never depends on smith.** It keeps turns opaque, and reads
   only a turn's size, its spend and the last message it read. Charters
-  are put into smith's form by the protocol layer, not by the domain.
+  are put into smith's form by one translation of jig's, outside the
+  core (`domain/hosts.md`, section 8).
 - **What the core needs is a host for each run, not a worker.** The
   core's contract with a run is:
   - a start: the charter, the brief, the transcript, credential grants,
@@ -424,16 +425,17 @@ and the conformance world crashes the application at every commit.
 
   ```
   no agents           procedures and people only             no host, no smith, no LLM accounts
-  agents in-engine    smith's domain inside the engine       no workspace; tools are host tools only
-  agents on workers   worker processes, agent processes      workspaces, commands, many machines
+  agents in-engine    the hub and the inline agent           no workspace; tools are host tools only
+  agents on workers   the hub and agent processes            workspaces, commands, many machines
   ```
 
   1. **No agents,** such as an approval or operations pipeline. Nothing
      links smith (section 5).
   2. **Agents in the engine,** such as a researcher, a triager or a chat
      assistant, whose tools are the engine's tools and the connectors'
-     reads. The engine's root composes smith's domain in its one-process
-     form, and the fleet places runs on the engine's own slots. The costs:
+     reads. The engine's root composes jig's host with the inline agent,
+     smith's domains in this process, and the fleet places runs on the
+     engine's own slots. The costs:
      - no process containment, which is fine when nothing runs
        commands;
      - the engine's worst case includes its runs;
@@ -445,15 +447,21 @@ and the conformance world crashes the application at every commit.
 
   An application may mix the second and third shapes: a charter says
   which hosts may run it.
-- **jig's worker host,** for the third shape:
-  - slots, attempts, turns kept until acknowledged, and graces;
-  - agent processes, supervised through smith's host domain;
-  - the worker's side of the channel to the engine.
+- **One host for every shape that runs agents** (`domain/hosts.md`):
+  - `jig-host`, the hub: slots, admission, fenced attempts, relays,
+    turns and the answer kept until acknowledged, cancel; composed by the
+    engine's root for its own slots, and by a worker's root;
+  - its agent, a capability of two kinds: agent processes, supervised
+    through smith's host domain, on a worker; the inline agent, smith's
+    domains in this process, in the engine;
+  - its link to the core, its root's: a channel the worker dials, or the
+    core's fleet directly, in the engine.
 - **Workspaces are the application's.** A connector says which of its
   resources a run needs prepared. A connector whose resources are not
   files gives a run tools instead. The worker's root is the
-  application's: it composes jig's worker host with the application's
-  kinds of workspace (for temper, git checkouts).
+  application's: it composes jig's host, smith's host domain and the
+  application's kinds of workspace (for temper, git checkouts). The
+  engine has no workspace, by policy.
 - **Host tools:** the engine's tools are jig's, and each connector's
   reads are declared by the application.
 
@@ -510,7 +518,7 @@ and the conformance world crashes the application at every commit.
 | the journal | skein (skein-lib) |
 | the store's encoding: of jig's records / of the application's, and their composition | jig / the application |
 | the engine's protocol layer, `iterate` and `main` | the application, from jig's and skein's pieces |
-| agents' hosts: the worker host, the in-engine host / the worker's root, kinds of workspace, `main` (none without agents) | jig / the application |
+| agents' hosts: the hub, the inline agent, the charter's translation / the worker's root, kinds of workspace, `main` (none without agents) | jig / the application |
 | the agent / its charters | smith / the application |
 | the client domain, views, wire and shells / its own objects and its client root | jig / the application |
 | the conformance world, the referee, scripted workers and people, the fake person / its worlds and its systems' fakes | jig / the application |

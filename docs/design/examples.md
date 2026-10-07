@@ -148,14 +148,17 @@ jig-ops-domain                    the engine's root
 ├── core                          jig's core
 ├── observability                 jig-ops-domain-observability
 ├── infrastructure                jig-ops-domain-infrastructure
-└── local host                    jig-local-host: smith's domain, one per run in flight (domain/hosts.md, section 5)
+├── host                          jig-host: hosted runs on the engine's slots (domain/hosts.md, section 6)
+└── inline agent                  jig-inline-agent: smith's domains, one per run in flight (domain/hosts.md, 5.2)
 ```
 
 - **It has the one shape** of `README.md`, 6.3. Every write and every
   output goes into the journal.
 - **It routes, and nothing else:**
   - between the core and each connector, in their vocabularies;
-  - between the core and jig's local host, which hosts the agents;
+  - between the core and jig's host, which hosts the agents, and
+    between the host and the inline agent, as a worker's root does
+    between its host and smith's host domain;
   - the verdicts the core asks of observability on infrastructure's
     effects (3.3).
 - **It is the reference root.** Its routes, its translations and its

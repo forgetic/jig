@@ -13,9 +13,9 @@ still open is listed in section 14.
 
 - **The application owns the root.** skein's model nests step machines,
   and the top one is always the application's (programming-model.md,
-  4.5). The root composes the core, the application's connectors, the
-  host inside the engine if it has one, and its own child domains. It
-  alone faces the application's protocol layer.
+  4.5). The root composes the core, the application's connectors, jig's
+  host and the inline agent if it runs agents in the engine, and its own
+  child domains. It alone faces the application's protocol layer.
 - **The root routes and translates; it never decides or orders.**
   Everything that makes jig's promises true (what commits together, what
   waits for a commit, the order of a restart, the check on every effect)
@@ -50,7 +50,8 @@ still open is listed in section 14.
 <application>-domain        the root: the journal, routing, translation, putting outputs together
 ├── core                    jig's core (engine.md)
 ├── <connector>…            the application's connectors (connectors.md)
-├── local host              jig's host inside the engine, if the application runs agents there (hosts.md)
+├── jig-host                jig's hub, for runs on the engine's slots, if the application runs agents there (hosts.md)
+├── jig-inline-agent        the hub's agent in the engine: smith's domains in this process (hosts.md, 5.2)
 └── …                       the application's own child domains
 ```
 
@@ -154,10 +155,13 @@ It inspects nothing it holds. What jig asks of it:
   connector the core names by number, and its answer back; what a
   connector says up (a step's decision, news, an outcome, a pool's slots,
   drift) goes to the core.
-- **To the host inside the engine:** the core's assignments, relays and
-  cancels for runs placed on the engine's own slots go to the local host
-  child, and what its runs say goes back to the core as a worker's would
-  (hosts.md, section 5).
+- **To the hub inside the engine:** the core's assignments, relays and
+  cancels for runs placed on the engine's own slots go to the hub, and
+  what it says goes back to the core as a worker's would (hosts.md,
+  6.1). Between the hub and the inline agent, the root translates as a
+  worker's root does between its hub and smith's host domain, with the
+  same functions; the inline agent's LLM completions go to the protocol
+  layer, and their answers back to it (hosts.md, 5.2).
 - **Nothing is routed by content** beyond the variant: which child an
   event is for is in its type.
 

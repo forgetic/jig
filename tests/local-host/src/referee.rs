@@ -44,6 +44,7 @@ pub fn judge(seen: &[Observation], answer: Option<&run::Answer>, budget: Budget)
             Observation::Stopped => stopped += 1,
             Observation::Admitted
             | Observation::Completion
+            | Observation::ProviderFailed
             | Observation::CompletionCancelled
             | Observation::Waiting => {}
         }

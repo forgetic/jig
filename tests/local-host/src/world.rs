@@ -21,6 +21,7 @@ pub enum Script {
 pub enum Observation {
     Admitted,
     Completion,
+    ProviderFailed,
     CompletionCancelled,
     Turn(u32),
     TurnAcknowledged(u32),
@@ -88,7 +89,13 @@ impl World {
     /// Set up a single local slot with a deterministic fake provider.
     #[must_use]
     pub fn new(script: Script, auto_ack: bool) -> Self {
-        let settings = smith_agent_world::Settings::calm(19);
+        Self::seeded(script, auto_ack, 19, 0)
+    }
+
+    /// Set the provider seed and chance, per mille, of a failed completion.
+    #[must_use]
+    pub fn seeded(script: Script, auto_ack: bool, seed: u64, unavailable: u32) -> Self {
+        let settings = smith_agent_world::Settings::calm(seed);
         let smith = settings.limits;
         let largest = smith::max_turn_bytes(&smith).expect("bounded Smith turn");
         let limits = host::Limits {
@@ -100,12 +107,13 @@ impl World {
         let provider_config = provider::Config {
             latency_min: Duration::from_millis(1),
             latency_max: Duration::from_millis(1),
+            unavailable,
             ..settings.provider
         };
         Self {
-            host: host::Host::new(&limits, Box::new([run::charter::Endpoint(0)]), 19),
+            host: host::Host::new(&limits, Box::new([run::charter::Endpoint(0)]), seed),
             host_stage: Stage::new(limits, host::max_out(&limits), host::max_out(&limits) + 2),
-            provider: provider::Domain::scripted(&provider_config, 23, scripts(script)),
+            provider: provider::Domain::scripted(&provider_config, seed ^ 0x25, scripts(script)),
             provider_stage: Stage::new(provider_config, provider::MAX_OUT, provider::MAX_OUT + 2),
             in_flight: BTreeMap::new(),
             seen: Vec::new(),
@@ -386,6 +394,9 @@ impl World {
                     detail: Box::new([]),
                 },
             };
+            if matches!(terminal, host::Completion::Failed { .. }) {
+                self.seen.push(Observation::ProviderFailed);
+            }
             self.host_stage.push(host::Event::Completion { task: 7, attempt: 1, terminal });
         }
         moved

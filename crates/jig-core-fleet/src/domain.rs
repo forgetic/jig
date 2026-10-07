@@ -99,7 +99,7 @@ impl Domain {
     /// Workers in contact.
     #[must_use]
     pub fn workers(&self) -> u32 {
-        self.tokens.len() - u32::from(self.tokens.contains_key(&Token::new(0)))
+        self.tokens.len().saturating_sub(u32::from(self.tokens.contains_key(&Token::new(0))))
     }
 
     /// Attempts tracked, closed ones included until they are reclaimed.

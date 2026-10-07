@@ -78,8 +78,14 @@ impl Kinds {
     #[must_use]
     pub const fn allows(self, kind: HostKind) -> bool {
         match self {
-            Kinds::Workers => matches!(kind, HostKind::Worker),
-            Kinds::Engine => matches!(kind, HostKind::Engine),
+            Kinds::Workers => match kind {
+                HostKind::Worker => true,
+                HostKind::Engine => false,
+            },
+            Kinds::Engine => match kind {
+                HostKind::Worker => false,
+                HostKind::Engine => true,
+            },
             Kinds::Both => true,
         }
     }

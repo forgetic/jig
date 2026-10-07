@@ -238,6 +238,7 @@ struct Names {
 
 /// Start: refused at the entrance, or queued for a slot, its run's claim
 /// replaced.
+#[expect(clippy::too_many_arguments, reason = "a start takes the parent's complete placement request")]
 pub(crate) fn start(
     domain: &mut Domain,
     env: &Env<Limits>,
@@ -670,7 +671,17 @@ pub(crate) fn resume(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Req
         };
         let kinds = match &entry.state {
             State::Waiting { kinds, .. } => *kinds,
-            _ => unreachable!("only a waiting attempt is queued"),
+            State::Adopted { .. }
+            | State::Claimed { .. }
+            | State::Cancelled { .. }
+            | State::Handed { .. }
+            | State::Acknowledged { .. }
+            | State::Stray { .. }
+            | State::Kept { .. }
+            | State::Fenced { .. }
+            | State::Closed => {
+                unreachable!("only a waiting attempt is queued")
+            }
         };
         if let Some(channel) = channel::choose(domain, *workstream, kinds) {
             chosen = Some((id, channel));

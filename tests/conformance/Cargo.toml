@@ -17,6 +17,7 @@ jig-fake-workers.workspace = true
 jig-fake-parties.workspace = true
 jig-fake-store.workspace = true
 jig-core.workspace = true
+jig-core-authority.workspace = true
 jig-core-tasks.workspace = true
 jig-core-people.workspace = true
 jig-core-fleet.workspace = true

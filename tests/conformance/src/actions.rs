@@ -10,7 +10,7 @@ pub type World = Harness<Testing>;
 /// Start a seeded scenario with a permanent engine slot or remote hosts.
 #[must_use]
 pub fn world(seed: u64, engine: bool) -> World {
-    Harness::new(Config { seed, engine, workers: 2 }, seed)
+    Harness::new(Config::new(seed, engine, 2, None), seed)
 }
 
 /// Ask the assigned task to make one named, permitted keyed write.

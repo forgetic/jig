@@ -6,7 +6,7 @@ static HEAP: skein_world::domain::heap::Counting = skein_world::domain::heap::Co
 #[test]
 fn a_testing_engine_runs_against_independent_parties_workers_and_two_systems() {
     for engine in [false, true] {
-        let mut world = Harness::<Testing>::new(Config { seed: 17, engine, workers: 2 }, 17);
+        let mut world = Harness::<Testing>::new(Config::new(17, engine, 2, None), 17);
         let result = world.drain().expect("application conforms");
         assert!(!result.stopped);
         assert!(result.commits > 0);
@@ -20,7 +20,7 @@ fn a_testing_engine_runs_against_independent_parties_workers_and_two_systems() {
 #[test]
 fn the_system_observes_the_committed_effect_of_the_calling_task() {
     use skein_lib::{ReplyTo, Token, Wall};
-    let mut world = Harness::<Testing>::new(Config { seed: 18, engine: false, workers: 1 }, 18);
+    let mut world = Harness::<Testing>::new(Config::new(18, false, 1, None), 18);
     world.drain().expect("assigned conforming caller");
     let (task, attempt) = world.peers.assignments[0];
     world.send(jig_test_domain::Event::EffectCall {

@@ -1,9 +1,11 @@
 //! The testing application adapter (`domain/testing.md`, 5). Its peers report
 //! outside observations; the conformance harness owns the engine and store.
 #![forbid(unsafe_code)]
+use jig_conformance::scenarios::Scenario;
 use jig_conformance::{Application, Clock, Input, Output};
 use jig_core as core;
 use jig_core_accounts as accounts;
+use jig_core_authority as authority;
 use jig_core_people as people;
 use jig_core_tasks as tasks;
 use jig_core_world::{Store, observations::Observer, peers::Peers};
@@ -21,11 +23,57 @@ pub struct Config {
     pub seed: u64,
     pub engine: bool,
     pub workers: u32,
+    pub scenario: Option<Scenario>,
+    limits: root::Limits,
 }
 
 impl Config {
+    /// Construct seeded vocabulary and retain its limits for each iteration.
+    #[must_use]
+    pub fn new(seed: u64, engine: bool, workers: u32, scenario: Option<Scenario>) -> Self {
+        let mut config =
+            Self { seed, engine, workers, scenario, limits: jig_core_world::peers::fixture(seed, u32::from(engine)).1 };
+        config.limits = config.root().1;
+        config
+    }
+
     fn root(self) -> (root::Config, root::Limits) {
-        jig_core_world::peers::fixture(self.seed, u32::from(self.engine))
+        let (mut config, mut limits) = jig_core_world::peers::fixture(self.seed, u32::from(self.engine));
+        if self.scenario == Some(Scenario::ShrinkingPool) {
+            limits.core.fleet.slots = 3;
+            limits.core.tasks.inbox_bytes = 512;
+            limits.core.tasks.inbox_messages = 8;
+            config.core.settings.chat_authority.budget.spend = 80;
+        }
+        if self.scenario == Some(Scenario::StandingTask) {
+            limits.core.tasks.tasks = 8;
+            limits.core.tasks.project_tasks = 8;
+        }
+        if self.scenario == Some(Scenario::OtherHand) {
+            for kind in &mut config.first.kinds {
+                if kind.kind == 5 {
+                    kind.recovery = connector::Recovery::Conditional;
+                }
+            }
+        }
+        if matches!(self.scenario, Some(Scenario::ChangedJudge | Scenario::NarrowingPolicy)) {
+            let rules = config.core.authority.rules().clone();
+            let mut policy = config.core.authority.policy(1).expect("scenario policy").clone();
+            policy.requirements = Box::new([authority::Requirement {
+                connector: 1,
+                kind: 5,
+                pattern: authority::Pattern { segments: Box::new([]), last: authority::Last::Open(Box::new([])) },
+                judge: authority::Judge { connector: 2, requirement: 9, parameters: 0 },
+                guard: authority::Guard::Observed { freshness: Duration::from_secs(60) },
+                must_be_guarded: false,
+            }]);
+            let mut checked = authority::Domain::new(rules, limits.core.authority).expect("scenario authority fits");
+            let mut out = Queue::with_capacity(authority::POLICY_MAX_OUT);
+            authority::step(&mut checked, authority::Event::Policy { project: 1, policy }, &mut out);
+            assert_eq!(out.pop(), Some(authority::PolicyFact::Added { project: 1 }));
+            config.core.authority = checked;
+        }
+        (config, limits)
     }
 }
 
@@ -53,6 +101,15 @@ pub struct Neighbours {
     pub assignments: Vec<(u64, u64)>,
     pub answers: u64,
     pub restart_steps: Vec<core::RestartStep>,
+    pub calls: Vec<core::CallPart>,
+    pub hold_writes: bool,
+    pub pending_writes: Vec<(u16, connector::SystemRequest)>,
+    pub next_fault: jig_test_system::Fault,
+    pub scenario: Option<Scenario>,
+    pub children: Vec<u64>,
+    pub initial_assignments: usize,
+    pub pending_proposal: Option<u64>,
+    pub saved_deadline: Option<Wall>,
 }
 
 #[derive(Debug)]
@@ -64,7 +121,7 @@ struct Restore {
 }
 
 fn env(config: &Config, clock: Clock) -> Env<root::Limits> {
-    Env { now: Time::from_nanos(clock.now), wall: Wall::from_nanos(clock.now), limits: config.root().1 }
+    Env { now: Time::from_nanos(clock.now), wall: Wall::from_nanos(clock.now), limits: config.limits }
 }
 
 impl Neighbours {
@@ -154,25 +211,80 @@ impl Application for Testing {
 
     fn build(config: &Config) -> root::Domain {
         let (configuration, limits) = config.root();
-        root::Domain::new(configuration, &limits)
+        let mut domain = root::Domain::new(configuration, &limits);
+        let env = env(config, Clock { now: 0 });
+        domain.configure_holds(
+            &env,
+            1,
+            Box::new([
+                tasks::Kind { connector: 1, kind: 1, hold: tasks::HoldKind::Exclusive { taken: tasks::Taken::Waits } },
+                tasks::Kind { connector: 1, kind: 2, hold: tasks::HoldKind::Pooled { taken: tasks::Taken::Waits } },
+            ]),
+        );
+        domain
     }
 
-    fn systems(_: &Config, _: u64) -> [System; 2] {
-        [System::new(), System::new()]
+    fn systems(config: &Config, _: u64) -> [System; 2] {
+        let mut systems = [System::new(), System::new()];
+        if matches!(config.scenario, Some(Scenario::ChangedJudge | Scenario::NarrowingPolicy)) {
+            systems[1].other_hand(&jig_test_connector_world::path(1, 1), 13);
+        }
+        systems
     }
 
     fn peers(config: &Config, _: u64) -> Neighbours {
-        let script = || {
-            Box::new([
+        let script = || match config.scenario {
+            Some(Scenario::ShrinkingPool) => {
+                Box::new([Script::Wait, Script::Finish { report: b"pool done".as_slice().into() }]) as Box<[Script]>
+            }
+            Some(Scenario::StandingTask) => {
+                Box::new([Script::Wait, Script::Finish { report: b"period done".as_slice().into() }]) as Box<[Script]>
+            }
+            Some(Scenario::RunBudget) => {
+                let mut script = vec![Script::Wait];
+                for session in 0..8 {
+                    script.push(Script::Turn {
+                        body: format!("session {session}").into_bytes().into_boxed_slice(),
+                        cost: 2,
+                        read: None,
+                    });
+                }
+                for child in 0..4 {
+                    script.push(Script::Turn {
+                        body: format!("sub-agent {child}").into_bytes().into_boxed_slice(),
+                        cost: 1,
+                        read: None,
+                    });
+                }
+                script.push(Script::Park);
+                script.into_boxed_slice()
+            }
+            None
+            | Some(
+                Scenario::LateCopy
+                | Scenario::OtherHand
+                | Scenario::UncertainRestarts
+                | Scenario::ChangedJudge
+                | Scenario::NarrowingPolicy,
+            ) => Box::new([
                 Script::Wait,
                 Script::Turn { body: b"whole turn".as_slice().into(), cost: 2, read: None },
                 Script::Park,
-            ]) as Box<[Script]>
+            ]),
         };
-        let mut workers: Vec<_> =
-            (0..config.workers).map(|index| Worker::new(7 + u64::from(index), 1, vec![script(), script()])).collect();
+        let mut workers: Vec<_> = (0..config.workers)
+            .map(|index| Worker::new(7 + u64::from(index), 1, (0..8).map(|_| script()).collect()))
+            .collect();
         if config.engine {
-            workers.insert(0, Worker::new(0, 1, vec![script(), script()]));
+            workers.insert(0, Worker::new(0, 1, (0..8).map(|_| script()).collect()));
+        }
+        let mut observer = Observer::recording(&config.root().0);
+        if config.scenario == Some(Scenario::OtherHand) {
+            observer
+                .referee
+                .policy
+                .participating
+                .insert(jig_conformance::referee::Name { connector: 1, path: vec![vec![1], vec![1]] });
         }
         Neighbours {
             peers: Peers::new(
@@ -187,13 +299,22 @@ impl Application for Testing {
                     ]),
                 )],
             ),
-            observer: Observer::recording(&config.root().0),
+            observer,
             restart_reads: BTreeMap::new(),
             restoring: None,
             account_ready: false,
             assignments: Vec::new(),
             answers: 0,
             restart_steps: Vec::new(),
+            calls: Vec::new(),
+            hold_writes: false,
+            pending_writes: Vec::new(),
+            next_fault: jig_test_system::Fault::None,
+            scenario: config.scenario,
+            children: Vec::new(),
+            initial_assignments: 0,
+            pending_proposal: None,
+            saved_deadline: None,
         }
     }
 
@@ -227,6 +348,7 @@ impl Application for Testing {
         peers.restoring = None;
         peers.restart_reads.clear();
         peers.account_ready = false;
+        peers.pending_writes.clear();
     }
 
     fn timers(_: &Config) -> Vec<root::Event> {
@@ -278,6 +400,7 @@ impl Application for Testing {
         peers.observer.inbound(store, clock.now, event);
     }
 
+    #[expect(clippy::too_many_lines, reason = "the root delivery vocabulary has one exhaustive outside translation")]
     fn deliver(
         peers: &mut Neighbours,
         systems: &mut [System; 2],
@@ -330,7 +453,16 @@ impl Application for Testing {
                 Vec::new()
             }
             root::Delivery::System { connector: number, call } => {
-                let event = systems[usize::from(number - 1)].answer(call, jig_test_system::Fault::None);
+                let mut fault = jig_test_system::Fault::None;
+                if matches!(call, connector::SystemRequest::Apply { .. }) {
+                    if peers.hold_writes {
+                        peers.pending_writes.push((number, call));
+                        return Vec::new();
+                    }
+                    fault = peers.next_fault;
+                    peers.next_fault = jig_test_system::Fault::None;
+                }
+                let event = systems[usize::from(number - 1)].answer(call, fault);
                 let mut events =
                     vec![Input::Event(root::Event::Connector { number, event: connector::Event::System(event) })];
                 if let Some(step) = peers.restart_reads.remove(&number) {
@@ -377,6 +509,10 @@ impl Application for Testing {
                     rows: jig_core_notes::Rows { records },
                     more,
                 })))]
+            }
+            root::Delivery::Core(core::Held::CallAnswer { part, .. }) => {
+                peers.calls.push(part);
+                Vec::new()
             }
             root::Delivery::Core(_) | root::Delivery::CallAnswer { .. } | root::Delivery::Message { .. } => Vec::new(),
             root::Delivery::Fleet(_) => panic!("root consumes fleet continuations"),
@@ -438,13 +574,14 @@ impl Application for Testing {
         domain.reclaim();
     }
     fn maximum(config: &Config) -> u64 {
-        jig_core_world::observations::root_bound(&config.root().1).expect("root bound fits")
+        jig_core_world::observations::root_bound(&config.limits).expect("root bound fits")
     }
     fn configuration_heap(config: &Config) -> u64 {
-        let limits = config.root().1;
+        let limits = config.limits;
         core::worst_case(&limits.core).expect("core bound fits")
             + connector::worst_case(&limits.connector).expect("connector bound fits") * 2
     }
 }
 
 pub mod actions;
+pub mod scenarios;

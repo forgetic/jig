@@ -795,6 +795,9 @@ pub fn restore_record(domain: &mut Domain, env: &Env<Limits>, record: Record) ->
             );
             out.is_empty()
         }
+        Record::Core(core::Record::People(jig_core_people::Stored::Policy { project, value })) => {
+            domain.core.restore_policy(&env.limits.core, project, value)
+        }
         Record::Core(core::Record::People(row)) => {
             let mut out = Queue::with_capacity(jig_core_people::max_out(&env.limits.core.people));
             jig_core_people::step(

@@ -184,7 +184,13 @@ deployment's rules       the most any project may have; requirements on effects
     party in it may allot per period, and the kinds of proposal it may
     decide (people.md, section 4);
   - its requirements: per kind of effect and pattern of resources, what
-    an effect there needs (section 10).
+    an effect there needs (section 10);
+  - its projections' authority: the grants its goals' projections are
+    made under in the project's homes, apart from any goal's own
+    authority, since no task asks for a projection (connectors.md,
+    section 8). Each projection effect is checked against it, its
+    requirements included, as any effect is (8.2), and it costs no
+    task's budget.
 - **A party's authority** in a project is their role's, and their
   allotment is a pool per period with its own amount left. A party who
   creates a task (a chat, a goal), or accepts a proposal, funds it from

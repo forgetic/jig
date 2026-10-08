@@ -451,7 +451,12 @@ procedure, but a mechanism of the connector's, keyed to the goal.
 
 - **Fed by the root:** the goal's state, its plan as its subtree's tasks
   and their phases, and its milestones as the tree's history records
-  them, in the connector's own terms, whenever they change.
+  them, in the connector's own terms, whenever they change: a change to
+  any task of the subtree, not only to the goal's own. Milestones come
+  as they are recorded, each with an identity of its own, so the
+  connector keeps what it has written and adds to it; the plan comes
+  whole, within the tree's limits (tasks.md, section 11). The last
+  feed, as the goal closes, is its closing state.
 - **Where:** in the project's home for that connector (core.md, 6.1).
   A project with no home there has no projection there.
 - **Its effects** have keys of their own (4.4), are checked against the

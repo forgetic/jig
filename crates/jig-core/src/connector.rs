@@ -90,6 +90,10 @@ pub enum OutboxOutcome {
     Failed,
     Withdrawn,
     Uncertain,
+    /// The connector cannot safely retry this entry; a person must resolve it.
+    Held {
+        entry: u64,
+    },
 }
 
 /// The connector's place in the core-owned restart order.
@@ -285,6 +289,7 @@ impl Core {
             None => false,
         };
         match outcome {
+            OutboxOutcome::Held { entry } => Some(tasks::Event::Hold { task, why: tasks::Hold::Uncertain { entry } }),
             OutboxOutcome::Failed if !procedure => Some(tasks::Event::Hold { task, why: tasks::Hold::EffectFailed }),
             OutboxOutcome::Withdrawn if !cancelling && !procedure => {
                 Some(tasks::Event::Hold { task, why: tasks::Hold::EffectFailed })

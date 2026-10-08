@@ -111,6 +111,7 @@ pub struct Frozen {
     pub closing: BTreeSet<u64>,
     /// Committed requester outcomes (domain/tasks.md, 5.6).
     pub results: BTreeMap<u64, Ending>,
+    ended_topics: Vec<(u64, u64, u16)>,
     deadlines: BTreeMap<u64, (Wall, Time)>,
     kinds: Vec<tasks::Kind>,
     restoring: bool,
@@ -145,6 +146,7 @@ pub struct World {
     pub stops: BTreeSet<(u64, u64)>,
     pub closing: BTreeSet<u64>,
     pub results: BTreeMap<u64, Ending>,
+    pub ended_topics: Vec<(u64, u64, u16)>,
     pub facts: Vec<Fact>,
     pub accounting_referee: crate::accounting_referee::Accounting,
     pub consume_facts: bool,
@@ -176,6 +178,7 @@ impl World {
             stops: BTreeSet::new(),
             closing: BTreeSet::new(),
             results: BTreeMap::new(),
+            ended_topics: Vec::new(),
             facts: Vec::new(),
             accounting_referee: crate::accounting_referee::Accounting::default(),
             consume_facts: true,
@@ -208,6 +211,7 @@ impl World {
             stops: self.stops.clone(),
             closing: self.closing.clone(),
             results: self.results.clone(),
+            ended_topics: self.ended_topics.clone(),
             deadlines: self.deadlines.clone(),
             kinds: self.kinds.clone(),
             restoring: self.restoring,
@@ -306,6 +310,7 @@ impl World {
             Request::Taken { .. }
             | Request::Waiting { .. }
             | Request::WriterWaiting { .. }
+            | Request::EndTopic { .. }
             | Request::Sent { .. }
             | Request::RecurringDue { .. }
             | Request::Relay { .. }
@@ -572,6 +577,7 @@ impl World {
                 | Request::Relay { .. }
                 | Request::Notify { .. }
                 | Request::Timer { .. }
+                | Request::EndTopic { .. }
                 | Request::WriterWaiting { .. } => {}
             }
         }
@@ -640,6 +646,9 @@ impl World {
                 | Request::ProposalStalled { .. }
                 | Request::EscalationStalled { .. }
                 | Request::Release { .. } => {}
+                Request::EndTopic { task, subscription, connector } => {
+                    self.ended_topics.push((task, subscription, connector));
+                }
                 Request::WriterWaiting { reply_to, resource, .. } => {
                     self.reply(reply_to, Reply::WriterWaiting(resource));
                 }

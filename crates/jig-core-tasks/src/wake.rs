@@ -1,4 +1,4 @@
-//! Closed wake rules and bounded batch timers (domain/tasks.md, section 7.3).
+//! Closed wake rules and bounded batch timers (domain/tasks.md, section 8.3).
 //! Policies and unread messages are durable in task rows. Monotonic deadlines
 //! are derived from injected wall and monotonic time after restore.
 use crate::domain::{Domain, activate, publish, record, task_mut};

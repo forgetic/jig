@@ -1,6 +1,6 @@
-//! Bounded person-chat words and atomic turn reads (domain/tasks.md, section 7).
+//! Bounded task messages and atomic turn reads (domain/tasks.md, section 8.2).
 use crate::domain::{Domain, publish, record, refused, task_mut};
-use crate::{Limits, MessageKind, Party, Phase, QuestionCredit, Refusal, Request, Word};
+use crate::{Limits, MessageKind, NewsClass, Party, Phase, QuestionCredit, Refusal, Request, Word};
 use alloc::boxed::Box;
 use skein_lib::{Env, List, Queue, ReplyTo};
 
@@ -69,6 +69,23 @@ pub(crate) fn prepare(
             word.at = old.at;
             word.hits = old.hits.saturating_add(1);
             word.eligible = old.eligible;
+            // A later quiet hint cannot erase an earlier unread wake.
+            match old.kind {
+                MessageKind::News { subscription, class: NewsClass::Wakes } => {
+                    word.kind = MessageKind::News { subscription, class: NewsClass::Wakes };
+                }
+                MessageKind::Words
+                | MessageKind::Question
+                | MessageKind::Answer { .. }
+                | MessageKind::Proposal { .. }
+                | MessageKind::Escalation { .. }
+                | MessageKind::ProposalDecision { .. }
+                | MessageKind::Result(_)
+                | MessageKind::Notice { .. }
+                | MessageKind::Timer { .. }
+                | MessageKind::Amendment { .. }
+                | MessageKind::News { class: NewsClass::Kept | NewsClass::Dropped, .. } => {}
+            }
         } else {
             inbox.push(old.clone()).expect("admitted inbox subset");
         }
@@ -78,7 +95,7 @@ pub(crate) fn prepare(
 }
 
 /// Account for messages already waiting and the result credit reserved for
-/// every live direct delegate (domain/tasks.md, section 7.2).
+/// every live direct delegate (domain/tasks.md, section 8.2).
 pub(crate) fn room(domain: &Domain, limits: &Limits, task: u64, count: u32, bytes: usize) -> bool {
     let Some(record) = record(domain, task) else {
         return false;

@@ -308,6 +308,12 @@ fn end_task(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue
     let mut ended = task.clone();
     for subscription in &subscriptions {
         domain.timers.cancel(subscription.number);
+        match subscription.kind {
+            crate::SubscriptionKind::Topic { connector, .. } => {
+                out.push(Request::EndTopic { task: number, subscription: subscription.number, connector });
+            }
+            crate::SubscriptionKind::Task { .. } | crate::SubscriptionKind::Timer { .. } => {}
+        }
     }
     crate::funders::end(domain, env, number, out);
     ended.phase = Phase::Ended(ending.clone());

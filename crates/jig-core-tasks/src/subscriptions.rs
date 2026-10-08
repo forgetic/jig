@@ -1,7 +1,7 @@
 //! Standing task and timer interests with merged inbox hints (domain/tasks.md,
-//! sections 7.2 and 7.4). Each subscription stays in its owner's task row.
+//! sections 8.2 and 8.4). Each subscription stays in its owner's task row.
 //! Root assigns numbers and translates state/timer requests into messages in
-//! the same decision; connector topics are attached in session 07.
+//! the same decision; connector topics are routed through the application.
 use crate::domain::{Domain, entrance, publish, record, refused, task_mut};
 use crate::{
     Limits, MessageKind, NewsClass, NoticeState, Phase, Refusal, Request, Subscription, SubscriptionKind, Word,

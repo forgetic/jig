@@ -1,4 +1,4 @@
-//! Live reciprocal introductions and message visibility (domain/tasks.md, section 7.5).
+//! Live reciprocal introductions and message visibility (domain/tasks.md, section 8.5).
 //! The task row keeps introduced peers; delegation links are implicit. The root
 //! supplies a current run identity, and this child checks the live graph.
 use crate::domain::{Domain, entrance, publish, record, refused, task_mut};

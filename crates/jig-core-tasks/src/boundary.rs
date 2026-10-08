@@ -6,7 +6,7 @@ use crate::{Authority, Class, Funder, Numbers, Tries};
 use alloc::boxed::Box;
 use skein_lib::{Duration, ReplyTo, Wall};
 
-/// A closed wake rule for task words and subscription hints (domain/tasks.md, section 7.3).
+/// A closed wake rule for task words and subscription hints (domain/tasks.md, section 8.3).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum WakeRule {
     Never,
@@ -78,7 +78,7 @@ pub struct Subscription {
     pub kind: SubscriptionKind,
 }
 
-/// Kind of a durable task-inbox message (domain/tasks.md, sections 5.6 and 7).
+/// Kind of a durable task-inbox message (domain/tasks.md, sections 5.6 and 8).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum MessageKind {
     /// Virtual, durable held decision entry projected from the held task.
@@ -117,7 +117,7 @@ pub enum ResultKind {
 }
 
 /// One durable whole message in a task's bounded inbox
-/// (domain/tasks.md, section 7.2).
+/// (domain/tasks.md, section 8.2).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Word {
     /// Root-issued commit-order message identity.
@@ -1308,6 +1308,8 @@ pub enum Request {
     Notify { task: u64, subscription: u64, target: u64, state: NoticeState, words: Box<[u8]> },
     /// Root allocates a commit-order message number for this due timer.
     Timer { task: u64, subscription: u64 },
+    /// An ending task releases a connector topic interest in the same decision.
+    EndTopic { task: u64, subscription: u64, connector: u16 },
     /// Accepted person words; root answers the keyed request after the inbox write commits.
     Sent { reply_to: ReplyTo, task: u64, word: Word },
     /// Root relays this whole committed message through the fleet to the current run.

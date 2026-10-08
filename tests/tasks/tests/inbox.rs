@@ -213,3 +213,90 @@ fn an_inbox_filling_merges_news_refuses_words_and_still_takes_a_result() {
     assert!(world.record(1).inbox.iter().any(|word| matches!(word.kind, MessageKind::Result(_))));
     world.restart();
 }
+
+#[test]
+fn a_watch_woken_once_by_a_burst_of_news() {
+    let mut world = World::new(86, LIMITS);
+    let mut watch = task(1, &[]);
+    watch.wake.news = WakeRule::Batch { count: 2, age: skein_lib::Duration::from_nanos(20) };
+    world.make(Party::Person(9), vec![watch]);
+    world.claim(1, 1);
+    assert_eq!(world.terminal(1, End::Parked), Reply::Acknowledged(Accepted::New));
+    let reply_to = world.to();
+    let call = reply_to.into_token().raw();
+    world.send(Event::SubscribeTopic {
+        reply_to: ReplyTo::new(Token::new(call)),
+        task: 1,
+        subscription: Subscription { number: 10, kind: SubscriptionKind::Topic { connector: 0, topic: 10 } },
+    });
+    assert_eq!(world.replies[&call], Reply::Done);
+    for (number, class) in [(1, NewsClass::Wakes), (2, NewsClass::Kept), (3, NewsClass::Kept)] {
+        world.send(Event::Notice {
+            task: 1,
+            word: Word {
+                number,
+                from: Party::Task(1),
+                kind: MessageKind::News { subscription: 10, class },
+                words: Box::new([]),
+                at: Wall::EPOCH,
+                hits: 1,
+                eligible: false,
+            },
+        });
+        if number == 1 {
+            assert!(!world.activations.contains(&1));
+            world.restart();
+        }
+    }
+    assert_eq!(world.record(1).inbox.len(), 1);
+    assert_eq!(world.record(1).inbox[0].hits, 3);
+    assert_eq!(world.record(1).inbox[0].kind, MessageKind::News { subscription: 10, class: NewsClass::Wakes });
+    assert!(world.activations.contains(&1));
+    assert_eq!(world.activations.len(), 1);
+    world.send(Event::Notice {
+        task: 1,
+        word: Word {
+            number: 4,
+            from: Party::Task(1),
+            kind: MessageKind::News { subscription: 10, class: NewsClass::Dropped },
+            words: Box::new([]),
+            at: Wall::EPOCH,
+            hits: 1,
+            eligible: false,
+        },
+    });
+    assert_eq!(world.record(1).last_message, 3);
+}
+
+#[test]
+fn a_connector_topic_subscription_ends_with_its_task() {
+    let mut world = World::new(87, LIMITS);
+    world.make(Party::Person(9), vec![task(1, &[])]);
+    let reply_to = world.to();
+    world.send(Event::SubscribeTopic {
+        reply_to,
+        task: 1,
+        subscription: Subscription { number: 10, kind: SubscriptionKind::Topic { connector: 0, topic: 10 } },
+    });
+    world.claim(1, 1);
+    world.finish(1);
+    world.settle(1);
+    assert_eq!(world.ended_topics, [(1, 10, 0)]);
+    world.restart();
+    assert_eq!(world.ended_topics, [(1, 10, 0)]);
+}
+
+#[test]
+fn only_introduced_peers_can_message_each_other() {
+    let mut world = World::new(88, LIMITS);
+    world.make(Party::Person(9), vec![task(1, &[])]);
+    world.make(Party::Task(1), vec![task(2, &[]), task(3, &[]), task(4, &[])]);
+    assert!(matches!(task_words(&mut world, 2, 3, 1, MessageKind::Words), Reply::Refused(_)));
+    let reply_to = world.to();
+    let call = reply_to.into_token().raw();
+    world.send(Event::Introduce { reply_to: ReplyTo::new(Token::new(call)), by: 1, left: 2, right: 3 });
+    assert_eq!(world.replies[&call], Reply::Done);
+    assert_eq!(task_words(&mut world, 2, 3, 2, MessageKind::Words), Reply::Done);
+    assert!(matches!(task_words(&mut world, 2, 4, 3, MessageKind::Words), Reply::Refused(_)));
+    world.restart();
+}

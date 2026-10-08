@@ -172,7 +172,7 @@ pub(crate) fn unsubscribe(
     out.push(Request::Done { reply_to: to });
 }
 
-pub(crate) fn notice(domain: &mut Domain, env: &Env<Limits>, number: u64, mut word: Word, out: &mut Queue<Request>) {
+pub(crate) fn notice(domain: &mut Domain, env: &Env<Limits>, number: u64, word: Word, out: &mut Queue<Request>) {
     let Some(task) = record(domain, number) else { return };
     let Some(subscription_number) = hint_of(word.kind) else { return };
     let Some(subscription) = find(task, subscription_number) else { return };
@@ -206,23 +206,13 @@ pub(crate) fn notice(domain: &mut Domain, env: &Env<Limits>, number: u64, mut wo
     {
         return;
     }
-    let previous = if task.last_message == 0 { None } else { Some(task.last_message) };
-    let mut next = List::with_capacity(env.limits.inbox_messages);
-    for old in &task.inbox {
-        if hint_of(old.kind) == Some(subscription_number) {
-            word.at = old.at;
-            word.hits = old.hits.saturating_add(1);
-            word.eligible = old.eligible;
-        } else {
-            next.push(old.clone()).expect("reserved hint room");
-        }
-    }
-    next.push(word.clone()).expect("subscription credit reserved");
+    let prepared = crate::inbox::prepare(domain, &env.limits, number, word, crate::inbox::Admission::Merged)
+        .expect("subscribed hint has a merged inbox slot");
     let row = task_mut(domain, number).expect("subscriber live");
-    row.record.last_message = word.number;
-    row.record.inbox = next.into_boxed();
+    row.record.last_message = prepared.word.number;
+    row.record.inbox = prepared.inbox;
     publish(domain, env, number, out);
-    crate::wake::after_message(domain, env, number, previous, word.clone(), out);
+    crate::wake::after_message(domain, env, number, prepared.previous, prepared.word.clone(), out);
     match subscription.kind {
         SubscriptionKind::Timer { period: Some(period), .. } => {
             let at = Wall::from_nanos(env.wall.as_nanos().saturating_add(period.as_nanos()));

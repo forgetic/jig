@@ -1,5 +1,5 @@
 use jig_core_tasks::{
-    Accepted, End, Event, MessageKind, NoticeState, Party, Refusal, Subscription, SubscriptionKind, WakeRule, Word,
+    Accepted, End, Event, MessageKind, NewsClass, Party, Refusal, Subscription, SubscriptionKind, WakeRule, Word,
 };
 use jig_tasks_world::{LIMITS, Reply, World, task};
 use skein_lib::{ReplyTo, Token, Wall};
@@ -172,7 +172,7 @@ fn a_coordinator_is_woken_once_by_a_burst() {
 }
 
 #[test]
-fn an_inbox_fills_news_merges_words_are_refused_and_a_result_is_still_taken() {
+fn an_inbox_filling_merges_news_refuses_words_and_still_takes_a_result() {
     let mut limits = LIMITS;
     limits.inbox_messages = 3;
     let mut world = World::new(85, limits);
@@ -180,10 +180,10 @@ fn an_inbox_fills_news_merges_words_are_refused_and_a_result_is_still_taken() {
     world.make(Party::Task(1), vec![task(2, &[])]);
     let call = 1000;
     let reply_to = ReplyTo::new(Token::new(call));
-    world.send(Event::Subscribe {
+    world.send(Event::SubscribeTopic {
         reply_to,
         task: 1,
-        subscription: Subscription { number: 10, kind: SubscriptionKind::Task { target: 2, held: true, result: true } },
+        subscription: Subscription { number: 10, kind: SubscriptionKind::Topic { connector: 0, topic: 2 } },
     });
     assert_eq!(world.replies[&call], Reply::Done);
     assert!(matches!(task_words(&mut world, 2, 1, 1, MessageKind::Words), Reply::Done));
@@ -193,7 +193,7 @@ fn an_inbox_fills_news_merges_words_are_refused_and_a_result_is_still_taken() {
             word: Word {
                 number,
                 from: Party::Task(2),
-                kind: MessageKind::Notice { subscription: 10, target: 2, state: NoticeState::Held },
+                kind: MessageKind::News { subscription: 10, class: NewsClass::Kept },
                 words: Box::new([]),
                 at: Wall::EPOCH,
                 hits: 1,

@@ -1,7 +1,81 @@
 //! Bounded person-chat words and atomic turn reads (domain/tasks.md, section 7).
 use crate::domain::{Domain, publish, record, refused, task_mut};
 use crate::{Limits, MessageKind, Party, Phase, QuestionCredit, Refusal, Request, Word};
+use alloc::boxed::Box;
 use skein_lib::{Env, List, Queue, ReplyTo};
+
+/// The three ways a whole message enters a bounded inbox (domain/tasks.md, 8.2).
+#[derive(Clone, Copy)]
+pub(crate) enum Admission {
+    /// The sender may be refused before its decision is committed.
+    Refusable,
+    /// Its sender already kept one slot and its maximum bytes.
+    RoomKept,
+    /// A subscription or amendment replaces its earlier unread hint.
+    Merged,
+}
+
+pub(crate) struct Prepared {
+    pub previous: Option<u64>,
+    pub word: Word,
+    pub inbox: Box<[Word]>,
+}
+
+fn merge_key(kind: MessageKind) -> Option<u64> {
+    match kind {
+        MessageKind::Notice { subscription, .. }
+        | MessageKind::Timer { subscription }
+        | MessageKind::News { subscription, .. } => Some(subscription),
+        MessageKind::Amendment { .. } => Some(0),
+        MessageKind::Words
+        | MessageKind::Question
+        | MessageKind::Answer { .. }
+        | MessageKind::Proposal { .. }
+        | MessageKind::Escalation { .. }
+        | MessageKind::ProposalDecision { .. }
+        | MessageKind::Result(_) => None,
+    }
+}
+
+/// Build one admitted inbox update before its owner commits any state. A
+/// reserved or merged message is never refused after its sender committed.
+pub(crate) fn prepare(
+    domain: &Domain,
+    limits: &Limits,
+    number: u64,
+    mut word: Word,
+    admission: Admission,
+) -> Option<Prepared> {
+    let task = record(domain, number)?;
+    if word.number == 0 || word.number <= task.last_message {
+        return None;
+    }
+    match admission {
+        Admission::Refusable => {
+            if !room(domain, limits, number, 1, word.words.len()) {
+                return None;
+            }
+        }
+        Admission::RoomKept | Admission::Merged => {}
+    }
+    let previous = if task.last_message == 0 { None } else { Some(task.last_message) };
+    let key = match admission {
+        Admission::Merged => merge_key(word.kind),
+        Admission::Refusable | Admission::RoomKept => None,
+    };
+    let mut inbox = List::with_capacity(limits.inbox_messages.saturating_add(1));
+    for old in &task.inbox {
+        if key.is_some() && key == merge_key(old.kind) {
+            word.at = old.at;
+            word.hits = old.hits.saturating_add(1);
+            word.eligible = old.eligible;
+        } else {
+            inbox.push(old.clone()).expect("admitted inbox subset");
+        }
+    }
+    inbox.push(word.clone()).expect("admitted inbox room");
+    Some(Prepared { previous, word, inbox: inbox.into_boxed() })
+}
 
 /// Account for messages already waiting and the result credit reserved for
 /// every live direct delegate (domain/tasks.md, section 7.2).
@@ -156,11 +230,15 @@ pub(crate) fn message(
             unreachable!("root hints have reserved entrances")
         }
     };
-    if answer.is_none() && !room(domain, &env.limits, number, 1, word.words.len()) {
+    let admission = match answer {
+        Some(_) => Admission::RoomKept,
+        None => Admission::Refusable,
+    };
+    let Some(prepared) = prepare(domain, &env.limits, number, word, admission) else {
         return refused(to, Some(number), Refusal::Busy, out);
-    }
-    if word.kind == MessageKind::Question {
-        let source = match word.from {
+    };
+    if prepared.word.kind == MessageKind::Question {
+        let source = match prepared.word.from {
             Party::Task(source) => source,
             Party::Person(_) | Party::Deployment { .. } => return refused(to, Some(number), Refusal::Reference, out),
         };
@@ -168,18 +246,9 @@ pub(crate) fn message(
             return refused(to, Some(source), Refusal::Busy, out);
         }
     }
-    let previous = match task.last_message {
-        0 => None,
-        number => Some(number),
-    };
-    let mut inbox = List::with_capacity(env.limits.inbox_messages);
-    for item in &task.inbox {
-        inbox.push(item.clone()).expect("preflighted inbox count");
-    }
-    inbox.push(word.clone()).expect("preflighted inbox count");
     let task = task_mut(domain, number).expect("admitted task still live");
-    task.record.last_message = word.number;
-    task.record.inbox = inbox.into_boxed();
+    task.record.last_message = prepared.word.number;
+    task.record.inbox = prepared.inbox;
     if let Some(question) = answer {
         let mut credits = List::with_capacity(env.limits.inbox_messages);
         for credit in &task.record.questions {
@@ -190,8 +259,8 @@ pub(crate) fn message(
         task.record.questions = credits.into_boxed();
     }
     publish(domain, env, number, out);
-    if word.kind == MessageKind::Question {
-        let source = match word.from {
+    if prepared.word.kind == MessageKind::Question {
+        let source = match prepared.word.from {
             Party::Task(source) => source,
             Party::Person(_) | Party::Deployment { .. } => unreachable!("question source checked"),
         };
@@ -200,12 +269,12 @@ pub(crate) fn message(
         for credit in &source_row.record.questions {
             credits.push(*credit).expect("question credits bounded");
         }
-        credits.push(QuestionCredit { number: word.number, answerer: number }).expect("answer room reserved");
+        credits.push(QuestionCredit { number: prepared.word.number, answerer: number }).expect("answer room reserved");
         source_row.record.questions = credits.into_boxed();
         publish(domain, env, source, out);
     }
-    crate::wake::after_message(domain, env, number, previous, word.clone(), out);
-    out.push(Request::Sent { reply_to: to, task: number, word });
+    crate::wake::after_message(domain, env, number, prepared.previous, prepared.word.clone(), out);
+    out.push(Request::Sent { reply_to: to, task: number, word: prepared.word });
 }
 
 /// Root's same-decision result handoff after a delegate settled. Its reserved
@@ -243,17 +312,13 @@ pub(crate) fn delegate_result(
     {
         return;
     }
-    let previous = if task.last_message == 0 { None } else { Some(task.last_message) };
-    let mut inbox = List::with_capacity(env.limits.inbox_messages);
-    for item in &task.inbox {
-        inbox.push(item.clone()).expect("reserved inbox count");
-    }
-    inbox.push(word.clone()).expect("reserved result count");
+    let prepared = prepare(domain, &env.limits, number, word, Admission::RoomKept)
+        .expect("committed delegate result keeps a slot");
     let task = task_mut(domain, number).expect("requester remains live");
-    task.record.last_message = word.number;
-    task.record.inbox = inbox.into_boxed();
+    task.record.last_message = prepared.word.number;
+    task.record.inbox = prepared.inbox;
     publish(domain, env, number, out);
-    crate::wake::after_message(domain, env, number, previous, word, out);
+    crate::wake::after_message(domain, env, number, prepared.previous, prepared.word, out);
 }
 
 /// Root-authenticated proposal decision consumes the pending proposal's
@@ -268,17 +333,13 @@ pub(crate) fn proposal_decision(
     let old = record(domain, number).expect("proposal's live proposer");
     assert!(old.proposal.is_none() && word.number > old.last_message, "decision follows proposal and is fresh");
     assert!(room(domain, &env.limits, number, 1, word.words.len()), "reserved proposal slot remains");
-    let previous = if old.last_message == 0 { None } else { Some(old.last_message) };
-    let mut inbox = List::with_capacity(env.limits.inbox_messages);
-    for item in &old.inbox {
-        inbox.push(item.clone()).expect("existing inbox bounded");
-    }
-    inbox.push(word.clone()).expect("proposal inbox credit");
+    let prepared = prepare(domain, &env.limits, number, word, Admission::RoomKept)
+        .expect("committed proposal decision keeps a slot");
     let task = task_mut(domain, number).expect("proposal's live proposer");
-    task.record.last_message = word.number;
-    task.record.inbox = inbox.into_boxed();
+    task.record.last_message = prepared.word.number;
+    task.record.inbox = prepared.inbox;
     publish(domain, env, number, out);
-    crate::wake::after_message(domain, env, number, previous, word, out);
+    crate::wake::after_message(domain, env, number, prepared.previous, prepared.word, out);
 }
 
 pub(crate) fn readable(domain: &Domain, task: u64, read: Option<u64>) -> bool {

@@ -155,39 +155,18 @@ pub(crate) fn amend(
         return refused(to, Some(number), Refusal::State, out);
     }
     let attempt = if stop_run { crate::run::run_attempt(&old.phase) } else { None };
-    let previous = if old.last_message == 0 { None } else { Some(old.last_message) };
-    let mut inbox = skein_lib::List::with_capacity(env.limits.inbox_messages.saturating_add(1));
-    let mut hits = 1_u32;
-    let mut at = env.wall;
-    for item in &old.inbox {
-        match item.kind {
-            MessageKind::Amendment { .. } => {
-                hits = item.hits.saturating_add(1);
-                at = item.at;
-            }
-            MessageKind::Words
-            | MessageKind::Proposal { .. }
-            | MessageKind::Escalation { .. }
-            | MessageKind::ProposalDecision { .. }
-            | MessageKind::Question
-            | MessageKind::Answer { .. }
-            | MessageKind::Notice { .. }
-            | MessageKind::Timer { .. }
-            | MessageKind::News { .. }
-            | MessageKind::Result(_) => inbox.push(item.clone()).expect("existing inbox bound"),
-        }
-    }
     let next_revision = old.revision.checked_add(1).expect("revision preflighted");
     let word = Word {
         number: message,
         from: by,
         kind: MessageKind::Amendment { revision: next_revision },
         words: amendment.reason.clone(),
-        at,
-        hits,
+        at: env.wall,
+        hits: 1,
         eligible: true,
     };
-    inbox.push(word.clone()).expect("reserved amendment slot");
+    let prepared = crate::inbox::prepare(domain, &env.limits, number, word, crate::inbox::Admission::Merged)
+        .expect("authenticated amendment has a merged inbox slot");
     if let Some(authority) = &amendment.authority
         && authority.budget.spend != old.numbers.budget
     {
@@ -214,7 +193,7 @@ pub(crate) fn amend(
         task.record.authority = authority;
     }
     task.record.last_message = message;
-    task.record.inbox = inbox.into_boxed();
+    task.record.inbox = prepared.inbox;
     if attempt.is_some() {
         task.record.narrowing = true;
     }
@@ -223,7 +202,7 @@ pub(crate) fn amend(
     if let Some(attempt) = attempt {
         out.push(Request::Stop { task: number, attempt });
     } else {
-        crate::wake::after_message(domain, env, number, previous, word, out);
+        crate::wake::after_message(domain, env, number, prepared.previous, prepared.word, out);
     }
     out.push(Request::Done { reply_to: to });
 }

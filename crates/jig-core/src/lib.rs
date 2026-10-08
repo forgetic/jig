@@ -1,0 +1,362 @@
+//! The engine core composes the task hub, policy, parties, fleet, accounts,
+//! briefs, notes and views. It keeps work in jig's vocabulary and asks its
+//! application's root to route the store, hosts, parties and connectors.
+//! See `domain/engine.md`, sections 3 to 5.
+//!
+//! The core never holds a connector's typed value or a store encoding.
+
+#![cfg_attr(not(test), no_std)]
+#![forbid(unsafe_code)]
+
+extern crate alloc;
+
+mod inbox;
+mod numbers;
+mod routing;
+mod run;
+mod sibling_routes;
+pub use numbers::{Counters, Deployment, Family, fresh};
+pub use routing::{Ask, Event, Held, Limits, Now, Request, Requests, Route, Timer, Write, fire, step};
+pub use sibling_routes::{MadeRoute, SentRoute};
+mod stored;
+pub use run::{
+    GoalRoute, HistoricalResult, Model, PendingRelay, PersonProposalRoute, PersonTaskRoute, RestoringProof, RoutedCall,
+    RunCharter, RunPolicy, Transcript,
+};
+pub use stored::{
+    CallKey, CallPart, CallRecord, CoreKey, CoreRecord, EscalationDecisionRecord, Key, ProposalDecisionRecord, Record,
+    Restored, RunProof, TerminalRecord, TurnProof, TurnRecord,
+};
+
+use alloc::boxed::Box;
+use jig_core_accounts as accounts;
+use jig_core_authority as authority;
+use jig_core_brief as brief;
+use jig_core_fleet as fleet;
+use jig_core_notes as notes;
+use jig_core_people as people;
+use jig_core_tasks as tasks;
+use jig_core_views as views;
+use skein_lib::{List, Map, Queue, Token};
+
+/// Application-supplied initial core state, in jig's vocabulary.
+#[derive(Debug)]
+pub struct Config {
+    /// Identity committed with the first decision.
+    pub deployment: [u8; 16],
+    /// Deterministic task scheduling seed.
+    pub seed: u64,
+    /// Initial authenticated owners.
+    pub owners: Box<[people::InitialOwner]>,
+    /// Configured authority and policy.
+    pub authority: authority::Domain,
+    /// Policy and run settings retained by the core.
+    pub settings: Settings,
+    /// Configured project identifiers for bootstrap.
+    pub projects: List<u32>,
+}
+
+/// Immutable policy and run settings used by core decisions.
+#[derive(Debug)]
+pub struct Settings {
+    /// Provider number for the application's services.
+    pub deployment_provider: u16,
+    /// Agent charter selected for chats.
+    pub charter: u32,
+    /// Bounded run policy for the charter.
+    pub run: RunPolicy,
+    /// Maximum committed conversation bytes resumed whole.
+    pub resume_bytes: u32,
+    /// Funding period identifier.
+    pub period: u64,
+    /// Initial project period budget.
+    pub period_budget: u64,
+    /// Initial person pool budget.
+    pub person_budget: u64,
+    /// Authority of a directly requested chat.
+    pub chat_authority: authority::Authority,
+    /// Account selected for the charter.
+    pub account: u32,
+    /// Initial account generation.
+    pub account_generation: u64,
+    /// Initial credential lifetime.
+    pub account_valid: Option<skein_lib::Duration>,
+    /// Connector number for recurring procedures.
+    pub recurring_connector: u16,
+}
+
+/// The eight child domains of the core. Routing and durable live state are
+/// added here as the root's boundary is drawn.
+#[derive(Debug)]
+pub struct Core {
+    /// Live view watcher correlation.
+    pub watching: Map<Token, u64>,
+    /// Last projected task phases.
+    pub view_phases: Map<u64, (u32, Option<u32>)>,
+    /// Historical result reads in flight.
+    pub reading_results: Map<u64, Token>,
+    /// Historical dependency results held for preparation.
+    pub dependency_results: Map<u64, Box<[HistoricalResult]>>,
+    /// Numbered task creation flights.
+    pub made: Map<Token, (u64, bool)>,
+    /// Goal proposal decisions in flight.
+    pub goal_routes: Map<Token, GoalRoute>,
+    /// Delegations awaiting input checks.
+    pub delegating: Map<Token, (CallKey, Box<[tasks::Stub]>)>,
+    /// Person proposal decisions in flight.
+    pub routing_people_proposals: Map<Token, PersonProposalRoute>,
+    /// Ended result positions waiting to be delivered.
+    pub ending_positions: Map<u64, u64>,
+    /// Person messages awaiting task admission.
+    pub saying: Map<Token, (u64, Option<u64>)>,
+    /// Person task moves awaiting their answer.
+    pub moving: Map<Token, u64>,
+    /// Person task request routes in flight.
+    pub person_tasks: Map<Token, PersonTaskRoute>,
+    /// One committed word awaiting host delivery.
+    pub relaying: Option<PendingRelay>,
+    /// Candidate sign-in in flight.
+    pub signing_in: Option<u64>,
+    /// Configured project identifiers for bootstrap.
+    pub projects: List<u32>,
+    /// Immutable settings for core decisions.
+    pub settings: Settings,
+    /// Named calls awaiting their routed decision.
+    pub pending_calls: Map<CallKey, bool>,
+    /// Durable live named-call decisions, with connector payloads retained by
+    /// their owner and represented here only by connector number.
+    pub call_parts: Map<CallKey, CallPart>,
+    /// Calls routed among the core children.
+    pub routing_calls: Map<Token, RoutedCall>,
+    /// Durable deployment numbers.
+    pub counters: Counters,
+    /// Live task preparation contexts.
+    pub contexts: Map<u64, Box<tasks::RunContext>>,
+    /// Recent transcript windows for runs being prepared.
+    pub transcripts: Map<u64, Transcript>,
+    /// Current durable claim evidence.
+    pub proofs: Map<u64, RunProof>,
+    /// Correlation while current proofs are restored.
+    pub restoring_proofs: Map<u64, RestoringProof>,
+    /// Restored claims not yet reported by a host.
+    pub unreported_restored: Map<u64, u64>,
+    /// Claims awaiting completion of their route.
+    pub claiming: Map<u64, u64>,
+    /// Child work due to activation.
+    pub due: Queue<Box<tasks::RunContext>>,
+    /// Host adoption events held through startup.
+    pub adopted: Queue<fleet::Event>,
+    /// The task hub.
+    pub tasks: tasks::Domain,
+    /// Policy and authority.
+    pub authority: authority::Domain,
+    /// Parties and authenticated requests.
+    pub people: people::Domain,
+    /// Hosts and attempts.
+    pub fleet: fleet::Domain,
+    /// Secret-free account lifetimes.
+    pub accounts: accounts::Domain,
+    /// Run brief gathering.
+    pub brief: brief::GatherDomain,
+    /// Scoped notes.
+    pub notes: notes::Domain,
+    /// Live views.
+    pub views: views::Domain,
+}
+
+impl Core {
+    /// Retain one newly accepted named call decision. The application saves
+    /// its store row and holds the outward answer behind the same commit.
+    pub fn record_call(&mut self, key: CallKey, part: CallPart) {
+        assert!(self.call_parts.insert(key, part) == Ok(None), "named call room reserved");
+    }
+
+    /// Restore one live named call only after its current task proof was
+    /// restored. The connector's separately owned answer is validated by the
+    /// application before it asks the core to retain this part.
+    pub fn restore_call(&mut self, key: CallKey, part: CallPart) -> bool {
+        let deployment = self.counters.deployment();
+        let valid = key.task != 0
+            && key.attempt != 0
+            && key.completion != 0
+            && key.task <= deployment.tasks
+            && key.attempt <= deployment.runs
+            && match self.proofs.get(&key.task) {
+                Some(proof) => proof.attempt >= key.attempt,
+                None => false,
+            };
+        valid && self.call_parts.insert(key, part) == Ok(None)
+    }
+
+    /// Forget named calls whose answer entered a committed later turn. The
+    /// application erases these keys in the same decision and drops any
+    /// connector-owned answer for them.
+    pub fn retire_calls(&mut self, task: u64, attempt: u64, turn: u32, room: u32) -> Box<[CallKey]> {
+        let mut retired = List::with_capacity(room);
+        for (&key, _) in &self.call_parts {
+            if key.task == task && (key.attempt < attempt || (key.attempt == attempt && key.completion < turn)) {
+                retired.push(key).expect("all retained call names fit their configured bound");
+            }
+        }
+        for &key in &retired {
+            let _part = self.call_parts.remove(&key);
+        }
+        retired.into_boxed()
+    }
+
+    /// Allocate the eight children and the bounded live core tables.
+    #[must_use]
+    pub fn new(config: Config, limits: &Limits) -> Core {
+        Core {
+            counters: Counters::bootstrap(config.deployment),
+            watching: Map::with_capacity(limits.views.watchers),
+            view_phases: Map::with_capacity(limits.tasks.tasks),
+            reading_results: Map::with_capacity(limits.load_slots),
+            dependency_results: Map::with_capacity(limits.tasks.tasks),
+            made: Map::with_capacity(limits.people.pending),
+            goal_routes: Map::with_capacity(limits.people.pending),
+            delegating: Map::with_capacity(limits.fleet.calls),
+            routing_people_proposals: Map::with_capacity(limits.people.pending),
+            ending_positions: Map::with_capacity(limits.tasks.tasks),
+            saying: Map::with_capacity(limits.people.pending),
+            moving: Map::with_capacity(limits.people.pending),
+            person_tasks: Map::with_capacity(limits.people.pending),
+            relaying: None,
+            signing_in: None,
+            projects: config.projects,
+            pending_calls: Map::with_capacity(limits.call_records),
+            call_parts: Map::with_capacity(limits.call_records),
+            routing_calls: Map::with_capacity(limits.fleet.calls),
+            contexts: Map::with_capacity(limits.tasks.tasks),
+            transcripts: Map::with_capacity(limits.tasks.tasks),
+            proofs: Map::with_capacity(limits.tasks.tasks),
+            restoring_proofs: Map::with_capacity(limits.tasks.tasks),
+            unreported_restored: Map::with_capacity(limits.tasks.tasks),
+            claiming: Map::with_capacity(limits.tasks.tasks),
+            due: Queue::with_capacity(limits.tasks.tasks),
+            adopted: Queue::with_capacity(limits.tasks.tasks.checked_mul(2).expect("adoption room representable")),
+            tasks: tasks::Domain::new(&limits.tasks, config.seed, Box::new([config.settings.charter])),
+            authority: config.authority,
+            people: people::Domain::new(&limits.people, config.owners, config.settings.deployment_provider),
+            fleet: fleet::Domain::new(&limits.fleet),
+            accounts: accounts::Domain::new(&limits.accounts),
+            brief: brief::GatherDomain::new(&limits.brief),
+            notes: notes::Domain::new(&limits.notes),
+            views: views::Domain::new(&limits.views),
+            settings: config.settings,
+        }
+    }
+
+    /// Reclaim retired child slots at the application's iteration boundary.
+    pub fn reclaim(&mut self) {
+        self.tasks.reclaim();
+        self.people.reclaim();
+        self.fleet.reclaim();
+        self.views.reclaim();
+    }
+
+    /// Discard expendable child observations without changing a decision.
+    pub fn drain_facts(&mut self, limits: &Limits) {
+        for _ in 0..limits.tasks.facts {
+            let _fact = self.tasks.pop_fact();
+        }
+        for _ in 0..limits.people.facts {
+            let _fact = self.people.pop_fact();
+        }
+        for _ in 0..limits.fleet.facts {
+            let _fact = self.fleet.pop_fact();
+        }
+        for _ in 0..limits.accounts.facts {
+            let _fact = self.accounts.pop_fact();
+        }
+        for _ in 0..limits.views.facts {
+            let _fact = self.views.pop_fact();
+        }
+    }
+
+    /// Pure idle fence for core work; a host can still hold a live attempt.
+    #[must_use]
+    pub fn quiescent(&self, journal_idle: bool) -> bool {
+        self.counters.quiescent(journal_idle)
+            && self.reading_results.is_empty()
+            && self.dependency_results.is_empty()
+            && self.pending_calls.is_empty()
+            && self.routing_calls.is_empty()
+            && self.routing_people_proposals.is_empty()
+            && self.made.is_empty()
+            && self.goal_routes.is_empty()
+            && self.delegating.is_empty()
+            && self.ending_positions.is_empty()
+            && self.saying.is_empty()
+            && self.moving.is_empty()
+            && self.person_tasks.is_empty()
+            && self.relaying.is_none()
+            && self.signing_in.is_none()
+            && self.adopted.is_empty()
+            && self.due.is_empty()
+            && self.claiming.is_empty()
+            && self.contexts.is_empty()
+            && self.transcripts.is_empty()
+            && self.restoring_proofs.is_empty()
+            && self.unreported_restored.is_empty()
+            && self.brief.is_idle()
+            && !self.fleet.is_ready()
+            && self.fleet.turns() == 0
+            && self.fleet.calls() == 0
+            && self.fleet.next_deadline().is_none()
+            && !self.accounts.waiting()
+    }
+
+    /// Restore one current claim only when it matches the live task's
+    /// transient correlation. An archive row can never enter this live map.
+    #[expect(clippy::manual_let_else, reason = "the step-code subset uses exhaustive matches")]
+    pub fn restore_proof(&mut self, proof: RunProof, result_bytes: u32) -> bool {
+        let expected = match self.restoring_proofs.remove(&proof.task) {
+            Some(expected) => expected,
+            None => return false,
+        };
+        let turn = match proof.turn {
+            Some(turn) => turn.turn,
+            None => 0,
+        };
+        if proof.attempt != expected.attempt || turn != expected.turn || !valid_proof(&proof, &expected, result_bytes) {
+            return false;
+        }
+        self.proofs.insert(proof.task, proof).is_ok()
+    }
+}
+
+fn valid_proof(proof: &RunProof, expected: &RestoringProof, result_bytes: u32) -> bool {
+    if proof.task == 0 || proof.attempt == 0 {
+        return false;
+    }
+    let spent = match proof.turn {
+        Some(turn) => {
+            let read_valid = match turn.read {
+                Some(number) => match proof.offered {
+                    Some(high) => number <= high,
+                    None => false,
+                },
+                None => true,
+            };
+            if turn.turn == 0 || !read_valid || turn.cumulative > expected.run_spent {
+                return false;
+            }
+            turn.cumulative
+        }
+        None => 0,
+    };
+    match &proof.terminal {
+        Some(terminal) => {
+            terminal.task == proof.task
+                && terminal.attempt == proof.attempt
+                && terminal.cumulative == expected.run_spent
+                && expected.last_answer == Some(proof.attempt)
+                && match tasks::terminal_bytes(&terminal.end) {
+                    Some(bytes) => bytes <= u64::from(result_bytes).checked_mul(2).expect("result bound representable"),
+                    None => false,
+                }
+        }
+        None => spent == expected.run_spent && expected.last_answer != Some(proof.attempt),
+    }
+}

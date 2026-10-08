@@ -166,6 +166,8 @@ pub enum Held {
 /// Core output that follows no mutation.
 #[derive(Debug)]
 pub enum Now {
+    /// The host receives a read answer without waiting for a commit (domain/engine.md, 4.4).
+    Relayed { channel: Token, run: Token, attempt: Token, call: Box<[u8]>, answer: Token },
     /// An effect wait or capacity refusal changed no durable state.
     EffectAnswer { to: ReplyTo, key: CallKey, part: CallPart },
     /// A settled answer exceeded its bounded record or no retained call owns it.
@@ -5210,8 +5212,12 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
             fleet::Request::Relay { reply_to, run, attempt, call } => {
                 Request::Now(Box::new(Now::Call { to: reply_to, run, attempt, call }))
             }
-            fleet::Request::Relayed { channel, run, attempt, call, answer } => {
-                Request::Held(Box::new(Held::Relayed { channel, run, attempt, call, answer }))
+            fleet::Request::Relayed { channel, run, attempt, call, answer, writes } => {
+                if writes {
+                    Request::Held(Box::new(Held::Relayed { channel, run, attempt, call, answer }))
+                } else {
+                    Request::Now(Box::new(Now::Relayed { channel, run, attempt, call, answer }))
+                }
             }
             fleet::Request::DropCall { call } => Request::Now(Box::new(Now::DropCall { call })),
             fleet::Request::Undelivered { run, attempt, message, undelivered: _ } => {

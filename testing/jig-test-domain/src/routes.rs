@@ -43,7 +43,14 @@ pub(super) fn route_core(
                     };
                     hold(
                         decision,
-                        Delivery::CallAnswer { channel, task: run.raw(), attempt: attempt.raw(), name, call },
+                        Delivery::CallAnswer {
+                            channel,
+                            task: run.raw(),
+                            attempt: attempt.raw(),
+                            name,
+                            call,
+                            writes: true,
+                        },
                     );
                 }
                 core::Held::MakeEffect { connector, entry } => {
@@ -258,6 +265,25 @@ fn route_now(
     work: &mut Queue<Work>,
 ) {
     match now {
+        core::Now::Relayed { channel, run, attempt, call: name, answer } => {
+            let Some(crate::Payload::SettledCall(call)) = domain.payloads.remove(&answer) else {
+                unreachable!("read answer payload")
+            };
+            assert!(
+                domain
+                    .journal
+                    .now(Delivery::CallAnswer {
+                        channel,
+                        task: run.raw(),
+                        attempt: attempt.raw(),
+                        name,
+                        call,
+                        writes: false,
+                    })
+                    .is_ok(),
+                "read answer door reserved"
+            );
+        }
         core::Now::Undelivered { message, .. } => {
             drop(domain.payloads.remove(&message.words));
         }

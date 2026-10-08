@@ -83,7 +83,7 @@ pub enum Write {
     Erase(Key),
 }
 
-/// What the journal releases after the associated commit.
+/// What the journal releases after its commit, or through its read door.
 #[derive(Debug)]
 pub enum Delivery {
     /// One committed whole-tree projection handoff.
@@ -94,8 +94,16 @@ pub enum Delivery {
     Restart(core::RestartStep),
     /// Core-held party, host, task or view output.
     Core(core::Held),
-    /// A settled answer with its original opaque call name.
-    CallAnswer { channel: Token, task: u64, attempt: u64, name: Box<[u8]>, call: core::SettledCall },
+    /// An answer with its original opaque call name and durability class.
+    CallAnswer {
+        channel: Token,
+        task: u64,
+        attempt: u64,
+        name: Box<[u8]>,
+        call: core::SettledCall,
+        /// Writes wait for commitment; reads use the journal's door.
+        writes: bool,
+    },
     /// A prepared worker assignment, after the claim is durable.
     Assigned { channel: Token, assignment: Assignment },
     /// A post-commit continuation inside the core's fleet.
@@ -179,6 +187,11 @@ pub enum Event {
         effect: connector::Effect,
         deadline: Wall,
         proposal: Option<Box<[u8]>>,
+    },
+    /// The rendered reply to a run's read, with no durable call record.
+    ReadAnswer {
+        to: ReplyTo,
+        call: core::SettledCall,
     },
     /// A scripted worker's retained turn, including its opaque body.
     Turn {
@@ -359,6 +372,10 @@ enum Work {
         number: u16,
     },
     Restart(core::RestartRequest),
+    ReadAnswer {
+        to: ReplyTo,
+        call: core::SettledCall,
+    },
     AdoptRestored,
     AdoptDone,
     WriterRead {
@@ -452,6 +469,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
         }
         Event::Timer(timer) => decide(domain, env, Work::Timer(timer)),
         Event::Core(event) => decide(domain, env, Work::Core(event)),
+        Event::ReadAnswer { to, call } => decide(domain, env, Work::ReadAnswer { to, call }),
         Event::Connector { number, event } => decide(domain, env, Work::Connector { number, event }),
         Event::Turn { channel, task, attempt, turn, cumulative, read, transcript } => {
             decide(domain, env, Work::Turn { channel, task, attempt, turn, cumulative, read, transcript });
@@ -478,7 +496,8 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
         | Work::ProjectionEffect { .. }
         | Work::EffectCall { .. }
         | Work::Turn { .. }
-        | Work::Answer { .. } => core::room_max(&env.limits.core),
+        | Work::Answer { .. }
+        | Work::ReadAnswer { .. } => core::room_max(&env.limits.core),
     }
     .expect("validated core room");
     let connector_room = connector::MAX_OUT.checked_mul(2).expect("two connector outputs");
@@ -570,6 +589,10 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
                 let requests =
                     core::fire(&mut domain.core, &Env { now: env.now, wall: env.wall, limits: env.limits.core }, timer);
                 route_core(domain, env, &mut decision, requests, &mut work);
+            }
+            Work::ReadAnswer { to, call } => {
+                let answer = payload(domain, Payload::SettledCall(call));
+                work.push(Work::Core(core::Event::Fleet(fleet::Event::Relayed { to, answer })));
             }
             Work::Core(event) => {
                 let requests =

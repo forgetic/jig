@@ -31,6 +31,7 @@ pub(crate) struct PendingCall {
     attempt: Id<Attempt>,
     /// The worker's name for it, kept until the parent's answer.
     name: Box<[u8]>,
+    writes: bool,
 }
 
 /// Where the parent's live claim is, as far as relaying goes.
@@ -83,7 +84,7 @@ fn owned(domain: &Domain, channel: Token, run: Token, attempt: Token) -> Option<
     }
 }
 
-/// A call is passed through whole, with only its bounded name retained
+/// A call is passed through whole, with its bounded name and write flag retained
 /// for the answer. A rejected call is returned whole to its parent.
 pub(crate) fn relay(
     domain: &mut Domain,
@@ -105,7 +106,7 @@ pub(crate) fn relay(
         return;
     }
     let name = call.name.clone();
-    match domain.calls.insert(PendingCall { attempt: id, name }) {
+    match domain.calls.insert(PendingCall { attempt: id, name, writes: call.writes }) {
         Ok(id) => out.push(Request::Relay { reply_to: ReplyTo::new(id.token()), run, attempt, call }),
         Err(_) => {
             domain.facts.push(Fact::Dropped);
@@ -120,12 +121,13 @@ pub(crate) fn relayed(domain: &mut Domain, to: ReplyTo, answer: Token, out: &mut
     let id = Id::<PendingCall>::from_token(to.into_token());
     let entry = domain.calls.get_mut(id).expect("the parent answers a call in flight, which is kept until it does");
     let owner = entry.attempt;
+    let writes = entry.writes;
     let name = mem::replace(&mut entry.name, Box::new([]));
     domain.calls.retire(id);
     match live(domain, owner) {
         Live::On(channel) => {
             let entry = domain.attempts.get(owner).expect("a live claim is tracked");
-            out.push(Request::Relayed { channel, run: entry.run, attempt: entry.token, call: name, answer });
+            out.push(Request::Relayed { channel, run: entry.run, attempt: entry.token, call: name, answer, writes });
         }
         Live::Adrift | Live::Not => {
             domain.facts.push(Fact::Dropped);

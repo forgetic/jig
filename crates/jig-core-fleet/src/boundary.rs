@@ -116,7 +116,7 @@ pub struct Message {
     pub words: Token,
 }
 
-/// A named host call (hosts.md, section 2). Only its name is kept while
+/// A named host call (hosts.md, section 2). Its name and write flag are kept while
 /// the parent decides it; its other fields are moved into the parent's request.
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct Call {
@@ -306,6 +306,8 @@ pub enum Request {
         attempt: Token,
         call: Box<[u8]>,
         answer: Token,
+        /// Whether the original call changes state and its answer must wait for commitment.
+        writes: bool,
     },
     /// Return a call that cannot be relayed; the parent owns its bytes.
     DropCall {

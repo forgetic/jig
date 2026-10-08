@@ -153,3 +153,53 @@ fn parties_run_ahead_of_held_completions_but_every_answer_waits() {
     world.release_commits();
     assert_eq!(world.people_answers.len(), answers + 2);
 }
+
+#[test]
+fn a_runs_read_is_answered_while_an_unrelated_commit_is_in_flight() {
+    let mut world = World::new(128, false);
+    world.store.fault(Fault::Hold { commits: 1 });
+    world.turn(1, 1, None, b"unrelated turn");
+    let held = world.store.held.clone();
+    assert!(!held.is_empty());
+    let commits = world.commits.len();
+    let right = world.host_call(b"read-now", b"read", b"{}", false);
+    let answer = core::SettledCall {
+        serial: 0,
+        name: b"read-now".as_slice().into(),
+        tool: b"read".as_slice().into(),
+        answer: core::SettledAnswer::Host { error: false, body: b"fresh result".as_slice().into() },
+    };
+    world.send(root::Event::ReadAnswer { to: ReplyTo::new(right), call: answer.clone() });
+    assert_eq!(world.store.held, held, "the unrelated commit still waits");
+    assert_eq!(world.commits.len(), commits, "a read commits nothing");
+    assert_eq!(world.host_answers, [(b"read-now".as_slice().into(), answer)]);
+    world.release_commits();
+    assert_eq!(world.host_answers.len(), 1, "the read is answered once");
+}
+
+#[test]
+fn a_runs_write_answer_waits_for_an_unrelated_commit_in_flight() {
+    let mut world = World::new(129, false);
+    world.store.fault(Fault::Hold { commits: 1 });
+    world.turn(1, 1, None, b"unrelated turn");
+    let right = world.host_call(b"write-held", b"write", b"{}", true);
+    let key = world.call_key(2);
+    world.send(root::Event::Core(core::Event::NamedAnswer {
+        to: ReplyTo::new(right),
+        key,
+        part: core::CallPart::Unavailable,
+    }));
+    world.send(root::Event::Core(core::Event::SettledCall {
+        to: ReplyTo::new(right),
+        key,
+        call: core::SettledCall {
+            serial: 0,
+            name: b"write-held".as_slice().into(),
+            tool: b"write".as_slice().into(),
+            answer: core::SettledAnswer::Host { error: false, body: b"done".as_slice().into() },
+        },
+    }));
+    assert!(world.host_answers.is_empty(), "writes wait behind the earlier commit");
+    world.release_commits();
+    assert_eq!(world.host_answers.len(), 1);
+}

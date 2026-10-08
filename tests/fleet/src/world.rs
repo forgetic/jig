@@ -957,7 +957,7 @@ impl World {
                 self.sent(run, attempt, Down::Cancel);
                 self.down(channel, Message::Cancel { run: run.raw(), attempt: attempt.raw() });
             }
-            Request::Relayed { channel, run, attempt, call, answer } => {
+            Request::Relayed { channel, run, attempt, call, answer, writes: _ } => {
                 assert_eq!(self.payloads.end(answer.raw()), Payload::Reply, "a call's answer goes down as it is");
                 self.sent(run, attempt, Down::Relayed);
                 self.down(

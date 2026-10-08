@@ -292,7 +292,8 @@ fn a_message_and_host_call_keep_their_fields_across_the_fleet() {
             run: R1,
             attempt: A1,
             call: Box::from(&b"call-one"[..]),
-            answer: payload(7)
+            answer: payload(7),
+            writes: true,
         }]
     );
 }
@@ -641,7 +642,8 @@ fn a_relayed_call_goes_up_once_and_its_answer_down_once() {
             run: R1,
             attempt: A1,
             call: Box::from(call.raw().to_be_bytes()),
-            answer: payload(2)
+            answer: payload(2),
+            writes: false,
         }]
     );
     assert_eq!(h.domain.calls(), 0);
@@ -730,7 +732,8 @@ fn worker_inputs_require_the_current_host_but_accepted_calls_survive_its_channel
             run: R1,
             attempt: A1,
             call: Box::from(call.raw().to_be_bytes()),
-            answer: payload(2)
+            answer: payload(2),
+            writes: false,
         }]
     );
     let up = h.step(Event::Relay { channel: C3, run: R1, attempt: A1, call: host_call(Token::new(8), payload(8)) });

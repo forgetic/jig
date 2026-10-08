@@ -274,12 +274,23 @@ impl Peers {
         self.workers.iter_mut().find(|worker| worker.channel == channel).expect("configured host")
     }
 
-    /// The test root's decoder answers the opaque echo tool in a durable decision.
+    /// The test root's decoder renders reads now and records answers to writes.
     pub fn opaque_answer(&mut self, to: ReplyTo, run: Token, attempt: Token, call: &fleet::Call) -> Vec<root::Event> {
         let number = self.opaque.get(&(run.raw(), attempt.raw(), call.name.clone())).expect("retained opaque call").1;
         let key = core::CallKey { task: run.raw(), attempt: attempt.raw(), completion: number, position: 0 };
         self.call_hosts.remove(&key);
         let token = to.into_token();
+        if !call.writes {
+            return vec![root::Event::ReadAnswer {
+                to: ReplyTo::new(token),
+                call: core::SettledCall {
+                    serial: 0,
+                    name: call.name.clone(),
+                    tool: call.tool.clone(),
+                    answer: core::SettledAnswer::Host { error: false, body: call.input.clone() },
+                },
+            }];
+        }
         vec![
             root::Event::Core(core::Event::NamedAnswer {
                 to: ReplyTo::new(token),

@@ -379,6 +379,7 @@ impl Observer {
             | root::Event::Core(_)
             | root::Event::Connector { .. }
             | root::Event::ProjectionEffect { .. }
+            | root::Event::ReadAnswer { .. }
             | root::Event::EffectCall { .. }
             | root::Event::TranscriptLoaded { .. }
             | root::Event::Committed { .. }
@@ -769,10 +770,10 @@ impl Observer {
             root::Delivery::Core(core::Held::CallAnswer { key, .. }) => {
                 requires.push(call(*key));
             }
-            root::Delivery::CallAnswer { task, attempt, call: settled, .. } => {
+            root::Delivery::CallAnswer { task, attempt, call: settled, writes, .. } => {
                 // The named settled body must already occur in a durable call.
                 assert!(
-                    self.settled_calls.contains(&(*task, *attempt, settled.serial)),
+                    !*writes || self.settled_calls.contains(&(*task, *attempt, settled.serial)),
                     "answer preceded its durable named-call record"
                 );
             }

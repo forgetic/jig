@@ -626,6 +626,23 @@ fn give(
 /// accepted effect facts and commits the decision atomically.
 #[must_use]
 pub fn check_request(domain: &Domain, ask: &PersonAsk, why: &mut Queue<Finding>) -> Checked {
+    check_request_with_standing(domain, ask, false, why)
+}
+
+/// Check a current requester or escalation recipient whose right to control
+/// this task came from the task tree, while still enforcing authority and
+/// funding. Root authenticates that standing before calling this function.
+#[must_use]
+#[expect(
+    clippy::too_many_lines,
+    reason = "standing changes only the request bit check within the existing person admission"
+)]
+pub fn check_request_with_standing(
+    domain: &Domain,
+    ask: &PersonAsk,
+    standing: bool,
+    why: &mut Queue<Finding>,
+) -> Checked {
     room(domain, why);
     let admitted = match &ask.request {
         PersonRequest::Create(tasks) => delegates_within(tasks, domain.limits()),
@@ -655,7 +672,18 @@ pub fn check_request(domain: &Domain, ask: &PersonAsk, why: &mut Queue<Finding>)
         PersonRequest::Watch => RequestKind::Watch,
         PersonRequest::Policy => RequestKind::Policy,
     };
-    if !role.requests.allows(kind) {
+    let control = match &ask.request {
+        PersonRequest::Amend(_) | PersonRequest::Move(_) | PersonRequest::Cancel | PersonRequest::Release => true,
+        PersonRequest::Create(_)
+        | PersonRequest::Allot(_)
+        | PersonRequest::Accept(_)
+        | PersonRequest::Watch
+        | PersonRequest::Policy => false,
+    };
+    if standing && !control {
+        return checked(refuse(why, Finding::Unpermitted), None);
+    }
+    if !standing && !role.requests.allows(kind) {
         return checked(refuse(why, Finding::Unpermitted), None);
     }
     if needs_funding(&ask.request) && ask.pool.budget > role.period_spend {

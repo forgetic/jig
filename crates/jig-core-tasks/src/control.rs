@@ -1,4 +1,4 @@
-//! Root-authorized changes to live tasks (domain/tasks.md, sections 5.5 and 6).
+//! Root-authorized changes to live tasks (domain/tasks.md, sections 5.5 and 7).
 //! The child keeps only current state; root owns durable call decisions and
 //! commits every emitted save before any worker sees a control outcome.
 use crate::domain::{Domain, entrance, publish, record, refused, task_mut};

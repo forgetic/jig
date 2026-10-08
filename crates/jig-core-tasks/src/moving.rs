@@ -1,5 +1,5 @@
 //! Person adoption of a live task, with one reservation transfer and requester-tree rewrite
-//! (domain/tasks.md, section 6; domain/authority.md, section 7). Root authenticates the
+//! (domain/tasks.md, section 7; domain/authority.md, section 7). Root authenticates the
 //! adopter and policy rights; this child checks every local row before changing any of them.
 use crate::domain::{Domain, entrance, publish, record, refused, task_mut};
 use crate::{Change, Funder, Limits, Numbers, Party, Phase, Refusal, Request, Was};

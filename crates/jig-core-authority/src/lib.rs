@@ -49,7 +49,10 @@ pub use boundary::{
     Action, Answer, BatchAsk, Call, CallAsk, Checked, Delegate, Effect, EffectAccess, EffectAsk, EffectResource,
     Finding, Given, Holder, NoteScope, PersonAsk, PersonRequest, RunAsk, Source, Verdict, Write, Writer,
 };
-pub use check::{check_batch, check_call, check_effect, check_request, check_run, covers, needed_judges, needs};
+pub use check::{
+    check_batch, check_call, check_effect, check_request, check_request_with_standing, check_run, covers,
+    needed_judges, needs,
+};
 pub use domain::{Domain, Event, POLICY_MAX_OUT, PolicyFact, PolicyRefusal, step};
 pub use limits::{Limits, max_out, worst_case};
 pub use numbers::{Numbers, carve, charge, left, settle};

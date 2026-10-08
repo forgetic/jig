@@ -9,6 +9,8 @@ publish.workspace = true
 [dependencies]
 jig-test-domain.workspace = true
 jig-fake-store.workspace = true
+jig-fake-workers.workspace = true
+jig-fake-parties.workspace = true
 jig-test-connector.workspace = true
 jig-test-connector-world = { path = "../test-connector" }
 jig-test-system.workspace = true

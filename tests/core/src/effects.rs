@@ -48,6 +48,8 @@ pub struct World {
     pub store_delay: u32,
     /// Whether the root reported a failed commit and stopped.
     pub stopped: bool,
+    /// Independent scripted hosts and clients, when this scenario uses them.
+    pub peers: Option<crate::peers::Peers>,
     restoring: Option<Restore>,
     restart_reads: std::collections::BTreeMap<u16, core::RestartStep>,
     events: VecDeque<root::Event>,
@@ -136,40 +138,7 @@ impl World {
     /// A story may configure its programs, policy and worker capacity.
     #[must_use]
     pub fn configured(seed: u64, requirement: bool, configuration: root::Config, limits: root::Limits) -> World {
-        let mut world = World {
-            domain: root::Domain::new(fixture(seed, requirement).0, &limits),
-            store: Store::new(),
-            systems: [System::new(), System::new()],
-            typed_calls: Vec::new(),
-            typed_answers: Vec::new(),
-            inbound: Vec::new(),
-            answers: Vec::new(),
-            assigned: None,
-            assignments: Vec::new(),
-            cancellations: Vec::new(),
-            commits: Vec::new(),
-            sign_in: None,
-            people_answers: Vec::new(),
-            procedure: None,
-            pending_reads: Vec::new(),
-            lost_answers: 0,
-            hold_writes: false,
-            recovery: connector::Recovery::Keyed,
-            hold_lookups: false,
-            pending_lookups: Vec::new(),
-            pending_writes: Vec::new(),
-            lose_answer: false,
-            trace: Vec::new(),
-            restart_steps: Vec::new(),
-            hold_restart_reads: false,
-            store_delay: 0,
-            stopped: false,
-            restoring: None,
-            restart_reads: std::collections::BTreeMap::new(),
-            events: VecDeque::new(),
-            limits,
-            wall: 0,
-        };
+        let mut world = Self::empty(fixture(seed, requirement).0, &limits);
         world.send(root::Event::Core(core::Event::People(people::Event::Roles { project: 1, holdings: Box::new([]) })));
         world.domain = root::Domain::new(configuration, &limits);
         world.send(root::Event::RestartBegin);
@@ -203,6 +172,70 @@ impl World {
             world.waiting_judge();
         }
         world
+    }
+
+    fn empty(configuration: root::Config, limits: &root::Limits) -> World {
+        World {
+            domain: root::Domain::new(configuration, limits),
+            store: Store::new(),
+            systems: [System::new(), System::new()],
+            typed_calls: Vec::new(),
+            typed_answers: Vec::new(),
+            inbound: Vec::new(),
+            answers: Vec::new(),
+            assigned: None,
+            assignments: Vec::new(),
+            cancellations: Vec::new(),
+            commits: Vec::new(),
+            sign_in: None,
+            people_answers: Vec::new(),
+            procedure: None,
+            pending_reads: Vec::new(),
+            lost_answers: 0,
+            hold_writes: false,
+            recovery: connector::Recovery::Keyed,
+            hold_lookups: false,
+            pending_lookups: Vec::new(),
+            pending_writes: Vec::new(),
+            lose_answer: false,
+            trace: Vec::new(),
+            restart_steps: Vec::new(),
+            hold_restart_reads: false,
+            store_delay: 0,
+            stopped: false,
+            peers: None,
+            restoring: None,
+            restart_reads: std::collections::BTreeMap::new(),
+            events: VecDeque::new(),
+            limits: *limits,
+            wall: 0,
+        }
+    }
+
+    /// Compose the testing root with independently scripted workers and parties.
+    #[must_use]
+    pub fn scripted(configuration: root::Config, limits: root::Limits, peers: crate::peers::Peers) -> World {
+        let mut world = Self::empty(configuration, &limits);
+        world.peers = Some(peers);
+        let row =
+            root::Record::Core(core::Record::People(people::Stored::Roles { project: 1, holdings: Box::new([]) }));
+        world.store.rows.insert(row.key(), row);
+        world.events.push_back(root::Event::RestartBegin);
+        world.events.push_back(root::Event::Core(core::Event::Account(accounts::Event::Add {
+            account: 1,
+            generation: 1,
+            valid: Some(Duration::from_secs(60)),
+        })));
+        world.drain();
+        world
+    }
+
+    /// Advance simulated time, firing fleet and task deadlines through the root.
+    pub fn advance(&mut self, by: Duration) {
+        self.wall = self.wall.checked_add(by.as_nanos()).expect("world time fits");
+        self.events.push_back(root::Event::Timer(core::Timer::Fleet));
+        self.events.push_back(root::Event::Timer(core::Timer::Tasks));
+        self.drain();
     }
 
     fn env(&self) -> Env<root::Limits> {
@@ -266,7 +299,11 @@ impl World {
                         self.events.push_back(root::Event::TranscriptLoaded { task, rows: Box::new([]), done: true });
                     }
                     root::Request::Now(core::Now::CallTyped { to, run, attempt, call }) => {
-                        self.typed_calls.push((to.into_token(), run.raw(), attempt.raw(), call));
+                        if let Some(peers) = &mut self.peers {
+                            self.events.extend(peers.opaque_answer(to, run, attempt, &call));
+                        } else {
+                            self.typed_calls.push((to.into_token(), run.raw(), attempt.raw(), call));
+                        }
                     }
                     root::Request::Now(core::Now::EffectAnswer { to, key, part }) => {
                         self.answers.push((to.into_token(), key, part));
@@ -289,6 +326,11 @@ impl World {
                     Err(number) => self.events.push_front(root::Event::Failed { number }),
                 }
                 self.restore_pages();
+                if self.domain.ready()
+                    && let Some(peers) = &mut self.peers
+                {
+                    self.events.extend(peers.tick(&self.store, env.now));
+                }
             }
             self.domain.reclaim();
             if empty
@@ -305,6 +347,14 @@ impl World {
 
     #[expect(clippy::too_many_lines, reason = "one exhaustive delivery handler drives the script's independent peers")]
     fn delivered(&mut self, delivery: root::Delivery) {
+        if let Some(peers) = &mut self.peers {
+            peers.delivered(&delivery);
+            if let root::Delivery::Core(core::Held::PeopleReply { to, sign_in, reply }) = delivery {
+                peers.reply(to, sign_in, reply);
+                self.people_answers.push(reply);
+                return;
+            }
+        }
         match delivery {
             root::Delivery::Restart(step) => self.restart_step(step),
             root::Delivery::TypedAnswer { name, call, .. } => self.typed_answers.push((name, call)),

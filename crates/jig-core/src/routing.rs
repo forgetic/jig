@@ -562,6 +562,12 @@ pub enum NamedAction {
         reason: Box<[u8]>,
         as_holder: bool,
     },
+    /// Propose one tracked goal, requested and funded by its accepting holder.
+    ProposeGoal {
+        goal: Box<Delegate>,
+        priority: u32,
+        reason: Box<[u8]>,
+    },
     /// Save one scoped note under a revision seen by the run.
     Note {
         entry: notes::New,
@@ -3067,6 +3073,10 @@ fn delegate_holdings(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one proposal route carries its tracked priority and accepting-holder choice"
+)]
 fn propose_batch(
     core: &mut Core,
     env: &Env<Limits>,
@@ -3075,6 +3085,7 @@ fn propose_batch(
     batch: Box<[Delegate]>,
     reason: Box<[u8]>,
     as_holder: bool,
+    tracked: Option<u32>,
 ) -> Requests {
     if reason.len() > usize::try_from(env.limits.tasks.message_bytes).expect("u32 fits usize") {
         return proposal_refused(core, to, key, tasks::Refusal::Read);
@@ -3128,7 +3139,7 @@ fn propose_batch(
                 holdings: Box::new([]),
                 wake: member.wake,
                 recurring: None,
-                tracked: None,
+                tracked,
             })
             .expect("bounded proposal batch");
     }
@@ -4224,7 +4235,10 @@ fn named_action(
             return named_propose(core, env, work, ReplyTo::new(token), key, action, reason, as_holder);
         }
         NamedAction::ProposeBatch { batch, reason, as_holder } => {
-            return propose_batch(core, env, ReplyTo::new(token), key, batch, reason, as_holder);
+            return propose_batch(core, env, ReplyTo::new(token), key, batch, reason, as_holder, None);
+        }
+        NamedAction::ProposeGoal { goal, priority, reason } => {
+            return propose_batch(core, env, ReplyTo::new(token), key, Box::new([*goal]), reason, true, Some(priority));
         }
         NamedAction::Note { mut entry, recalled } => {
             if recalled.is_none() && entry.name != 0 {
@@ -4275,7 +4289,9 @@ fn named_tool_kind(action: &NamedAction) -> ToolKind {
         NamedAction::DecideEscalation { .. }
         | NamedAction::WithdrawProposal { .. }
         | NamedAction::DecideProposal { .. } => ToolKind::Decide,
-        NamedAction::Propose { .. } | NamedAction::ProposeBatch { .. } => ToolKind::Propose,
+        NamedAction::Propose { .. } | NamedAction::ProposeBatch { .. } | NamedAction::ProposeGoal { .. } => {
+            ToolKind::Propose
+        }
         NamedAction::Note { entry, .. } => ToolKind::Note { scope: entry.scope.clone() },
         NamedAction::Recall { by, .. } => ToolKind::Recall { by: by.clone() },
     }

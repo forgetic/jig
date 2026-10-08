@@ -138,7 +138,7 @@ fn route_ask(
                         attempt: Token::new(attempt),
                         workstream: task,
                         assignment: fleet::TypedAssignment { turns: Token::new(task), answered: Token::new(task) },
-                        kinds: fleet::Kinds::Workers,
+                        kinds: domain.hosting,
                     }),
                 );
             }

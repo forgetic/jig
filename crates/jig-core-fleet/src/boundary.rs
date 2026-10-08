@@ -8,15 +8,15 @@
 //!   (domain/hosts.md, sections 2 and 4). A worker's channel is named by the
 //!   protocol's token for it, `channel`, and is in contact from its
 //!   [`Event::Hello`], the first thing said on it, until its
-//!   [`Event::Lost`]. [`Request::AssignTyped`] is a call to the worker, answered
+//!   [`Event::Lost`]. [`Request::Assign`] is a call to the worker, answered
 //!   by one [`Event::Answer`] under the run's and the attempt's names. The
 //!   worker keeps the answer, and the slot it takes, until the fleet sends
 //!   [`Request::Acknowledge`], which it does once the parent has made the
 //!   answer durable, or once the answer is for an attempt fenced off; it
 //!   sends it again after every hello until then. A refusal goes once and
-//!   keeps nothing. [`Request::InboundTyped`], [`Request::Cancel`] and
-//!   [`Request::RelayedTyped`] are notices to the worker hosting an attempt;
-//!   [`Event::RelayTyped`] is a call of the run's, which the fleet passes up and
+//!   keeps nothing. [`Request::Inbound`], [`Request::Cancel`] and
+//!   [`Request::Relayed`] are notices to the worker hosting an attempt;
+//!   [`Event::Relay`] is a call of the run's, which the fleet passes up and
 //!   whose answer it passes down, at most once; [`Event::Bounced`] and
 //!   [`Event::Told`] are notices. [`Request::Refuse`] turns a worker away
 //!   at its hello, when the fleet has no room for another: its channel is
@@ -24,7 +24,7 @@
 //!   not acknowledged. Everything a worker sends names a run and an attempt,
 //!   and is dropped unless that attempt is the parent's live claim (attempts
 //!   are fenced): only its answer is still taken once it is cancelled.
-//! - The parent's own. [`Event::StartTyped`] and [`Event::Adopt`] are calls,
+//! - The parent's own. [`Event::Start`] and [`Event::Adopt`] are calls,
 //!   each ended by exactly one of [`Request::Answered`], [`Request::Lost`],
 //!   [`Request::Withdrawn`] or [`Request::Refused`]; a start is told
 //!   [`Request::Placed`] before, each time it is assigned, and an adoption
@@ -35,14 +35,14 @@
 //!   restart, the parent adopts the claims its records hold and then says
 //!   [`Event::Loaded`]; an attempt a worker lists that no claim adopts is
 //!   told as [`Request::Listed`], and waits to be adopted for the grace from
-//!   then. [`Event::Cancel`] and [`Event::InboundTyped`] name an attempt, and an
+//!   then. [`Event::Cancel`] and [`Event::Inbound`] name an attempt, and an
 //!   inbound event that does not reach a worker comes back as
-//!   [`Request::UndeliveredTyped`]. A [`Request::RelayTyped`] is a call the parent
+//!   [`Request::Undelivered`]. A [`Request::Relay`] is a call the parent
 //!   answers with exactly one [`Event::Relayed`].
 //!
 //! What the fleet passes through and never reads is the parent's. An
 //! assignment (its charter, workspace and transcript) is named by its run and
-//! attempt, and the parent attaches it to the [`Request::AssignTyped`] that
+//! attempt, and the parent attaches it to the [`Request::Assign`] that
 //! names them. An inbound event, a relayed call and its answer, a run's
 //! answer, turns and facts are each named by a token the parent issues, and
 //! echoed exactly once: in the request that passes it on, or in a

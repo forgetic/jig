@@ -11,24 +11,35 @@
 extern crate alloc;
 
 mod amendments;
+mod brief_text;
+pub use brief_text::{BriefPart, BriefTextLimits, read_brief_part};
 pub mod connector;
+mod delegation;
 pub use amendments::TaskAmendDenied;
+pub use delegation::{Delegate, Dependency, ProcedureAction, resolved_delegate_authority, symbolic_grants};
 mod escalation;
 mod goals;
+mod historical;
 mod inbox;
 pub use goals::GoalStart;
 mod numbers;
 mod person_task;
+mod policy;
 mod proposals;
+mod reading;
 mod roles;
 mod routing;
 mod run;
 mod sibling_routes;
 pub use numbers::{Counters, Deployment, Family, fresh};
-pub use routing::{Ask, Event, Held, Limits, Now, Request, Requests, Route, Timer, Write, fire, step};
+pub use routing::{
+    Ask, CoreBriefBudgets, EscalationChoice, Event, Held, Limits, NamedAction, Now, PayloadRefusal, ProposalChoice,
+    Request, Requests, Timer, Write, fire, resume_fleet, step,
+};
 pub use sibling_routes::{MadeRoute, PersonMessage, SentRoute};
 mod stored;
 mod translate;
+mod watch;
 pub use run::{
     GoalRoute, HistoricalResult, Model, PendingRelay, PersonProposalRoute, PersonTaskRoute, RestoringProof, RoutedCall,
     RunAdmission, RunCharter, RunPolicy, Transcript,
@@ -37,6 +48,8 @@ pub use stored::{
     CallKey, CallPart, CallRecord, CallReplay, CoreKey, CoreRecord, EscalationDecisionRecord, Key,
     ProposalDecisionRecord, Record, Restored, RunProof, TerminalRecord, TurnProof, TurnRecord,
 };
+pub use translate::task_authority;
+pub use watch::watch_project;
 
 use alloc::boxed::Box;
 use jig_core_accounts as accounts;
@@ -64,6 +77,10 @@ pub struct Config {
     pub settings: Settings,
     /// Configured project identifiers for bootstrap.
     pub projects: List<u32>,
+    /// Policy-controlled connector permissions per project.
+    pub permission_roles: Map<u32, Box<[people::PermissionRole]>>,
+    /// Numbered connectors the application routes for task lifecycle handoffs.
+    pub connectors: Box<[u16]>,
 }
 
 /// Immutable policy and run settings used by core decisions.
@@ -98,7 +115,10 @@ pub struct Settings {
 /// The eight child domains of the core. Routing and durable live state are
 /// added here as the root's boundary is drawn.
 #[derive(Debug)]
+#[expect(clippy::partial_pub_fields, reason = "the keyed escalation route remains private to the core")]
 pub struct Core {
+    /// Application connectors addressed only by number.
+    pub connectors: Box<[u16]>,
     /// Live view watcher correlation.
     pub watching: Map<Token, u64>,
     /// Last projected task phases.
@@ -123,12 +143,22 @@ pub struct Core {
     pub moving: Map<Token, u64>,
     /// Person task request routes in flight.
     pub person_tasks: Map<Token, PersonTaskRoute>,
+    /// Authenticated person escalation choices awaiting task semantics.
+    pub(crate) person_escalations: Map<Token, routing::PersonEscalation>,
+    /// Person task creations waiting for connector-owned resource holdings.
+    pub(crate) creating: Map<Token, routing::Creation>,
+    /// Named task delegation batches awaiting connector-owned holdings.
+    pub(crate) creating_delegates: Map<Token, routing::DelegateCreation>,
+    /// Procedure batches awaiting connector-owned holdings.
+    pub(crate) creating_procedures: Map<(u64, u64), routing::ProcedureCreation>,
     /// One committed word awaiting host delivery.
     pub relaying: Option<PendingRelay>,
     /// Candidate sign-in in flight.
     pub signing_in: Option<u64>,
     /// Configured project identifiers for bootstrap.
     pub projects: List<u32>,
+    /// Mutable connector permission mappings approved by policy edits.
+    pub permission_roles: Map<u32, Box<[people::PermissionRole]>>,
     /// Immutable settings for core decisions.
     pub settings: Settings,
     /// Named calls awaiting their routed decision.
@@ -142,6 +172,8 @@ pub struct Core {
     pub counters: Counters,
     /// Live task preparation contexts.
     pub contexts: Map<u64, Box<tasks::RunContext>>,
+    /// Briefs waiting for their application connector's workspace translation.
+    pub(crate) workspace_pending: Map<u64, u64>,
     /// Recent transcript windows for runs being prepared.
     pub transcripts: Map<u64, Transcript>,
     /// Current durable claim evidence.
@@ -252,13 +284,20 @@ impl Core {
             saying: Map::with_capacity(limits.people.pending),
             moving: Map::with_capacity(limits.people.pending),
             person_tasks: Map::with_capacity(limits.people.pending),
+            person_escalations: Map::with_capacity(limits.people.pending),
+            creating: Map::with_capacity(limits.people.pending),
+            creating_delegates: Map::with_capacity(limits.call_records),
+            creating_procedures: Map::with_capacity(limits.tasks.tasks),
             relaying: None,
             signing_in: None,
             projects: config.projects,
+            permission_roles: config.permission_roles,
+            connectors: config.connectors,
             pending_calls: Map::with_capacity(limits.call_records),
             call_parts: Map::with_capacity(limits.call_records),
             routing_calls: Map::with_capacity(limits.fleet.calls),
             contexts: Map::with_capacity(limits.tasks.tasks),
+            workspace_pending: Map::with_capacity(limits.tasks.tasks),
             transcripts: Map::with_capacity(limits.tasks.tasks),
             proofs: Map::with_capacity(limits.tasks.tasks),
             restoring_proofs: Map::with_capacity(limits.tasks.tasks),

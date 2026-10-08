@@ -82,3 +82,60 @@ pub(crate) fn authority_value(value: &tasks::Authority) -> authority::Authority 
         note_resources: note_resources.into_boxed(),
     }
 }
+
+/// Translate an authority grant into the task vocabulary for a connector-owned delegate.
+#[must_use]
+pub fn task_authority(value: &authority::Authority) -> tasks::Authority {
+    let mut grants = List::with_capacity(u32::try_from(value.grants.len()).expect("validated authority grants"));
+    for grant in &value.grants {
+        let last = match &grant.pattern.last {
+            authority::Last::Exact(bytes) => tasks::Last::Exact(bytes.clone()),
+            authority::Last::Open(bytes) => tasks::Last::Open(bytes.clone()),
+        };
+        grants
+            .push(tasks::Grant {
+                connector: grant.connector,
+                kind: grant.kind,
+                pattern: tasks::Pattern { segments: grant.pattern.segments.clone(), last },
+            })
+            .expect("grant capacity");
+    }
+    let mut note_resources =
+        List::with_capacity(u32::try_from(value.note_resources.len()).expect("validated note scopes"));
+    for scope in &value.note_resources {
+        note_resources
+            .push(tasks::ResourceScope {
+                connector: scope.connector,
+                pattern: tasks::Pattern {
+                    segments: scope.pattern.segments.clone(),
+                    last: match &scope.pattern.last {
+                        authority::Last::Exact(bytes) => tasks::Last::Exact(bytes.clone()),
+                        authority::Last::Open(bytes) => tasks::Last::Open(bytes.clone()),
+                    },
+                },
+            })
+            .expect("note scope capacity");
+    }
+    let mut kinds = List::with_capacity(u32::try_from(value.delegation.kinds.len()).expect("validated executors"));
+    for kind in &value.delegation.kinds {
+        kinds
+            .push(match kind {
+                authority::Executor::Charter(number) => tasks::AuthorityExecutor::Charter(*number),
+                authority::Executor::Procedure(number) => tasks::AuthorityExecutor::Procedure(*number),
+                authority::Executor::Role(number) => tasks::AuthorityExecutor::Role(*number),
+            })
+            .expect("executor capacity");
+    }
+    tasks::Authority {
+        tools: tasks::Tools(value.tools.0),
+        grants: grants.into_boxed(),
+        delegation: tasks::Delegation {
+            kinds: kinds.into_boxed(),
+            tasks: value.delegation.tasks,
+            depth: value.delegation.depth,
+        },
+        budget: tasks::Budget { spend: value.budget.spend, deadline: value.budget.deadline },
+        notes: tasks::Scopes(value.notes.0),
+        note_resources: note_resources.into_boxed(),
+    }
+}

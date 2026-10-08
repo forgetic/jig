@@ -77,6 +77,15 @@ pub fn view_phase(phase: &Phase) -> u32 {
 }
 
 impl Domain {
+    /// Inspect the bounded waiting escalation cohort before an atomic role edit.
+    pub fn project_escalations(
+        &self,
+        limits: &Limits,
+        project: u32,
+    ) -> Result<Box<[crate::EscalationContext]>, Refusal> {
+        crate::escalation::project_contexts(self, limits, project)
+    }
+
     /// Borrowed live projection copied into a bounded result for snapshot construction.
     #[must_use]
     pub fn view_tasks(&self) -> Box<[ViewTask]> {

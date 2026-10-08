@@ -10,6 +10,26 @@ use skein_lib::{List, Queue, Token, Wall};
 
 use crate::{Core, Family, fresh, translate};
 
+/// Core-authorized task identity and funding for one connector repair.
+#[derive(Debug)]
+pub struct RepairSeed {
+    pub(crate) number: u64,
+    pub(crate) project: u32,
+    pub(crate) period: u64,
+    pub(crate) period_budget: u64,
+    pub(crate) open_period: bool,
+    pub(crate) authority: tasks::Authority,
+    pub(crate) budget: u64,
+}
+
+impl RepairSeed {
+    /// The allocated task number for root-owned connector holding translation.
+    #[must_use]
+    pub const fn number(&self) -> u64 {
+        self.number
+    }
+}
+
 /// What one adopted resource permits this project to do.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ResourceRole {
@@ -196,6 +216,22 @@ impl Core {
         };
         given.budget.spend = given.budget.spend.min(available).min(self.authority.rules().maximum_run_spend);
         if given.budget.spend == 0 { None } else { Some(given) }
+    }
+
+    /// Allocate a policy-bounded connector repair before its root translates holdings.
+    pub fn repair_seed(&mut self, project: u32) -> Option<RepairSeed> {
+        let authority = self.connector_repair_authority(project)?;
+        let number = fresh(&mut self.counters, Family::Task)?;
+        let period = self.settings.period;
+        Some(RepairSeed {
+            number,
+            project,
+            period,
+            period_budget: self.settings.period_budget,
+            open_period: self.tasks.funding(tasks::Funder::Period { project, period }).is_none(),
+            budget: authority.budget.spend,
+            authority: translate::task_authority(&authority),
+        })
     }
 
     /// Whether a live task may address a resource adopted into this project.

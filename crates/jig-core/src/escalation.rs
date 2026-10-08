@@ -132,6 +132,45 @@ fn recipient_after(
 }
 
 impl Core {
+    /// Whether a person may see this held decision context.
+    #[must_use]
+    pub fn escalation_visible(
+        &self,
+        context: &tasks::EscalationContext,
+        person: u64,
+        role: Option<people::Role>,
+    ) -> bool {
+        if person == context.requester {
+            return true;
+        }
+        let Some(role) = role else { return false };
+        match self.escalation_fallback(context.project) {
+            Some(tasks::EscalationHolder::Role { role: selected, .. }) => role.number() == selected,
+            Some(tasks::EscalationHolder::Task(_) | tasks::EscalationHolder::Person(_)) | None => false,
+        }
+    }
+
+    /// Whether the exact current held route addresses this person.
+    #[must_use]
+    pub fn escalation_standing(context: &tasks::EscalationContext, person: u64, role: Option<people::Role>) -> bool {
+        match &context.escalation {
+            tasks::Escalation::Waiting { holder, .. } => match holder {
+                tasks::EscalationHolder::Task(_) => false,
+                tasks::EscalationHolder::Person(number) => person == *number,
+                tasks::EscalationHolder::Role { project, role: selected } => {
+                    *project == context.project
+                        && match role {
+                            Some(role) => role.number() == *selected,
+                            None => false,
+                        }
+                }
+            },
+            tasks::Escalation::Unheld { .. }
+            | tasks::Escalation::Routing { .. }
+            | tasks::Escalation::Rejected { .. } => false,
+        }
+    }
+
     /// Recheck a person's current funding and authority before releasing a
     /// held task's escalation.
     #[must_use]

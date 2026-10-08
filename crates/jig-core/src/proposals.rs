@@ -3,10 +3,11 @@
 
 use alloc::boxed::Box;
 use jig_core_authority as authority;
+use jig_core_people as people;
 use jig_core_tasks as tasks;
 use skein_lib::{List, Queue};
 
-use crate::{Core, Limits, translate};
+use crate::{Core, Limits, ProposalDecisionRecord, translate};
 
 fn kind(action: &tasks::ProposalAction) -> (tasks::ProposalKind, authority::ProposalKind) {
     match action {
@@ -286,5 +287,68 @@ impl Core {
         after: Option<tasks::ProposalHolder>,
     ) -> Option<tasks::ProposalHolder> {
         holder(self, limits, proposer, action, after)
+    }
+}
+
+/// Extract one immutable person-facing final decision from the child's durable row.
+pub(crate) fn decision_record(row: &tasks::Stored) -> Option<ProposalDecisionRecord> {
+    match row {
+        tasks::Stored::PersonProposal(row) => {
+            let (by, choice) = match &row.state {
+                tasks::PersonProposalState::Accepted { by: tasks::Party::Person(by) } => {
+                    (*by, people::ProposalChoice::Accepted)
+                }
+                tasks::PersonProposalState::Rejected { by: tasks::Party::Person(by), .. } => {
+                    (*by, people::ProposalChoice::Rejected)
+                }
+                tasks::PersonProposalState::Pending { .. }
+                | tasks::PersonProposalState::Accepted {
+                    by: tasks::Party::Task(_) | tasks::Party::Deployment { .. },
+                }
+                | tasks::PersonProposalState::Rejected {
+                    by: tasks::Party::Task(_) | tasks::Party::Deployment { .. },
+                    ..
+                } => return None,
+            };
+            Some(ProposalDecisionRecord {
+                project: row.project,
+                proposer: tasks::Party::Person(row.proposer),
+                proposal: row.number,
+                kind: tasks::ProposalKind::Batch,
+                by,
+                choice,
+            })
+        }
+        tasks::Stored::History(history) => {
+            let proposal = history.proposal.as_ref()?;
+            let (by, choice) = match &proposal.state {
+                tasks::ProposalState::Accepted { by: tasks::Party::Person(by) } => {
+                    (*by, people::ProposalChoice::Accepted)
+                }
+                tasks::ProposalState::Rejected { by: tasks::Party::Person(by), .. } => {
+                    (*by, people::ProposalChoice::Rejected)
+                }
+                tasks::ProposalState::Pending { .. }
+                | tasks::ProposalState::Withdrawn
+                | tasks::ProposalState::Accepted { by: tasks::Party::Task(_) | tasks::Party::Deployment { .. } }
+                | tasks::ProposalState::Rejected {
+                    by: tasks::Party::Task(_) | tasks::Party::Deployment { .. }, ..
+                } => return None,
+            };
+            Some(ProposalDecisionRecord {
+                project: proposal.project,
+                proposer: tasks::Party::Task(proposal.proposer),
+                proposal: proposal.number,
+                kind: kind(&proposal.action).0,
+                by,
+                choice,
+            })
+        }
+        tasks::Stored::Live(_)
+        | tasks::Stored::Ended(_)
+        | tasks::Stored::Ledger(_)
+        | tasks::Stored::Writer(_)
+        | tasks::Stored::Pool(_)
+        | tasks::Stored::Stub(_) => None,
     }
 }

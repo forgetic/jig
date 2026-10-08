@@ -1,0 +1,25 @@
+struct AnswerV2;
+fn finish_v19() {}
+struct TypedCall;
+struct UntypedCall;
+struct LegacyCall;
+fn assign_typed() {}
+fn legacy_call() {}
+// LEGACY boundary.
+/* current boundary
+   /* legacy boundary */
+*/
+const TEXT: &str = "// legacy TypedCall \" AnswerV2";
+const RAW: &str = r###"/* legacy */ UntypedCall " quoted"###;
+const BYTES: &[u8] = br#"// legacy FinishV2"#;
+const C_TEXT: &CStr = cr#"// legacy FinishV2"#;
+const QUOTE: char = '"';
+const HASH: char = '\u{23}';
+const BYTE: u8 = b'\x23';
+fn current<'a>(input: &'a str) -> &'a str { input }
+struct Prototype;
+struct Typedness;
+struct Conversation;
+struct Snapshot;
+struct Restart;
+struct Attempt;

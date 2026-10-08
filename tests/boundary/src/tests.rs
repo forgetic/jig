@@ -125,8 +125,7 @@ fn word_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric()
 }
 
-fn vocabulary_breaches(path: &Path, source: &str, words: &[String]) -> Vec<String> {
-    let lower = source.to_ascii_lowercase();
+fn vocabulary_breaches(path: &Path, source: &str, lower: &str, words: &[String]) -> Vec<String> {
     let mut breaches = Vec::new();
     for word in words {
         for (index, _) in lower.match_indices(word) {
@@ -209,7 +208,7 @@ fn host_hub_links_only_skein() {
 }
 
 #[test]
-fn kit_sources_name_no_application_or_system_even_when_empty() {
+fn kit_sources_keep_the_kit_vocabulary() {
     let mut files = Vec::new();
     source_files(&kit_root(), &[".rs", "Cargo.toml"], &mut files);
     let words = forbidden_words();
@@ -217,7 +216,12 @@ fn kit_sources_name_no_application_or_system_even_when_empty() {
         .iter()
         .flat_map(|path| {
             let source = fs::read_to_string(path).expect("source is readable");
-            vocabulary_breaches(path, &source, &words)
+            let lower = source.to_ascii_lowercase();
+            let mut failures = vocabulary_breaches(path, &source, &lower, &words);
+            if path.extension().is_some_and(|extension| extension == "rs") {
+                failures.extend(super::names::breaches(path, &source, &lower));
+            }
+            failures
         })
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
@@ -240,6 +244,27 @@ fn fixtures_name_the_path_and_the_breach() {
 
     let word = ["for", "ge"].concat();
     let source = format!("const SUBJECT: &str = \"{word}\";");
-    let failures = vocabulary_breaches(Path::new("fixture/src/lib.rs"), &source, &forbidden_words());
+    let failures =
+        vocabulary_breaches(Path::new("fixture/src/lib.rs"), &source, &source.to_ascii_lowercase(), &forbidden_words());
     assert_eq!(failures, [format!("fixture/src/lib.rs: {word}")]);
+}
+
+#[test]
+fn name_fixture_reports_each_file_line_and_breach() {
+    let source = include_str!("../fixtures/names.txt");
+    let failures = super::names::breaches(Path::new("fixture/names.rs"), source, &source.to_ascii_lowercase());
+    assert_eq!(
+        failures,
+        [
+            "fixture/names.rs:1: identifier AnswerV2",
+            "fixture/names.rs:2: identifier finish_v19",
+            "fixture/names.rs:3: identifier TypedCall",
+            "fixture/names.rs:4: identifier UntypedCall",
+            "fixture/names.rs:5: identifier LegacyCall",
+            "fixture/names.rs:6: identifier assign_typed",
+            "fixture/names.rs:7: identifier legacy_call",
+            "fixture/names.rs:8: comment LEGACY",
+            "fixture/names.rs:10: comment legacy",
+        ]
+    );
 }

@@ -34,6 +34,8 @@ pub struct Policy {
     pub escalation_role: Option<u32>,
     /// Project authority ceiling, no greater than the deployment ceiling.
     pub ceiling: Authority,
+    /// Grants for goal projection writes, independent of task grants and funding.
+    pub projections: Box<[crate::Grant]>,
     /// Project period ceiling, no greater than deployment period spend.
     pub period_spend: u64,
     /// Distinct numbered roles, bounded by `Limits::roles` and the project ceiling.

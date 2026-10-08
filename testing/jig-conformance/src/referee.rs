@@ -98,6 +98,8 @@ pub enum Phase {
 /// The externally visible parts of one durable task row.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Task {
+    /// This task has goal projection state.
+    pub tracked: bool,
     pub number: u64,
     pub project: u32,
     pub source: Source,
@@ -187,6 +189,8 @@ pub struct Kind {
 /// One newly durable effect decision; retained across removal and restart.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Decision {
+    /// This effect projects a tracked goal under project policy.
+    pub projection: bool,
     pub connector: u16,
     pub key: SystemKey,
     pub kind: u16,
@@ -230,6 +234,8 @@ pub struct Snapshot {
 pub struct Policy {
     pub deployment: Scope,
     pub projects: BTreeMap<u32, Scope>,
+    /// Grants supplied by scenario policy for goal projection writes.
+    pub projections: BTreeMap<u32, Vec<Grant>>,
     pub people: BTreeMap<(u32, u64), Scope>,
     pub effect_accepters: BTreeSet<(u32, u64)>,
     pub requirements: Vec<Requirement>,
@@ -537,6 +543,10 @@ impl Referee {
                 require(earlier == decision, Promise::Once, "an existing key changed its decided payload")?;
             } else {
                 self.decision(decision, &snapshot, now)?;
+                if decision.projection {
+                    self.decisions.insert(key, decision.clone());
+                    continue;
+                }
                 let payer = match decision.accepted_by {
                     Some(Source::Person(person)) => (true, person),
                     Some(Source::Task(task)) => (false, task),
@@ -577,10 +587,21 @@ impl Referee {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one committed effect checks task or projection policy, funding and requirements"
+    )]
     fn decision(&self, decision: &Decision, snapshot: &Snapshot, now: u64) -> Result<(), Violation> {
         let task = snapshot.tasks.get(&decision.key.task);
         require(task.is_some(), Promise::Authority, "effect has no admitted task")?;
         let task = task.expect("checked task");
+        if decision.projection {
+            require(
+                task.tracked && decision.accepted_by.is_none(),
+                Promise::Authority,
+                "projection requires a tracked goal and no proposal exception",
+            )?;
+        }
         if let Some(by) = decision.accepted_by {
             let acceptance = snapshot.acceptances.get(&(decision.connector, decision.key));
             let pending = self.last.tasks.get(&task.number).and_then(|task| task.proposal);
@@ -603,11 +624,20 @@ impl Referee {
                 "effect exception has no prior proposal and durable covered-holder acceptance",
             )?;
         }
-        let holder = match decision.accepted_by {
-            Some(Source::Person(person)) => self.policy.people.get(&(task.project, person)),
-            Some(Source::Task(holder)) => snapshot.tasks.get(&holder).map(|task| &task.scope),
-            Some(Source::Deployment) => Some(&self.policy.deployment),
-            None => Some(&task.scope),
+        let projection;
+        let holder = if decision.projection {
+            projection = Scope {
+                grants: self.policy.projections.get(&task.project).cloned().unwrap_or_default(),
+                ..self.policy.projects[&task.project].clone()
+            };
+            Some(&projection)
+        } else {
+            match decision.accepted_by {
+                Some(Source::Person(person)) => self.policy.people.get(&(task.project, person)),
+                Some(Source::Task(holder)) => snapshot.tasks.get(&holder).map(|task| &task.scope),
+                Some(Source::Deployment) => Some(&self.policy.deployment),
+                None => Some(&task.scope),
+            }
         };
         require(holder.is_some(), Promise::Authority, "proposal acceptance names no covered holder")?;
         let scope = holder.expect("covered holder");
@@ -638,7 +668,7 @@ impl Referee {
             }
         };
         require(
-            charged.is_some_and(|charged| charged >= price),
+            decision.projection || charged.is_some_and(|charged| charged >= price),
             Promise::Spend,
             "priced effect was not charged its maximum in its deciding commit",
         )?;

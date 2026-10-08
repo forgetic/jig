@@ -27,6 +27,7 @@ fn scope() -> Scope {
 
 fn policy(recovery: Recovery) -> Policy {
     Policy {
+        projections: BTreeMap::new(),
         deployment: scope(),
         projects: BTreeMap::from([(1, scope())]),
         people: BTreeMap::from([((1, 1), scope())]),
@@ -45,6 +46,7 @@ fn policy(recovery: Recovery) -> Policy {
 
 fn task(number: u64) -> Task {
     Task {
+        tracked: false,
         number,
         project: 1,
         source: Source::Person(1),
@@ -73,6 +75,7 @@ fn key() -> SystemKey {
 
 fn decision() -> Decision {
     Decision {
+        projection: false,
         connector: 1,
         key: key(),
         kind: 5,
@@ -565,4 +568,30 @@ fn durable_words_reach_the_task_even_while_its_requester_keeps_execution_held() 
     fake.send(Observed::Words { task: 1, message: 9 }).expect("person's words accepted");
     fake.now = 100;
     fake.send(Observed::Restart).expect("execution need not run to retain delivered words");
+}
+
+#[test]
+fn projections_need_project_grants_and_a_tracked_goal_and_charge_no_task() {
+    for invalid in [None, Some(0), Some(1)] {
+        let mut fake = Fake::new(Recovery::Keyed);
+        fake.referee.policy.projections.insert(1, scope().grants);
+        let mut rows = snapshot();
+        let goal = rows.tasks.get_mut(&1).expect("fixture goal");
+        goal.tracked = true;
+        goal.scope.grants.clear();
+        goal.spent = 0;
+        rows.decisions[0].projection = true;
+        match invalid {
+            None => assert!(fake.commit(1, rows).is_ok(), "projection uses no task grant or budget"),
+            Some(0) => {
+                fake.referee.policy.projections.clear();
+                assert_eq!(fake.commit(1, rows).expect_err("missing projection grant").promise, Promise::Authority);
+            }
+            Some(1) => {
+                rows.tasks.get_mut(&1).expect("fixture goal").tracked = false;
+                assert_eq!(fake.commit(1, rows).expect_err("untracked task").promise, Promise::Authority);
+            }
+            Some(_) => unreachable!(),
+        }
+    }
 }

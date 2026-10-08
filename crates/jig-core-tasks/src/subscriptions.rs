@@ -28,6 +28,18 @@ fn hint_of(kind: MessageKind) -> Option<u64> {
 pub(crate) fn credit(task: &crate::TaskRecord, limits: &Limits) -> Option<(usize, usize)> {
     let mut count = 0_usize;
     let mut bytes = 0_usize;
+    // A tracked goal keeps one merged core-news slot, numbered zero because
+    // externally assigned subscriptions are nonzero (domain/connectors.md, 8).
+    if task.tracked.is_some() {
+        let mut waiting = false;
+        for word in &task.inbox {
+            waiting |= hint_of(word.kind) == Some(0);
+        }
+        if !waiting {
+            count = count.checked_add(1)?;
+            bytes = bytes.checked_add(usize::try_from(limits.message_bytes).ok()?)?;
+        }
+    }
     for subscription in &task.subscriptions {
         let mut waiting = false;
         for word in &task.inbox {
@@ -175,7 +187,19 @@ pub(crate) fn unsubscribe(
 pub(crate) fn notice(domain: &mut Domain, env: &Env<Limits>, number: u64, word: Word, out: &mut Queue<Request>) {
     let Some(task) = record(domain, number) else { return };
     let Some(subscription_number) = hint_of(word.kind) else { return };
-    let Some(subscription) = find(task, subscription_number) else { return };
+    let subscription = match find(task, subscription_number) {
+        Some(subscription) => subscription,
+        None => {
+            if subscription_number != 0
+                || task.tracked.is_none()
+                || word.kind != (MessageKind::News { subscription: 0, class: NewsClass::Kept })
+                || word.words.len() > usize::try_from(env.limits.message_bytes).expect("u32 fits usize")
+            {
+                return;
+            }
+            Subscription { number: 0, kind: SubscriptionKind::Topic { connector: 0, topic: 0 } }
+        }
+    };
     let matching = match word.kind {
         MessageKind::Notice { target, .. } => match subscription.kind {
             SubscriptionKind::Task { target: watched, .. } => target == watched,

@@ -21,12 +21,12 @@ pub(crate) struct Prepared {
     pub inbox: Box<[Word]>,
 }
 
-fn merge_key(kind: MessageKind) -> Option<u64> {
+fn merge_key(kind: MessageKind) -> Option<(u8, u64)> {
     match kind {
         MessageKind::Notice { subscription, .. }
         | MessageKind::Timer { subscription }
-        | MessageKind::News { subscription, .. } => Some(subscription),
-        MessageKind::Amendment { .. } => Some(0),
+        | MessageKind::News { subscription, .. } => Some((1, subscription)),
+        MessageKind::Amendment { .. } => Some((0, 0)),
         MessageKind::Words
         | MessageKind::Question
         | MessageKind::Answer { .. }

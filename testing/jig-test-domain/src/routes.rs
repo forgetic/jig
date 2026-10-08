@@ -643,6 +643,7 @@ fn route_effect_ask(domain: &mut Domain, number: u16, ask: core::connector::Ask,
             let (attempt, completion, position) = match key.origin {
                 core::EffectPurpose::Call { attempt, completion, position } => (attempt, completion, position),
                 core::EffectPurpose::Procedure { .. } => (0, 0, 0),
+                core::EffectPurpose::Projection { .. } => (0, 0, 1),
             };
             connector::Event::Keep {
                 token: owner,

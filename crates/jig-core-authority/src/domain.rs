@@ -190,7 +190,8 @@ pub fn step(domain: &mut Domain, event: Event, out: &mut Queue<PolicyFact>) {
 }
 
 fn invalid(domain: &Domain, policy: &Policy) -> Option<PolicyRefusal> {
-    if !authority_within(&policy.ceiling, &domain.limits)
+    if !within(policy.projections.len(), domain.limits.grants)
+        || !authority_within(&policy.ceiling, &domain.limits)
         || !within(policy.roles.len(), domain.limits.roles)
         || !requirements_within(&policy.requirements, &domain.limits)
     {
@@ -200,6 +201,18 @@ fn invalid(domain: &Domain, policy: &Policy) -> Option<PolicyRefusal> {
         || policy.period_spend > domain.rules.period_spend
     {
         return Some(PolicyRefusal::AboveRules);
+    }
+    for grant in &policy.projections {
+        if !crate::limits::pattern_within(&grant.pattern, &domain.limits) {
+            return Some(PolicyRefusal::Oversized);
+        }
+        let mut covered = false;
+        for ceiling in &policy.ceiling.grants {
+            covered |= crate::grant_at_most(grant, ceiling, &domain.rules.implies);
+        }
+        if !covered {
+            return Some(PolicyRefusal::AboveRules);
+        }
     }
     for (position, role) in policy.roles.iter().enumerate() {
         if !authority_within(&role.authority, &domain.limits) {

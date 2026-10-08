@@ -422,6 +422,55 @@ pub fn check_effect(domain: &Domain, ask: &EffectAsk, given: &[Given], why: &mut
     answer
 }
 
+/// Check a connector-described projection under live project grants and requirements.
+/// No task authority or funding participates; reserve `max_out` finding slots.
+#[must_use]
+pub fn check_projection(
+    domain: &Domain,
+    project: u32,
+    effect: &Effect,
+    now: Wall,
+    given: &[Given],
+    why: &mut Queue<Finding>,
+) -> Answer {
+    room(domain, why);
+    if !effect_within(effect, domain.limits()) || !within(given.len(), domain.limits().facts) {
+        return refuse(why, Finding::Oversized);
+    }
+    let Some(policy) = domain.policy(project) else { return refuse(why, Finding::UnknownProject) };
+    let mut answer = Answer::Allow;
+    projection_grant(domain, policy, effect, &effect.name, &mut answer, why);
+    for resource in &effect.additional {
+        projection_grant(domain, policy, effect, &resource.name, &mut answer, why);
+    }
+    for (source, holder) in [(Source::Project, &policy.ceiling), (Source::Deployment, &domain.rules().ceiling)] {
+        if !has_grant(holder, effect, domain) {
+            find(&mut answer, why, Answer::Refuse, Finding::Grant { source });
+        }
+    }
+    writable(effect, &mut answer, why);
+    requirements(&domain.rules().requirements, effect, given, now, &mut answer, why);
+    requirements(&policy.requirements, effect, given, now, &mut answer, why);
+    answer
+}
+
+fn projection_grant(
+    domain: &Domain,
+    policy: &Policy,
+    effect: &Effect,
+    name: &crate::Name,
+    answer: &mut Answer,
+    why: &mut Queue<Finding>,
+) {
+    let mut covered = false;
+    for grant in &policy.projections {
+        covered |= grant_covers(grant, effect.connector, effect.kind, name, &domain.rules().implies);
+    }
+    if !covered {
+        find(answer, why, Answer::Refuse, Finding::Grant { source: Source::Project });
+    }
+}
+
 /// Root's pure run-admission check over offered budget, clock/account reports and root-verified
 /// writer holds. Returns the strictest answer and findings; reserve `max_out(domain.limits())` free
 /// slots. No claim, run start, allocation or ledger mutation.

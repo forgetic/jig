@@ -58,7 +58,9 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     let requirements = requirement_heap(limits)?;
     let role_heap = bytes(u64::from(limits.roles), size_of::<Role>())?
         .checked_add(authority.checked_mul(u64::from(limits.roles))?)?;
-    let policy = authority.checked_add(requirements)?.checked_add(role_heap)?;
+    let projections = u64::from(limits.grants)
+        .checked_mul(u64::try_from(size_of::<Grant>()).ok()?.checked_add(pattern_heap(limits)?)?)?;
+    let policy = authority.checked_add(projections)?.checked_add(requirements)?.checked_add(role_heap)?;
     let configured = authority
         .checked_add(requirements)?
         .checked_add(bytes(u64::from(limits.implications), size_of::<Implication>())?)?;

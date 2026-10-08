@@ -89,6 +89,7 @@ fn role(ceiling: Authority) -> Role {
 
 fn policy(ceiling: Authority) -> Policy {
     Policy {
+        projections: Box::new([]),
         escalation_role: None,
         roles: Box::new([role(ceiling.clone())]),
         ceiling,
@@ -1157,6 +1158,7 @@ fn check_full_policy_memory() {
     configured.requirements = full_requirements();
     let mut resident = policy(full_authority());
     resident.requirements = full_requirements();
+    resident.projections = full_authority().grants;
     let first_role = role(full_authority());
     let mut second_role = first_role.clone();
     second_role.number = 8;
@@ -1165,6 +1167,10 @@ fn check_full_policy_memory() {
     held = add(held, u64::from(configured.implies.len()).checked_mul(sized(size_of::<Implication>())).unwrap());
     held = add(held, Map::<u32, Policy>::worst_case(LIMITS.projects).unwrap());
     let mut one = add(authority_heap(&resident.ceiling), requirements_heap(&resident.requirements));
+    one = add(one, sized(size_of_val(resident.projections.as_ref())));
+    for grant in &resident.projections {
+        one = add(one, pattern_heap(&grant.pattern));
+    }
     one = add(one, sized(size_of_val(resident.roles.as_ref())));
     for role in &resident.roles {
         one = add(one, authority_heap(&role.authority));
@@ -1235,4 +1241,99 @@ fn escalation_fallback_requires_accept_and_decide_but_not_direct_release() {
         &mut Queue::with_capacity(max_out(domain.limits()).unwrap()),
     );
     assert_eq!(checked.answer, Answer::Allow, "Accept+Escalation needs no direct Release permission");
+}
+
+#[test]
+fn projection_grants_are_policy_owned_require_verdicts_and_have_no_task_price() {
+    let mut domain = domain();
+    let mut selected = policy(authority());
+    selected.projections = authority().grants;
+    assert_eq!(
+        apply(&mut domain, Event::Policy { project: 1, policy: selected.clone() }),
+        PolicyFact::Changed { project: 1 }
+    );
+    let mut write = effect();
+    write.price = Some(u64::MAX);
+    assert_eq!(
+        crate::check_projection(
+            &domain,
+            1,
+            &write,
+            Wall::from_nanos(0),
+            &[fact(7, Verdict::Met), fact(8, Verdict::Met)],
+            &mut findings(&domain)
+        ),
+        Answer::Allow
+    );
+    assert_eq!(
+        crate::check_projection(
+            &domain,
+            1,
+            &write,
+            Wall::from_nanos(0),
+            &[fact(7, Verdict::Met)],
+            &mut findings(&domain)
+        ),
+        Answer::Wait
+    );
+    assert_eq!(
+        crate::check_projection(
+            &domain,
+            1,
+            &write,
+            Wall::from_nanos(0),
+            &[fact(7, Verdict::Met), fact(8, Verdict::Refuse)],
+            &mut findings(&domain)
+        ),
+        Answer::Refuse
+    );
+    write.additional = Box::new([EffectResource {
+        name: Name { segments: Box::new([copy_of(b"other")]) },
+        access: EffectAccess::Context,
+    }]);
+    assert_eq!(
+        crate::check_projection(
+            &domain,
+            1,
+            &write,
+            Wall::from_nanos(0),
+            &[fact(7, Verdict::Met), fact(8, Verdict::Met)],
+            &mut findings(&domain)
+        ),
+        Answer::Refuse
+    );
+    selected.projections = Box::new([]);
+    assert_eq!(apply(&mut domain, Event::Policy { project: 1, policy: selected }), PolicyFact::Changed { project: 1 });
+    assert_eq!(
+        crate::check_projection(
+            &domain,
+            1,
+            &effect(),
+            Wall::from_nanos(0),
+            &[fact(7, Verdict::Met), fact(8, Verdict::Met)],
+            &mut findings(&domain)
+        ),
+        Answer::Refuse
+    );
+}
+
+#[test]
+fn projection_policy_rejects_oversized_and_above_ceiling_grants_without_replacement() {
+    let mut domain = domain();
+    let mut selected = policy(authority());
+    selected.projections = Box::new([Grant { connector: 2, kind: 3, pattern: pattern() }]);
+    assert_eq!(
+        apply(&mut domain, Event::Policy { project: 1, policy: selected.clone() }),
+        PolicyFact::Refused { project: 1, reason: PolicyRefusal::AboveRules }
+    );
+    let mut grants = skein_lib::List::with_capacity(4);
+    for _ in 0_u32..4 {
+        grants.push(Grant { connector: 1, kind: 3, pattern: pattern() }).expect("four test grants");
+    }
+    selected.projections = grants.into_boxed();
+    assert_eq!(
+        apply(&mut domain, Event::Policy { project: 1, policy: selected }),
+        PolicyFact::Refused { project: 1, reason: PolicyRefusal::Oversized }
+    );
+    assert!(domain.policy(1).unwrap().projections.is_empty());
 }

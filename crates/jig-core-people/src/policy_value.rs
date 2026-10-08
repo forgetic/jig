@@ -17,6 +17,8 @@ pub enum PolicyChange {
     Role(PolicyRole),
     /// Replace the project's system-neutral effect requirements.
     Requirements { requirements: Box<[Requirement]> },
+    /// Replace the grants for writes projecting this project's goals.
+    Projections { grants: Box<[crate::Grant]> },
     /// Replace the map from a connector's permission number to a project role.
     Permissions { mappings: Box<[PermissionRole]> },
 }
@@ -25,6 +27,8 @@ pub enum PolicyChange {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PolicyValue {
     pub period_spend: u64,
+    /// Grants for goal projection writes.
+    pub projections: Box<[crate::Grant]>,
     pub roles: Box<[PolicyRole]>,
     pub requirements: Box<[Requirement]>,
     pub permissions: Box<[PermissionRole]>,
@@ -82,6 +86,7 @@ pub fn policy_bytes(policy: &PolicyValue) -> Option<u64> {
     for role in &policy.roles {
         total = total.checked_add(crate::authority_bytes(&role.authority)?)?;
     }
+    total = total.checked_add(grants_bytes(&policy.projections)?)?;
     total = total.checked_add(requirements_bytes(&policy.requirements)?)?;
     total.checked_add(
         u64::try_from(policy.permissions.len()).ok()?.checked_mul(u64::try_from(size_of::<PermissionRole>()).ok()?)?,
@@ -113,10 +118,29 @@ pub fn requirements_bytes(requirements: &[Requirement]) -> Option<u64> {
 pub fn policy_change_bytes(change: &PolicyChange) -> Option<u64> {
     match change {
         PolicyChange::ProjectSpend { .. } => Some(0),
+        PolicyChange::Projections { grants } => grants_bytes(grants),
         PolicyChange::Role(role) => crate::authority_bytes(&role.authority),
         PolicyChange::Requirements { requirements } => requirements_bytes(requirements),
         PolicyChange::Permissions { mappings } => {
             u64::try_from(mappings.len()).ok()?.checked_mul(u64::try_from(size_of::<PermissionRole>()).ok()?)
         }
     }
+}
+
+fn grants_bytes(grants: &[crate::Grant]) -> Option<u64> {
+    let mut total = u64::try_from(grants.len()).ok()?.checked_mul(u64::try_from(size_of::<crate::Grant>()).ok()?)?;
+    for grant in grants {
+        total = total.checked_add(
+            u64::try_from(grant.pattern.segments.len())
+                .ok()?
+                .checked_mul(u64::try_from(size_of::<Box<[u8]>>()).ok()?)?,
+        )?;
+        for segment in &grant.pattern.segments {
+            total = total.checked_add(u64::try_from(segment.len()).ok()?)?;
+        }
+        total = total.checked_add(match &grant.pattern.last {
+            Last::Exact(value) | Last::Open(value) => u64::try_from(value.len()).ok()?,
+        })?;
+    }
+    Some(total)
 }

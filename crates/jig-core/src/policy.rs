@@ -176,6 +176,7 @@ pub(crate) fn apply(
     roles_limit: u32,
 ) -> Option<()> {
     match change {
+        people::PolicyChange::Projections { grants } => policy.projections = grants_to_authority(grants)?,
         people::PolicyChange::ProjectSpend { period_spend } => policy.period_spend = period_spend,
         people::PolicyChange::Role(edit) => {
             if edit.number <= 3 && !role_exists(policy, edit.number) {
@@ -250,6 +251,7 @@ pub(crate) fn snapshot(
     }
     Some(people::PolicyValue {
         period_spend: policy.period_spend,
+        projections: grants_to_people(&policy.projections)?,
         roles: roles.into_boxed(),
         requirements: requirements.into_boxed(),
         permissions: Box::from(permissions),
@@ -264,6 +266,7 @@ pub(crate) fn restore(
     limit: u32,
 ) -> Option<()> {
     policy.period_spend = value.period_spend;
+    policy.projections = grants_to_authority(value.projections)?;
     let mut roles = List::with_capacity(u32::try_from(value.roles.len()).ok()?);
     for role in value.roles {
         roles
@@ -365,4 +368,31 @@ impl Core {
         facts.pop() == Some(authority::PolicyFact::Changed { project })
             && self.permission_roles.insert(project, permissions).is_ok()
     }
+}
+
+fn grants_to_authority(grants: Box<[people::Grant]>) -> Option<Box<[authority::Grant]>> {
+    let mut result = List::with_capacity(u32::try_from(grants.len()).ok()?);
+    for grant in grants {
+        result
+            .push(authority::Grant {
+                connector: grant.connector,
+                kind: grant.kind,
+                pattern: pattern_to_authority(grant.pattern),
+            })
+            .ok()?;
+    }
+    Some(result.into_boxed())
+}
+fn grants_to_people(grants: &[authority::Grant]) -> Option<Box<[people::Grant]>> {
+    let mut result = List::with_capacity(u32::try_from(grants.len()).ok()?);
+    for grant in grants {
+        result
+            .push(people::Grant {
+                connector: grant.connector,
+                kind: grant.kind,
+                pattern: pattern_to_people(&grant.pattern),
+            })
+            .ok()?;
+    }
+    Some(result.into_boxed())
 }

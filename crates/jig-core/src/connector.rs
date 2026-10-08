@@ -513,30 +513,20 @@ impl Core {
         authority::needed_judges(&self.authority, project, effect)
     }
 
-    /// Check an effect made for a committed goal snapshot, using the task's
-    /// authentic authority and funding rather than a live run context.
+    /// Check a connector-described projection against live project grants and
+    /// requirements, independently of goal grants and funding (domain/authority.md, 6).
     pub fn connector_goal_effect_admit(
         &self,
         goal: &tasks::TaskRecord,
         description: &EffectDescription,
         now: Wall,
+        given: &[authority::Given],
         findings: &mut Queue<authority::Finding>,
     ) -> authority::Answer {
         if description.connector != description.effect.connector {
             return authority::Answer::Refuse;
         }
-        authority::check_effect(
-            &self.authority,
-            &authority::EffectAsk {
-                project: goal.project,
-                authority: translate::authority_value(&goal.authority),
-                numbers: translate::authority_numbers(goal.numbers),
-                effect: description.effect.clone(),
-                now,
-            },
-            &[],
-            findings,
-        )
+        authority::check_projection(&self.authority, goal.project, &description.effect, now, given, findings)
     }
 
     /// Check the write named by a connector for a run being prepared.

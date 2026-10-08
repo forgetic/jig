@@ -162,6 +162,12 @@ pub enum Event {
         number: u16,
         event: connector::Event,
     },
+    /// A scripted connector's projection write for a tracked goal.
+    ProjectionEffect {
+        goal: u64,
+        number: u16,
+        effect: connector::Effect,
+    },
     /// A decoded named effect call, whose payload stays with its connector.
     EffectCall {
         to: ReplyTo,
@@ -338,6 +344,11 @@ impl Domain {
 
 #[expect(clippy::large_enum_variant, reason = "the bounded route queue owns complete core events")]
 enum Work {
+    ProjectionEffect {
+        goal: u64,
+        number: u16,
+        effect: connector::Effect,
+    },
     ConnectorFire {
         number: u16,
     },
@@ -430,6 +441,9 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
         }
         Event::Committed { number } => domain.journal.committed(number),
         Event::Failed { number } => domain.journal.failed(number),
+        Event::ProjectionEffect { goal, number, effect } => {
+            decide(domain, env, Work::ProjectionEffect { goal, number, effect });
+        }
         Event::EffectCall { to, key, number, effect, deadline, proposal } => {
             decide(domain, env, Work::EffectCall { to, key, number, effect, deadline, proposal });
         }
@@ -458,6 +472,7 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
         | Work::Connector { .. }
         | Work::ConnectorResume { .. }
         | Work::ConnectorFire { .. }
+        | Work::ProjectionEffect { .. }
         | Work::EffectCall { .. }
         | Work::Turn { .. }
         | Work::Answer { .. } => core::room_max(&env.limits.core),
@@ -522,6 +537,14 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
                 work.push(Work::Restart(request));
             }
 
+            Work::ProjectionEffect { goal, number, effect } => {
+                let owner = effect_payload(domain, effect);
+                work.push(Work::Core(core::Event::EffectStart {
+                    owner,
+                    connector: number,
+                    origin: core::EffectOrigin::Projection { goal, entry: None },
+                }));
+            }
             Work::EffectCall { to, key, number, effect, deadline, proposal } => {
                 let owner = effect_payload(domain, effect);
                 let origin = match proposal {

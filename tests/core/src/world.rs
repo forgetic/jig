@@ -38,7 +38,7 @@ pub fn limits() -> root::Limits {
         parameters: 1,
         result_bytes: 128,
         inbox_messages: 4,
-        inbox_bytes: 128,
+        inbox_bytes: 192,
         message_bytes: 64,
         proposal_stall: Duration::from_millis(10),
         escalation_stall: Duration::from_secs(3600),
@@ -197,6 +197,7 @@ pub fn config(seed: u64) -> root::Config {
     };
     let mut domain = authority::Domain::new(rules, authority_limits()).expect("valid authority configuration");
     let policy = authority::Policy {
+        projections: Box::new([]),
         escalation_role: Some(0),
         ceiling,
         period_spend: 1000,

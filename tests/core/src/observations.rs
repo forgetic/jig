@@ -36,15 +36,7 @@ fn scope(value: &authority::Authority) -> r::Scope {
         deadline: value.budget.deadline.map(skein_lib::Wall::as_nanos),
         tools: value.tools.0,
         notes: value.notes.0,
-        grants: value
-            .grants
-            .iter()
-            .map(|grant| r::Grant {
-                connector: grant.connector,
-                kind: grant.kind,
-                pattern: authority_pattern(&grant.pattern),
-            })
-            .collect(),
+        grants: authority_grants(&value.grants),
         executors: value
             .delegation
             .kinds
@@ -63,6 +55,17 @@ fn scope(value: &authority::Authority) -> r::Scope {
             .map(|resource| (resource.connector, authority_pattern(&resource.pattern)))
             .collect(),
     }
+}
+
+fn authority_grants(grants: &[authority::Grant]) -> Vec<r::Grant> {
+    grants
+        .iter()
+        .map(|grant| r::Grant {
+            connector: grant.connector,
+            kind: grant.kind,
+            pattern: authority_pattern(&grant.pattern),
+        })
+        .collect()
 }
 
 fn task_scope(value: &tasks::Authority) -> r::Scope {
@@ -129,6 +132,7 @@ fn phase(value: &tasks::Phase) -> r::Phase {
 
 fn task(value: &tasks::TaskRecord) -> r::Task {
     r::Task {
+        tracked: value.tracked.is_some(),
         number: value.number,
         project: value.project,
         source: source(value.requester),
@@ -210,6 +214,7 @@ impl Observer {
         let mut policy = r::Policy {
             deployment: scope(&deployment.ceiling),
             projects: BTreeMap::new(),
+            projections: BTreeMap::new(),
             people: BTreeMap::new(),
             effect_accepters: BTreeSet::new(),
             requirements: Vec::new(),
@@ -228,6 +233,7 @@ impl Observer {
         for &project in &configuration.core.projects {
             if let Some(value) = configuration.core.authority.policy(project) {
                 policy.projects.insert(project, scope(&value.ceiling));
+                policy.projections.insert(project, authority_grants(&value.projections));
                 for role in &value.roles {
                     roles.insert((project, role.number), scope(&role.authority));
                     decisions_by_role.insert((project, role.number), role.decides.0);
@@ -372,6 +378,7 @@ impl Observer {
             | root::Event::Timer(_)
             | root::Event::Core(_)
             | root::Event::Connector { .. }
+            | root::Event::ProjectionEffect { .. }
             | root::Event::EffectCall { .. }
             | root::Event::TranscriptLoaded { .. }
             | root::Event::Committed { .. }
@@ -405,6 +412,19 @@ impl Observer {
 
     fn policy_change(&mut self, project: u32, change: &people::PolicyChange) {
         match change {
+            people::PolicyChange::Projections { grants } => {
+                self.referee.policy.projections.insert(
+                    project,
+                    grants
+                        .iter()
+                        .map(|grant| r::Grant {
+                            connector: grant.connector,
+                            kind: grant.kind,
+                            pattern: person_pattern(&grant.pattern),
+                        })
+                        .collect(),
+                );
+            }
             people::PolicyChange::Role(role) => {
                 self.roles.insert((project, role.number), person_scope(&role.authority));
                 self.decisions_by_role.insert((project, role.number), role.decides);
@@ -647,6 +667,7 @@ impl Observer {
                         snapshot.held_effects.insert((*number, value.key.into()));
                     }
                     snapshot.decisions.push(r::Decision {
+                        projection: value.key.attempt == 0 && value.key.completion == 0 && value.key.position == 1,
                         connector: *number,
                         key: value.key.into(),
                         kind: value.effect.kind,

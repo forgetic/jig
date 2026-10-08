@@ -213,6 +213,8 @@ pub struct Snapshot {
     pub writers: Vec<(Name, u64, u64)>,
     pub pools: BTreeMap<Name, u32>,
     pub decisions: Vec<Decision>,
+    /// Last attempt number and absolute retry deadline for each durable key.
+    pub attempts: BTreeMap<(u16, SystemKey), (u32, u64)>,
     pub acceptances: BTreeMap<(u16, SystemKey), Acceptance>,
     pub held_effects: BTreeSet<(u16, SystemKey)>,
     pub settled_effects: BTreeSet<(u16, SystemKey)>,
@@ -276,6 +278,8 @@ pub enum Observed {
     Heap { held: u64, maximum: u64 },
     /// Durable receipt view read afresh on a cold start.
     ColdStore { receipts: BTreeSet<Receipt> },
+    /// One external load in the application's independently declared order.
+    RestartStage { position: u32 },
     /// A cold start; the outside ledgers and deadlines survive it.
     Restart,
     /// One world iteration; the scenario chooses its finite story bound.
@@ -330,6 +334,7 @@ pub struct Referee {
     uncertain: BTreeMap<(u16, SystemKey), u64>,
     retry: BTreeSet<(u16, SystemKey)>,
     steps: u64,
+    restart_position: u32,
 }
 
 fn require(holds: bool, promise: Promise, why: impl Into<String>) -> Result<(), Violation> {
@@ -358,6 +363,7 @@ impl Referee {
             uncertain: BTreeMap::new(),
             retry: BTreeSet::new(),
             steps: 0,
+            restart_position: 0,
         }
     }
 
@@ -511,6 +517,18 @@ impl Referee {
                 Promise::Order,
                 "pool admitted a holder beyond its known slots or while shrinking",
             )?;
+        }
+        for (key, attempt) in &snapshot.attempts {
+            if let Some(previous) = self.last.attempts.get(key) {
+                require(attempt.0 >= previous.0, Promise::Once, "durable attempt number went backwards")?;
+                if attempt.0 == previous.0 {
+                    require(
+                        attempt.1 == previous.1,
+                        Promise::Once,
+                        "same attempt changed its absolute retry deadline",
+                    )?;
+                }
+            }
         }
         let mut maxima: BTreeMap<(bool, u64), u64> = BTreeMap::new();
         for decision in &snapshot.decisions {
@@ -872,7 +890,11 @@ impl Referee {
                     )?;
                 }
             }
-            Observed::Restart => {}
+            Observed::RestartStage { position } => {
+                require(position == self.restart_position, Promise::Order, "root performed a cold load out of order")?;
+                self.restart_position += 1;
+            }
+            Observed::Restart => self.restart_position = 0,
             Observed::Tick => {
                 self.steps += 1;
                 require(

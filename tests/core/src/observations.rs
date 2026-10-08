@@ -639,6 +639,9 @@ impl Observer {
                 root::Record::Connector { number, record: connector::Record::Outbox(value) } => {
                     if let Some(attempt) = value.attempt {
                         snapshot.receipts.insert(r::Receipt::Outbox(*number, value.key.into(), attempt.number));
+                        snapshot
+                            .attempts
+                            .insert((*number, value.key.into()), (attempt.number, attempt.deadline.as_nanos()));
                     }
                     if value.phase == connector::EffectPhase::Held {
                         snapshot.held_effects.insert((*number, value.key.into()));

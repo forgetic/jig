@@ -25,16 +25,30 @@ pub struct Config {
     pub workers: u32,
     pub scenario: Option<Scenario>,
     limits: root::Limits,
+    fault: negative::Fault,
 }
 
 impl Config {
     /// Construct seeded vocabulary and retain its limits for each iteration.
     #[must_use]
     pub fn new(seed: u64, engine: bool, workers: u32, scenario: Option<Scenario>) -> Self {
-        let mut config =
-            Self { seed, engine, workers, scenario, limits: jig_core_world::peers::fixture(seed, u32::from(engine)).1 };
+        let mut config = Self {
+            seed,
+            engine,
+            workers,
+            scenario,
+            limits: jig_core_world::peers::fixture(seed, u32::from(engine)).1,
+            fault: negative::Fault::None,
+        };
         config.limits = config.root().1;
         config
+    }
+
+    /// Choose one deliberate boundary corruption for a referee sensitivity story.
+    #[must_use]
+    pub fn broken(mut self, fault: negative::Fault) -> Self {
+        self.fault = fault;
+        self
     }
 
     fn root(self) -> (root::Config, root::Limits) {
@@ -110,6 +124,8 @@ pub struct Neighbours {
     pub initial_assignments: usize,
     pub pending_proposal: Option<u64>,
     pub saved_deadline: Option<Wall>,
+    fault: negative::Fault,
+    routes: Vec<jig_conformance::referee::Observed>,
 }
 
 #[derive(Debug)]
@@ -315,6 +331,8 @@ impl Application for Testing {
             initial_assignments: 0,
             pending_proposal: None,
             saved_deadline: None,
+            fault: config.fault,
+            routes: Vec::new(),
         }
     }
 
@@ -362,6 +380,7 @@ impl Application for Testing {
 
     fn step(domain: &mut root::Domain, config: &Config, clock: Clock, input: Input<root::Event, root::Record>) {
         let env = env(config, clock);
+        let input = negative::input(domain, config, clock, input);
         match input {
             Input::Event(event) => root::step(domain, &env, event),
             Input::Committed(number) => root::step(domain, &env, root::Event::Committed { number }),
@@ -393,7 +412,7 @@ impl Application for Testing {
                 root::Request::Stop => Output::Stop,
             });
         }
-        outputs
+        negative::released(domain, config, clock, outputs)
     }
 
     fn inbound(peers: &mut Neighbours, store: &Store, clock: Clock, event: &mut root::Event) {
@@ -408,6 +427,7 @@ impl Application for Testing {
         clock: Clock,
         delivery: Delivery,
     ) -> Vec<Input<root::Event, root::Record>> {
+        let delivery = negative::delivery(peers.fault, delivery);
         let Delivery::Held(mut delivery) = delivery else {
             return match delivery {
                 Delivery::Now(core::Now::Call { to, run, attempt, call }) => {
@@ -442,7 +462,18 @@ impl Application for Testing {
         peers.observer.delivered(clock.now, &mut delivery);
         peers.peers.delivered(&delivery);
         match delivery {
-            root::Delivery::Restart(step) => peers.restart(store, step),
+            root::Delivery::Restart(step) => {
+                let position = match step {
+                    core::RestartStep::LoadCore => 0,
+                    core::RestartStep::RestoreConnector { connector } => u32::from(connector),
+                    core::RestartStep::ReadAfresh { connector } => 2 + u32::from(connector),
+                    core::RestartStep::AdoptRuns | core::RestartStep::SettleOutbox { .. } | core::RestartStep::Open => {
+                        panic!("root performs internal restart phases")
+                    }
+                };
+                peers.routes.push(jig_conformance::referee::Observed::RestartStage { position });
+                peers.restart(store, step)
+            }
             root::Delivery::Assigned { assignment, .. } => {
                 peers.assignments.push((assignment.task, assignment.attempt));
                 Vec::new()
@@ -453,6 +484,9 @@ impl Application for Testing {
                 Vec::new()
             }
             root::Delivery::System { connector: number, call } => {
+                if peers.fault == negative::Fault::RepeatedEffect {
+                    negative::repeat(&mut systems[usize::from(number - 1)], &call);
+                }
                 let mut fault = jig_test_system::Fault::None;
                 if matches!(call, connector::SystemRequest::Apply { .. }) {
                     if peers.hold_writes {
@@ -561,7 +595,9 @@ impl Application for Testing {
         peers.observer.durable(clock.now, store);
         peers.observer.systems(clock.now, systems);
         peers.observer.workers(clock.now, &peers.peers.workers);
-        peers.observer.take()
+        let mut observed = std::mem::take(&mut peers.routes);
+        observed.extend(peers.observer.take());
+        observed
     }
 
     fn ready(domain: &root::Domain) -> bool {
@@ -585,3 +621,5 @@ impl Application for Testing {
 
 pub mod actions;
 pub mod scenarios;
+
+pub mod negative;

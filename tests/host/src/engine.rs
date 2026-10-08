@@ -22,8 +22,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jig_host::{
-    AgentFailure, Assignment, AssignmentTyped, Bounce, EndingV2, Event, Failure, Hosting, Invalid, Limits, Preparation,
-    Reason, Refusal, Request, RunFailure, Workspace,
+    AgentFailure, Assignment, Bounce, Ending, Event, Failure, Hosting, Invalid, Limits, Preparation, Reason, Refusal,
+    Request, RunAssignment, RunFailure, Workspace,
 };
 use skein_lib::{Duration, ReplyTo, Rng, Token};
 use skein_world::domain::Span;
@@ -187,12 +187,12 @@ impl Engine {
     /// Takes the host's request `request`, which is for the engine.
     pub fn take(&mut self, request: Request) -> Vec<Act> {
         match request {
-            Request::AnswerV2 { to, run, attempt, answer } => {
+            Request::Answer { to, run, attempt, answer } => {
                 assert_eq!(to, ReplyTo::new(run), "an answer goes to its assignment");
                 self.answered(run, attempt, &answer.ending);
                 Vec::new()
             }
-            Request::RelayTyped { run, attempt, delivery: call, .. } => self.relay(run, attempt, call),
+            Request::Relay { run, attempt, delivery: call, .. } => self.relay(run, attempt, call),
             Request::Bounced { name: _, run: _, attempt: _, bounce } => {
                 match bounce {
                     Bounce::TooLarge => self.tally.too_large += 1,
@@ -208,11 +208,11 @@ impl Engine {
             | Request::CancelRelay { .. }
             | Request::Prepare { .. }
             | Request::Abort { .. }
-            | Request::StartTyped { .. }
-            | Request::DeliverTyped { .. }
-            | Request::ReplyTyped { .. }
+            | Request::Start { .. }
+            | Request::Message { .. }
+            | Request::Reply { .. }
             | Request::Stop { .. }
-            | Request::DeliverV2 { .. }
+            | Request::Deliver { .. }
             | Request::Save { .. }
             | Request::Release { .. }
             | Request::Grant { .. } => unreachable!("for the top level or the parent"),
@@ -253,7 +253,7 @@ impl Engine {
         let (assignment, invalid) = self.draw(run, attempt);
         let assigned = Assigned { invalid, next: 0, cancelled: false };
         assert!(self.open.insert((run, attempt), assigned).is_none(), "an attempt is assigned once");
-        acts.push(Self::host(Event::AssignTyped { reply_to: ReplyTo::new(run), assignment }, false));
+        acts.push(Self::host(Event::Assign { reply_to: ReplyTo::new(run), assignment }, false));
         // What it sends the run while it is in flight.
         let events = self.rng.below(u64::from(self.script.events) + 1);
         let mut at = Duration::ZERO;
@@ -274,7 +274,7 @@ impl Engine {
 
     /// An assignment for `run`'s attempt `attempt`, and the refusal it
     /// expects if it is beyond the limits.
-    fn draw(&mut self, run: Token, attempt: Token) -> (AssignmentTyped, Option<Invalid>) {
+    fn draw(&mut self, run: Token, attempt: Token) -> (Assignment, Option<Invalid>) {
         let charter = bytes(self.rng.between(1, self.limits.charter_bytes));
         let turns = if self.rng.chance(self.script.transcripts) {
             vec![bytes(
@@ -284,7 +284,7 @@ impl Engine {
         } else {
             Box::new([])
         };
-        let assignment = Assignment {
+        let assignment = RunAssignment {
             grants: Box::new([]),
             run,
             attempt,
@@ -292,7 +292,7 @@ impl Engine {
             save: self.rng.chance(self.script.saves),
             charter,
         };
-        let mut assignment = AssignmentTyped { assignment, turns, answered: Box::new([]) };
+        let mut assignment = Assignment { assignment, turns, answered: Box::new([]) };
         if !self.rng.chance(self.script.invalid) {
             return (assignment, None);
         }
@@ -355,22 +355,21 @@ impl Engine {
         acts
     }
 
-    fn answered(&mut self, run: Token, attempt: Token, answer: &EndingV2) {
+    fn answered(&mut self, run: Token, attempt: Token, answer: &Ending) {
         let assigned = self.open.remove(&(run, attempt)).expect("an assignment is answered once, while in flight");
         let refused = match answer {
-            EndingV2::Refused(Refusal::Invalid(refused)) => Some(*refused),
-            EndingV2::Refused(Refusal::Busy)
-            | EndingV2::Ended { .. }
-            | EndingV2::Parked { .. }
-            | EndingV2::Failed { .. } => None,
+            Ending::Refused(Refusal::Invalid(refused)) => Some(*refused),
+            Ending::Refused(Refusal::Busy) | Ending::Ended { .. } | Ending::Parked { .. } | Ending::Failed { .. } => {
+                None
+            }
         };
         assert_eq!(
             refused, assigned.invalid,
             "an assignment is refused as invalid for what is beyond the limits, and only then"
         );
         let work = match answer {
-            EndingV2::Refused(_) => None,
-            EndingV2::Ended { work, .. } | EndingV2::Parked { work, .. } | EndingV2::Failed { work, .. } => Some(work),
+            Ending::Refused(_) => None,
+            Ending::Ended { work, .. } | Ending::Parked { work, .. } | Ending::Failed { work, .. } => Some(work),
         };
         if let Some(work) = work {
             if let Some(left) = work.left {
@@ -395,13 +394,13 @@ impl Engine {
 
 /// An answer's kind, for counting endings.
 #[must_use]
-pub fn ending(answer: &EndingV2) -> &'static str {
+pub fn ending(answer: &Ending) -> &'static str {
     match answer {
-        EndingV2::Refused(Refusal::Busy) => "refused: busy",
-        EndingV2::Refused(Refusal::Invalid(_)) => "refused: invalid",
-        EndingV2::Ended { .. } => "ended",
-        EndingV2::Parked { .. } => "parked",
-        EndingV2::Failed { failure, .. } => failure_kind(*failure),
+        Ending::Refused(Refusal::Busy) => "refused: busy",
+        Ending::Refused(Refusal::Invalid(_)) => "refused: invalid",
+        Ending::Ended { .. } => "ended",
+        Ending::Parked { .. } => "parked",
+        Ending::Failed { failure, .. } => failure_kind(*failure),
     }
 }
 

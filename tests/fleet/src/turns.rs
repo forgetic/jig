@@ -249,12 +249,12 @@ impl World {
                     self.channel = None;
                     self.see(Seen::Refused);
                 }
-                Request::AssignTyped { .. }
-                | Request::InboundTyped { .. }
-                | Request::RelayTyped { .. }
-                | Request::RelayedTyped { .. }
-                | Request::DropTyped { .. }
-                | Request::UndeliveredTyped { .. }
+                Request::Assign { .. }
+                | Request::Inbound { .. }
+                | Request::Relay { .. }
+                | Request::Relayed { .. }
+                | Request::DropCall { .. }
+                | Request::Undelivered { .. }
                 | Request::Grant { .. }
                 | Request::Rejected { .. }
                 | Request::Exhausted { .. }

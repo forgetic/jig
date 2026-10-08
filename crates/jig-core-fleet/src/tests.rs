@@ -5,8 +5,8 @@ use alloc::boxed::Box;
 use skein_lib::{Duration, Env, List, Queue, ReplyTo, Time, Token, Wall};
 
 use crate::{
-    Answer, Bounce, Domain, Event, Fact, Hello, HostKind, Hosted, Kinds, Limits, Phase, Refusal, Request,
-    TypedAssignment, TypedCall, TypedMessage, Undelivered, Withdrawal, fire, max_out, resume, step, worst_case,
+    Answer, Assignment, Bounce, Call, Domain, Event, Fact, Hello, HostKind, Hosted, Kinds, Limits, Message, Phase,
+    Refusal, Request, Undelivered, Withdrawal, fire, max_out, resume, step, worst_case,
 };
 
 const LIMITS: Limits = Limits {
@@ -130,7 +130,7 @@ impl Harness {
     }
 
     fn start(&mut self, run: Token, attempt: Token, workstream: u64) -> Box<[Request]> {
-        self.step(Event::StartTyped {
+        self.step(Event::Start {
             reply_to: to(attempt),
             run,
             attempt,
@@ -150,7 +150,7 @@ impl Harness {
         assert!(self.start(run, attempt, workstream).is_empty(), "a start waits for placement");
         let placed = self.settle();
         let [
-            Request::AssignTyped { channel, kind: _, run: assigned, attempt: of, .. },
+            Request::Assign { channel, kind: _, run: assigned, attempt: of, .. },
             Request::Placed { run: told, attempt: told_of },
         ] = &*placed
         else {
@@ -163,10 +163,9 @@ impl Harness {
     /// The run's call `call` with the body `raw`, relayed: the parent's
     /// right to answer it.
     fn relay(&mut self, run: Token, attempt: Token, call_name: Token, raw: u64) -> ReplyTo {
-        let mut up = self
-            .step(Event::RelayTyped { channel: C1, run, attempt, call: host_call(call_name, payload(raw)) })
-            .into_iter();
-        let Some(Request::RelayTyped { reply_to, run: of, attempt: by, call }) = up.next() else {
+        let mut up =
+            self.step(Event::Relay { channel: C1, run, attempt, call: host_call(call_name, payload(raw)) }).into_iter();
+        let Some(Request::Relay { reply_to, run: of, attempt: by, call }) = up.next() else {
             panic!("a call is relayed up");
         };
         assert_eq!((of, by, call), (run, attempt, host_call(call_name, payload(raw))));
@@ -214,7 +213,7 @@ fn cancel(channel: Token, run: Token, attempt: Token) -> Request {
 }
 
 fn assign(channel: Token, run: Token, attempt: Token) -> Request {
-    Request::AssignTyped {
+    Request::Assign {
         channel,
         kind: HostKind::Worker,
         run,
@@ -229,12 +228,12 @@ fn placed(run: Token, attempt: Token) -> Request {
 }
 
 #[test]
-fn a_typed_assignment_keeps_its_turn_and_answer_references_through_placement() {
+fn a_assignment_keeps_its_turn_and_answer_references_through_placement() {
     let mut h = Harness::new(LIMITS);
     h.hello(C1, 1, &[], &[]);
-    let assignment = TypedAssignment { turns: payload(1), answered: payload(2) };
+    let assignment = Assignment { turns: payload(1), answered: payload(2) };
     assert!(
-        h.step(Event::StartTyped {
+        h.step(Event::Start {
             reply_to: to(A1),
             run: R1,
             attempt: A1,
@@ -247,7 +246,7 @@ fn a_typed_assignment_keeps_its_turn_and_answer_references_through_placement() {
     assert_eq!(
         &*h.settle(),
         &[
-            Request::AssignTyped {
+            Request::Assign {
                 channel: C1,
                 kind: HostKind::Worker,
                 run: R1,
@@ -261,24 +260,24 @@ fn a_typed_assignment_keeps_its_turn_and_answer_references_through_placement() {
 }
 
 #[test]
-fn a_typed_message_and_host_call_keep_their_fields_across_the_fleet() {
+fn a_message_and_host_call_keep_their_fields_across_the_fleet() {
     let mut h = Harness::new(LIMITS);
     h.hello(C1, 1, &[], &[]);
     h.place(R1, A1, 1);
-    let message = TypedMessage { name: Token::new(4), sender: payload(5), words: payload(6) };
+    let message = Message { name: Token::new(4), sender: payload(5), words: payload(6) };
     assert_eq!(
-        &*h.step(Event::InboundTyped { run: R1, attempt: A1, message }),
-        &[Request::InboundTyped { channel: C1, run: R1, attempt: A1, message }]
+        &*h.step(Event::Inbound { run: R1, attempt: A1, message }),
+        &[Request::Inbound { channel: C1, run: R1, attempt: A1, message }]
     );
-    let call = TypedCall {
+    let call = Call {
         name: Box::from(&b"call-one"[..]),
         tool: Box::from(&b"inspect"[..]),
         writes: true,
         input: Box::from(&b"input words"[..]),
         deadline: Duration::from_secs(3),
     };
-    let mut emitted = h.step(Event::RelayTyped { channel: C1, run: R1, attempt: A1, call }).into_iter();
-    let Some(Request::RelayTyped { reply_to, run, attempt, call }) = emitted.next() else {
+    let mut emitted = h.step(Event::Relay { channel: C1, run: R1, attempt: A1, call }).into_iter();
+    let Some(Request::Relay { reply_to, run, attempt, call }) = emitted.next() else {
         panic!("the typed call is relayed")
     };
     assert!(emitted.next().is_none());
@@ -290,7 +289,7 @@ fn a_typed_message_and_host_call_keep_their_fields_across_the_fleet() {
     assert_eq!(call.deadline, Duration::from_secs(3));
     assert_eq!(
         &*h.step(Event::Relayed { to: reply_to, answer: payload(7) }),
-        &[Request::RelayedTyped {
+        &[Request::Relayed {
             channel: C1,
             run: R1,
             attempt: A1,
@@ -564,12 +563,12 @@ fn a_cancelled_attempt_is_fenced_but_its_answer_ends_its_call() {
     assert!(h.step(Event::Cancel { run: R1, attempt: A1 }).is_empty());
     let event = payload(5);
     assert_eq!(
-        &*h.step(Event::InboundTyped { run: R1, attempt: A1, message: message(event) }),
-        &[Request::UndeliveredTyped { run: R1, attempt: A1, message: message(event), undelivered: Undelivered::Gone }]
+        &*h.step(Event::Inbound { run: R1, attempt: A1, message: message(event) }),
+        &[Request::Undelivered { run: R1, attempt: A1, message: message(event), undelivered: Undelivered::Gone }]
     );
     assert_eq!(
-        &*h.step(Event::RelayTyped { channel: C1, run: R1, attempt: A1, call: host_call(Token::new(7), payload(6)) }),
-        &[Request::DropTyped { call: host_call(Token::new(7), payload(6)) }]
+        &*h.step(Event::Relay { channel: C1, run: R1, attempt: A1, call: host_call(Token::new(7), payload(6)) }),
+        &[Request::DropCall { call: host_call(Token::new(7), payload(6)) }]
     );
     assert!(
         h.step(Event::Bounced { channel: C1, name: Token::new(0), run: R1, attempt: A1, bounce: Bounce::Ending })
@@ -603,8 +602,8 @@ fn a_newer_attempt_replaces_the_claim_and_waits_for_it_to_be_gone() {
     // Never two attempts of a run on the workers: A2 waits for A1.
     assert!(h.settle().is_empty());
     assert_eq!(
-        &*h.step(Event::RelayTyped { channel: C1, run: R1, attempt: A1, call: host_call(Token::new(7), payload(1)) }),
-        &[Request::DropTyped { call: host_call(Token::new(7), payload(1)) }]
+        &*h.step(Event::Relay { channel: C1, run: R1, attempt: A1, call: host_call(Token::new(7), payload(1)) }),
+        &[Request::DropCall { call: host_call(Token::new(7), payload(1)) }]
     );
     assert_eq!(&*h.answer(C1, R1, A1, Answer::Ended, 2), &[ack(C1, R1, A1), drop(2)]);
     assert_eq!(&*h.settle(), &[assign(C1, R1, A2), placed(R1, A2)]);
@@ -639,7 +638,7 @@ fn a_relayed_call_goes_up_once_and_its_answer_down_once() {
     let reply_to = h.relay(R1, A1, call, 1);
     assert_eq!(
         &*h.step(Event::Relayed { to: reply_to, answer: payload(2) }),
-        &[Request::RelayedTyped {
+        &[Request::Relayed {
             channel: C1,
             run: R1,
             attempt: A1,
@@ -669,15 +668,15 @@ fn a_relayed_call_beyond_the_room_is_dropped() {
         let _call: ReplyTo = h.relay(R1, A1, Token::new(raw), raw);
     }
     assert_eq!(
-        &*h.step(Event::RelayTyped { channel: C1, run: R1, attempt: A1, call: host_call(Token::new(9), payload(9)) }),
-        &[Request::DropTyped { call: host_call(Token::new(9), payload(9)) }]
+        &*h.step(Event::Relay { channel: C1, run: R1, attempt: A1, call: host_call(Token::new(9), payload(9)) }),
+        &[Request::DropCall { call: host_call(Token::new(9), payload(9)) }]
     );
 }
 
 fn unowned_worker_inputs(h: &mut Harness, channel: Token) {
     assert_eq!(
-        &*h.step(Event::RelayTyped { channel, run: R1, attempt: A1, call: host_call(Token::new(8), payload(8)) }),
-        &[Request::DropTyped { call: host_call(Token::new(8), payload(8)) }]
+        &*h.step(Event::Relay { channel, run: R1, attempt: A1, call: host_call(Token::new(8), payload(8)) }),
+        &[Request::DropCall { call: host_call(Token::new(8), payload(8)) }]
     );
     assert_eq!(&*h.step(Event::Told { channel, run: R1, attempt: A1, fact: payload(9) }), &[drop(9)]);
     assert!(
@@ -728,7 +727,7 @@ fn worker_inputs_require_the_current_host_but_accepted_calls_survive_its_channel
     owned_worker_notices(&mut h, C3);
     assert_eq!(
         &*h.step(Event::Relayed { to: in_flight, answer: payload(2) }),
-        &[Request::RelayedTyped {
+        &[Request::Relayed {
             channel: C3,
             run: R1,
             attempt: A1,
@@ -736,9 +735,8 @@ fn worker_inputs_require_the_current_host_but_accepted_calls_survive_its_channel
             answer: payload(2)
         }]
     );
-    let up =
-        h.step(Event::RelayTyped { channel: C3, run: R1, attempt: A1, call: host_call(Token::new(8), payload(8)) });
-    let [Request::RelayTyped { run, attempt, call, .. }] = &*up else { panic!("the current host's call is relayed") };
+    let up = h.step(Event::Relay { channel: C3, run: R1, attempt: A1, call: host_call(Token::new(8), payload(8)) });
+    let [Request::Relay { run, attempt, call, .. }] = &*up else { panic!("the current host's call is relayed") };
     assert_eq!((*run, *attempt, &call.input), (R1, A1, &host_call(Token::new(8), payload(8)).input));
 }
 
@@ -748,19 +746,14 @@ fn inbound_events_bounces_and_facts_pass_while_the_claim_is_live() {
     let event = payload(1);
     h.start(R1, A1, 1);
     assert_eq!(
-        &*h.step(Event::InboundTyped { run: R1, attempt: A1, message: message(event) }),
-        &[Request::UndeliveredTyped {
-            run: R1,
-            attempt: A1,
-            message: message(event),
-            undelivered: Undelivered::Unplaced
-        }]
+        &*h.step(Event::Inbound { run: R1, attempt: A1, message: message(event) }),
+        &[Request::Undelivered { run: R1, attempt: A1, message: message(event), undelivered: Undelivered::Unplaced }]
     );
     h.hello(C1, 2, &[], &[]);
     h.settle();
     assert_eq!(
-        &*h.step(Event::InboundTyped { run: R1, attempt: A1, message: message(event) }),
-        &[Request::InboundTyped { channel: C1, run: R1, attempt: A1, message: message(event) }]
+        &*h.step(Event::Inbound { run: R1, attempt: A1, message: message(event) }),
+        &[Request::Inbound { channel: C1, run: R1, attempt: A1, message: message(event) }]
     );
     assert_eq!(
         &*h.step(Event::Bounced { channel: C1, name: Token::new(0), run: R1, attempt: A1, bounce: Bounce::Full }),
@@ -772,17 +765,12 @@ fn inbound_events_bounces_and_facts_pass_while_the_claim_is_live() {
     );
     h.step(Event::Lost { channel: C1 });
     assert_eq!(
-        &*h.step(Event::InboundTyped { run: R1, attempt: A1, message: message(event) }),
-        &[Request::UndeliveredTyped {
-            run: R1,
-            attempt: A1,
-            message: message(event),
-            undelivered: Undelivered::Adrift
-        }]
+        &*h.step(Event::Inbound { run: R1, attempt: A1, message: message(event) }),
+        &[Request::Undelivered { run: R1, attempt: A1, message: message(event), undelivered: Undelivered::Adrift }]
     );
     assert_eq!(
-        &*h.step(Event::InboundTyped { run: R2, attempt: A2, message: message(event) }),
-        &[Request::UndeliveredTyped { run: R2, attempt: A2, message: message(event), undelivered: Undelivered::Gone }]
+        &*h.step(Event::Inbound { run: R2, attempt: A2, message: message(event) }),
+        &[Request::Undelivered { run: R2, attempt: A2, message: message(event), undelivered: Undelivered::Gone }]
     );
 }
 
@@ -819,8 +807,8 @@ fn a_worker_back_within_the_grace_keeps_what_is_claimed_and_cancels_the_rest() {
     assert!(h.at(20).is_empty());
     let event = payload(1);
     assert_eq!(
-        &*h.step(Event::InboundTyped { run: R1, attempt: A1, message: message(event) }),
-        &[Request::InboundTyped { channel: C2, run: R1, attempt: A1, message: message(event) }]
+        &*h.step(Event::Inbound { run: R1, attempt: A1, message: message(event) }),
+        &[Request::Inbound { channel: C2, run: R1, attempt: A1, message: message(event) }]
     );
     assert_eq!(&*h.answer(C2, R2, A2, Answer::Failed, 2), &[answered(A2, R2, Answer::Failed, 2)]);
 }
@@ -903,13 +891,8 @@ fn an_adopted_claim_no_worker_lists_within_the_grace_is_lost() {
     assert!(h.adopt(R1, A1).is_empty());
     let event = payload(1);
     assert_eq!(
-        &*h.step(Event::InboundTyped { run: R1, attempt: A1, message: message(event) }),
-        &[Request::UndeliveredTyped {
-            run: R1,
-            attempt: A1,
-            message: message(event),
-            undelivered: Undelivered::Adrift
-        }]
+        &*h.step(Event::Inbound { run: R1, attempt: A1, message: message(event) }),
+        &[Request::Undelivered { run: R1, attempt: A1, message: message(event), undelivered: Undelivered::Adrift }]
     );
     assert!(h.at(9).is_empty());
     assert_eq!(&*h.at(10), &[lost(R1, A1)]);
@@ -1206,14 +1189,14 @@ fn declared_stop_bounds_must_be_strictly_below_the_engine_grace() {
     }
 }
 
-fn references() -> TypedAssignment {
-    TypedAssignment { turns: payload(0), answered: payload(0) }
+fn references() -> Assignment {
+    Assignment { turns: payload(0), answered: payload(0) }
 }
-fn message(name: Token) -> TypedMessage {
-    TypedMessage { name, sender: name, words: name }
+fn message(name: Token) -> Message {
+    Message { name, sender: name, words: name }
 }
-fn host_call(name: Token, body: Token) -> TypedCall {
-    TypedCall {
+fn host_call(name: Token, body: Token) -> Call {
+    Call {
         name: Box::from(name.raw().to_be_bytes()),
         tool: Box::from(&b"tool"[..]),
         writes: false,

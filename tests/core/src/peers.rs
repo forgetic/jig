@@ -99,11 +99,11 @@ impl Peers {
                 match call {
                     workers::Call::Opaque { name, tool, input, writes } => {
                         self.opaque.insert((task, attempt, name.clone()), (channel, number));
-                        root::Event::Core(core::Event::Fleet(fleet::Event::RelayTyped {
+                        root::Event::Core(core::Event::Fleet(fleet::Event::Relay {
                             channel: Token::new(channel),
                             run: Token::new(task),
                             attempt: Token::new(attempt),
-                            call: fleet::TypedCall { name, tool, input, writes, deadline: Duration::from_secs(1) },
+                            call: fleet::Call { name, tool, input, writes, deadline: Duration::from_secs(1) },
                         }))
                     }
                     workers::Call::ProposeGoal { words, budget, priority } => {
@@ -240,7 +240,7 @@ impl Peers {
                     self.worker(channel).call_answer(key.task, key.attempt, number, bytes);
                 }
             }
-            root::Delivery::TypedAnswer { task, attempt, name, call, .. } => {
+            root::Delivery::CallAnswer { task, attempt, name, call, .. } => {
                 if let Some((channel, number)) = self.opaque.remove(&(*task, *attempt, name.clone())) {
                     self.worker(channel).call_answer(
                         *task,
@@ -274,13 +274,7 @@ impl Peers {
     }
 
     /// The test root's decoder answers the opaque echo tool in a durable decision.
-    pub fn opaque_answer(
-        &mut self,
-        to: ReplyTo,
-        run: Token,
-        attempt: Token,
-        call: &fleet::TypedCall,
-    ) -> Vec<root::Event> {
+    pub fn opaque_answer(&mut self, to: ReplyTo, run: Token, attempt: Token, call: &fleet::Call) -> Vec<root::Event> {
         let number = self.opaque.get(&(run.raw(), attempt.raw(), call.name.clone())).expect("retained opaque call").1;
         let key = core::CallKey { task: run.raw(), attempt: attempt.raw(), completion: number, position: 0 };
         self.call_hosts.remove(&key);

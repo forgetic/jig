@@ -4,8 +4,8 @@ use alloc::boxed::Box;
 use skein_lib::{Env, List, Queue, ReplyTo, Time, Token, Wall};
 
 use crate::{
-    Assignment, Bounce, Delivery, DeliveryOutcome, Domain, Event, Failure, FinishV2, Invalid, Limits, Preparation,
-    Reason, Refusal, Reply, Request, Told, Work, Workspace, max_out, step,
+    Bounce, Delivery, DeliveryOutcome, Domain, Event, Failure, Finish, Invalid, Limits, Preparation, Reason, Refusal,
+    Reply, Request, RunAssignment, Told, Work, Workspace, max_out, step,
 };
 
 const LIMITS: Limits = Limits {
@@ -65,7 +65,7 @@ impl Harness {
     fn live(&mut self, run: u64) -> (Token, Token, Token) {
         let (owner, workspace) = self.assign(run);
         let requests = self.step(Event::Prepared { owner, workspace });
-        let [Request::StartTyped { owner: started, workspace: prepared, .. }] = &*requests else {
+        let [Request::Start { owner: started, workspace: prepared, .. }] = &*requests else {
             panic!("expected start: {requests:?}")
         };
         assert_eq!((*started, *prepared), (owner, Some(workspace)));
@@ -75,8 +75,8 @@ impl Harness {
     }
 }
 
-fn assignment(run: u64) -> Assignment {
-    Assignment {
+fn assignment(run: u64) -> RunAssignment {
+    RunAssignment {
         run: Token::new(run),
         attempt: Token::new(run.checked_add(1000).expect("small run")),
         workspace: Some(Workspace { workstream: run, items: Token::new(run.checked_add(100).expect("small run")) }),
@@ -103,7 +103,7 @@ fn an_itemless_run_starts_and_ends_without_a_workspace() {
     let run = assignment.run;
     let attempt = assignment.attempt;
     let requests = h.step(fixtures::assign(ReplyTo::new(run), assignment));
-    let [Request::StartTyped { owner, workspace: None, .. }] = &*requests else {
+    let [Request::Start { owner, workspace: None, .. }] = &*requests else {
         panic!("an itemless run starts without preparation: {requests:?}");
     };
     let owner = *owner;
@@ -112,18 +112,18 @@ fn an_itemless_run_starts_and_ends_without_a_workspace() {
     let call = Token::new(42);
     assert_eq!(
         &*h.step(fixtures::called(owner, call, fixtures::deliver(Box::from(&b"work"[..])))),
-        [Request::ReplyTyped { agent, call: Box::from(call.raw().to_be_bytes()), reply: Reply::Unavailable }]
+        [Request::Reply { agent, call: Box::from(call.raw().to_be_bytes()), reply: Reply::Unavailable }]
     );
     assert_eq!(
-        &*h.step(fixtures::finished(owner, FinishV2::Ended { outcome: Box::from(&b"done"[..]) })),
+        &*h.step(fixtures::finished(owner, Finish::Ended { outcome: Box::from(&b"done"[..]) })),
         [Request::Stop { agent }]
     );
     let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
     let [
-        Request::AnswerV2 {
+        Request::Answer {
             run: answered,
             attempt: answered_attempt,
-            answer: crate::AnswerV2 { ending: crate::EndingV2::Ended { work, .. }, .. },
+            answer: crate::Answer { ending: crate::Ending::Ended { work, .. }, .. },
             ..
         },
     ] = &*requests
@@ -139,11 +139,11 @@ fn turns_stay_in_the_host_until_their_own_ack_and_credit_returns() {
     let mut assignment = assignment(1);
     assignment.workspace = None;
     let (run, attempt) = (assignment.run, assignment.attempt);
-    let requests = h.step(Event::AssignTyped {
+    let requests = h.step(Event::Assign {
         reply_to: ReplyTo::new(run),
-        assignment: crate::AssignmentTyped { assignment, turns: Box::new([]), answered: Box::new([]) },
+        assignment: crate::Assignment { assignment, turns: Box::new([]), answered: Box::new([]) },
     });
-    let [Request::StartTyped { owner, workspace: None, .. }] = &*requests else {
+    let [Request::Start { owner, workspace: None, .. }] = &*requests else {
         panic!("an itemless version-two run starts: {requests:?}");
     };
     let owner = *owner;
@@ -184,8 +184,8 @@ fn a_bad_charter_is_refused_before_a_workspace_is_touched() {
     assignment.charter = Box::from([0_u8; 65]);
     let requests = h.step(fixtures::assign(ReplyTo::new(assignment.run), assignment));
     let [
-        Request::AnswerV2 {
-            answer: crate::AnswerV2 { ending: crate::EndingV2::Refused(Refusal::Invalid(Invalid::Charter)), .. },
+        Request::Answer {
+            answer: crate::Answer { ending: crate::Ending::Refused(Refusal::Invalid(Invalid::Charter)), .. },
             ..
         },
     ] = &*requests
@@ -204,11 +204,11 @@ fn a_preparation_failure_answers_without_starting_an_agent() {
         detail: Box::new([]),
     });
     let [
-        Request::AnswerV2 {
+        Request::Answer {
             answer:
-                crate::AnswerV2 {
+                crate::Answer {
                     ending:
-                        crate::EndingV2::Failed {
+                        crate::Ending::Failed {
                             failure: Failure::Unprepared(Preparation::Permanent { resource: Some(resource) }),
                             ..
                         },
@@ -229,7 +229,7 @@ fn a_delivery_is_answered_after_the_workspace_reports_what_it_left() {
     let (owner, workspace, agent) = h.live(1);
     let call = Token::new(8);
     let requests = h.step(fixtures::called(owner, call, fixtures::deliver(Box::from(&b"ship"[..]))));
-    let [Request::DeliverV2 { owner: delivery, workspace: target, .. }] = &*requests else {
+    let [Request::Deliver { owner: delivery, workspace: target, .. }] = &*requests else {
         panic!("expected workspace delivery: {requests:?}")
     };
     assert_eq!(*target, workspace);
@@ -238,14 +238,14 @@ fn a_delivery_is_answered_after_the_workspace_reports_what_it_left() {
     let requests = h.step(Event::Delivered { owner: *delivery, delivery: delivered });
     assert_eq!(
         &*requests,
-        [Request::ReplyTyped { agent, call: Box::from(call.raw().to_be_bytes()), reply: Reply::Delivered(delivered) }]
+        [Request::Reply { agent, call: Box::from(call.raw().to_be_bytes()), reply: Reply::Delivered(delivered) }]
     );
-    let requests = h.step(fixtures::finished(owner, FinishV2::Ended { outcome: Box::from(&b"done"[..]) }));
+    let requests = h.step(fixtures::finished(owner, Finish::Ended { outcome: Box::from(&b"done"[..]) }));
     assert_eq!(&*requests, [Request::Stop { agent }]);
     let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
     let [
         Request::Release { workspace: released },
-        Request::AnswerV2 { answer: crate::AnswerV2 { ending: crate::EndingV2::Ended { work, .. }, .. }, .. },
+        Request::Answer { answer: crate::Answer { ending: crate::Ending::Ended { work, .. }, .. }, .. },
     ] = &*requests
     else {
         panic!("expected release and answer: {requests:?}")
@@ -259,21 +259,19 @@ fn stopping_waits_for_a_delivery_even_after_the_agent_is_gone() {
     let (owner, workspace, agent) = h.live(1);
     let call = Token::new(42);
     let requests = h.step(fixtures::called(owner, call, fixtures::deliver(Box::from(&b"ship"[..]))));
-    let [Request::DeliverV2 { owner: delivery, .. }] = &*requests else {
-        panic!("delivery is in flight: {requests:?}")
-    };
+    let [Request::Deliver { owner: delivery, .. }] = &*requests else { panic!("delivery is in flight: {requests:?}") };
     let delivery = *delivery;
     assert_eq!(
-        &*h.step(fixtures::finished(owner, FinishV2::Ended { outcome: Box::from(&b"done"[..]) })),
+        &*h.step(fixtures::finished(owner, Finish::Ended { outcome: Box::from(&b"done"[..]) })),
         [Request::Stop { agent }]
     );
     assert!(h.step(Event::Gone { owner, detail: Box::new([]) }).is_empty());
     let changed = Delivery { outcome: DeliveryOutcome::Delivered, left: Token::new(900), changed: true };
     let requests = h.step(Event::Delivered { owner: delivery, delivery: changed });
     let [
-        Request::ReplyTyped { agent: answered_agent, call: answered_call, reply: Reply::Delivered(outcome) },
+        Request::Reply { agent: answered_agent, call: answered_call, reply: Reply::Delivered(outcome) },
         Request::Release { workspace: released },
-        Request::AnswerV2 { answer: crate::AnswerV2 { ending: crate::EndingV2::Ended { work, .. }, .. }, .. },
+        Request::Answer { answer: crate::Answer { ending: crate::Ending::Ended { work, .. }, .. }, .. },
     ] = &*requests
     else {
         panic!("the delivery settles before release and answer: {requests:?}")
@@ -309,11 +307,9 @@ fn cancelling_a_preparing_run_waits_for_the_workspace_terminal() {
     assert_eq!(&*requests, [Request::Abort { owner }]);
     let requests = h.step(Event::Unprepared { owner, failure: Preparation::Transient, detail: Box::new([]) });
     let [
-        Request::AnswerV2 {
+        Request::Answer {
             answer:
-                crate::AnswerV2 {
-                    ending: crate::EndingV2::Failed { failure: Failure::Cancelled(Reason::Engine), .. }, ..
-                },
+                crate::Answer { ending: crate::Ending::Failed { failure: Failure::Cancelled(Reason::Engine), .. }, .. },
             ..
         },
     ] = &*requests
@@ -335,14 +331,14 @@ fn messages_held_during_a_failed_prepare_are_returned_by_name() {
         &*requests,
         [
             Request::Bounced { run, attempt, name, bounce: Bounce::Ending },
-            Request::AnswerV2 {
+            Request::Answer {
                 to: ReplyTo::new(run),
                 run,
                 attempt,
-                answer: crate::AnswerV2 {
+                answer: crate::Answer {
                     turns: 0,
                     spent: 0,
-                    ending: crate::EndingV2::Failed {
+                    ending: crate::Ending::Failed {
                         failure: Failure::Unprepared(Preparation::Transient),
                         detail: Box::new([]),
                         work: Work { left: None, saved: None },
@@ -361,7 +357,7 @@ fn cancellation_returns_messages_held_before_the_agent_starts() {
     let attempt = Token::new(1001);
     let name = Token::new(42);
     let requests = h.step(Event::Prepared { owner, workspace });
-    let [Request::StartTyped { .. }] = &*requests else { panic!("the agent starts: {requests:?}") };
+    let [Request::Start { .. }] = &*requests else { panic!("the agent starts: {requests:?}") };
     assert!(h.step(fixtures::inbound(run, attempt, name, Box::from(&b"question"[..]))).is_empty());
     assert_eq!(
         &*h.step(Event::Cancel { run, attempt }),
@@ -374,7 +370,7 @@ fn cancellation_returns_messages_held_before_the_agent_starts() {
     let requests = h.step(Event::Saved { owner, at: None });
     let [
         Request::Release { workspace: released },
-        Request::AnswerV2 { answer: crate::AnswerV2 { ending: crate::EndingV2::Failed { failure, .. }, .. }, .. },
+        Request::Answer { answer: crate::Answer { ending: crate::Ending::Failed { failure, .. }, .. }, .. },
     ] = &*requests
     else {
         panic!("the run releases and answers after save: {requests:?}")
@@ -385,26 +381,23 @@ fn cancellation_returns_messages_held_before_the_agent_starts() {
 mod fixtures {
     // Typed host records used by the lifecycle scripts. Callback tokens are encoded
     // as opaque names; names are opaque bytes.
-    use crate::{Ask, Assignment, AssignmentTyped, Event, FinishV2};
+    use crate::{Ask, Assignment, Event, Finish, RunAssignment};
     use skein_lib::{Reader, ReplyTo, Token};
-    pub fn assign(reply_to: ReplyTo, assignment: Assignment) -> Event {
-        Event::AssignTyped {
-            reply_to,
-            assignment: AssignmentTyped { assignment, turns: Box::new([]), answered: Box::new([]) },
-        }
+    pub fn assign(reply_to: ReplyTo, assignment: RunAssignment) -> Event {
+        Event::Assign { reply_to, assignment: Assignment { assignment, turns: Box::new([]), answered: Box::new([]) } }
     }
     pub fn inbound(run: Token, attempt: Token, name: Token, words: Box<[u8]>) -> Event {
-        Event::InboundTyped { run, attempt, name, sender: Box::new([]), words }
+        Event::Inbound { run, attempt, name, sender: Box::new([]), words }
     }
     pub fn called(owner: Token, call: Token, ask: Ask) -> Event {
-        Event::CalledTyped { owner, call: Box::from(call.raw().to_be_bytes()), ask }
+        Event::Called { owner, call: Box::from(call.raw().to_be_bytes()), ask }
     }
 
-    pub fn finished(owner: Token, finish: FinishV2) -> Event {
-        Event::FinishedV2 { owner, turns: 0, spent: 0, finish }
+    pub fn finished(owner: Token, finish: Finish) -> Event {
+        Event::Finished { owner, turns: 0, spent: 0, finish }
     }
     pub fn deliver(title: Box<[u8]>) -> Ask {
-        Ask::DeliverV2 { title, body: Box::new([]) }
+        Ask::Deliver { title, body: Box::new([]) }
     }
 
     pub fn callback(name: &[u8]) -> Token {

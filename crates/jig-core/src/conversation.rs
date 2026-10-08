@@ -129,7 +129,7 @@ pub(crate) fn settle(core: &mut Core, limits: &Limits, to: ReplyTo, key: CallKey
 /// Include settled records, assignment copies and the current commit/delivery
 /// scratch copies in the application's startup heap bound.
 #[must_use]
-pub fn typed_worst_case(limits: &Limits) -> Option<u64> {
+pub fn conversation_worst_case(limits: &Limits) -> Option<u64> {
     let each = u64::try_from(size_of::<SettledCall>()).ok()?.checked_add(u64::from(limits.call_answer_bytes))?;
     skein_lib::Map::<CallKey, SettledCall>::worst_case(limits.call_records)?.checked_add(
         u64::from(limits.call_records)

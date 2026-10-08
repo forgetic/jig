@@ -63,8 +63,8 @@ mod tests;
 mod turn;
 
 pub use boundary::{
-    Answer, Bounce, Event, Grant, Hello, HostKind, Hosted, Kinds, Phase, Refusal, Request, TypedAssignment, TypedCall,
-    TypedMessage, Undelivered, Withdrawal,
+    Answer, Assignment, Bounce, Call, Event, Grant, Hello, HostKind, Hosted, Kinds, Message, Phase, Refusal, Request,
+    Undelivered, Withdrawal,
 };
 pub use domain::{Domain, fire, max_out, resume, step};
 pub use facts::Fact;

@@ -521,7 +521,7 @@ impl World {
         let hosted: Vec<(Token, Token)> = self.admitted.keys().copied().collect();
         for (run, attempt) in hosted {
             if self.rng.chance(self.settings.duplicates) {
-                let assignment = host::Assignment {
+                let assignment = host::RunAssignment {
                     grants: Box::new([]),
                     run,
                     attempt,
@@ -544,10 +544,7 @@ impl World {
         assert!(
             matches!(
                 request,
-                Request::AnswerV2 {
-                    answer: host::AnswerV2 { ending: host::EndingV2::Refused(host::Refusal::Busy), .. },
-                    ..
-                }
+                Request::Answer { answer: host::Answer { ending: host::Ending::Refused(host::Refusal::Busy), .. }, .. }
             ),
             "a duplicate call is refused without changing its hosted attempt: {request:?}"
         );
@@ -559,14 +556,14 @@ impl World {
             return Taken::Stale;
         }
         match event {
-            Event::AssignTyped { reply_to: _, assignment } => {
+            Event::Assign { reply_to: _, assignment } => {
                 Taken::Assign { run: assignment.assignment.run, attempt: assignment.assignment.attempt }
             }
             Event::Started { owner, agent } => Taken::Started { owner: *owner, agent: *agent },
-            Event::CalledTyped { owner, call, ask } => {
+            Event::Called { owner, call, ask } => {
                 let delivery = match ask {
-                    host::Ask::DeliverV2 { .. } => true,
-                    host::Ask::RelayTyped { .. } => false,
+                    host::Ask::Deliver { .. } => true,
+                    host::Ask::Relay { .. } => false,
                 };
                 Taken::Called { owner: *owner, call: crate::fixtures::callback(call), delivery }
             }
@@ -575,16 +572,16 @@ impl World {
             Event::Saved { owner, at: _ } => Taken::Saved { owner: *owner },
             Event::Prepared { owner, workspace: _ } => Taken::Prepared { owner: *owner, prepared: true },
             Event::Unprepared { owner, .. } => Taken::Prepared { owner: *owner, prepared: false },
-            Event::FinishedV2 { owner, finish, .. } => {
+            Event::Finished { owner, finish, .. } => {
                 let limits = &self.settings.host;
                 let word = match finish {
-                    host::FinishV2::Ended { outcome } if len(outcome) > limits.outcome_bytes => {
+                    host::Finish::Ended { outcome } if len(outcome) > limits.outcome_bytes => {
                         self.path("oversized outcomes");
                         Word::Rules
                     }
-                    host::FinishV2::Ended { .. } => Word::Ended,
-                    host::FinishV2::Parked => Word::Parked,
-                    host::FinishV2::Failed { failure } => Word::Failed(*failure),
+                    host::Finish::Ended { .. } => Word::Ended,
+                    host::Finish::Parked => Word::Parked,
+                    host::Finish::Failed { failure } => Word::Failed(*failure),
                 };
                 Taken::Finished { owner: *owner, word }
             }
@@ -599,14 +596,14 @@ impl World {
                 self.stats.reports += 1;
                 Taken::Other
             }
-            Event::InboundTyped { .. }
+            Event::Inbound { .. }
             | Event::Facts { .. }
             | Event::Grant { .. }
             | Event::Cancel { .. }
             | Event::Unacknowledged { .. }
             | Event::Relayed { .. }
             | Event::RelayCancelled { .. }
-            | Event::WithdrawnTyped { .. }
+            | Event::Withdrawn { .. }
             | Event::Bounced { .. }
             | Event::Yielded { .. }
             | Event::Turn { .. }
@@ -680,11 +677,11 @@ impl World {
     /// `run`'s attempt `attempt`: a refusal, or a prepare that admits it.
     fn assigned(&mut self, run: Token, attempt: Token, request: &Request) {
         match request {
-            Request::AnswerV2 { to: _, run: answered, attempt: of, answer } => {
+            Request::Answer { to: _, run: answered, attempt: of, answer } => {
                 assert_eq!((*answered, *of), (run, attempt), "an assignment is answered as itself");
                 match &answer.ending {
-                    host::EndingV2::Refused(_) => {}
-                    host::EndingV2::Ended { .. } | host::EndingV2::Parked { .. } | host::EndingV2::Failed { .. } => {
+                    host::Ending::Refused(_) => {}
+                    host::Ending::Ended { .. } | host::Ending::Parked { .. } | host::Ending::Failed { .. } => {
                         panic!("an assignment answered at once is refused: {answer:?}")
                     }
                 }
@@ -701,17 +698,17 @@ impl World {
                 assert!(self.hosted.insert(*owner, entry).is_none(), "a hosted run's token is its own");
                 assert!(self.admitted.insert((run, attempt), *owner).is_none(), "an attempt is admitted once");
             }
-            Request::RelayTyped { .. }
+            Request::Relay { .. }
             | Request::CancelRelay { .. }
             | Request::Bounced { .. }
             | Request::Grant { .. }
             | Request::Hosting { .. }
             | Request::Abort { .. }
-            | Request::StartTyped { .. }
-            | Request::DeliverTyped { .. }
-            | Request::ReplyTyped { .. }
+            | Request::Start { .. }
+            | Request::Message { .. }
+            | Request::Reply { .. }
             | Request::Stop { .. }
-            | Request::DeliverV2 { .. }
+            | Request::Deliver { .. }
             | Request::Save { .. }
             | Request::Turn { .. }
             | Request::AcknowledgeAgentTurn { .. }
@@ -723,7 +720,7 @@ impl World {
     fn route(&mut self, request: Request) {
         self.trace.log(self.now, format!("host -> {request:?}"));
         match request {
-            Request::AnswerV2 { to, run, attempt, answer } => {
+            Request::Answer { to, run, attempt, answer } => {
                 if let Some(owner) = self.admitted.remove(&(run, attempt)) {
                     assert!(self.parent.settled(owner), "a run answers once all of it has settled and is released");
                     let hosted = self.hosted.get(&owner).expect("admitted runs are hosted");
@@ -735,9 +732,9 @@ impl World {
                         self.path(path);
                     }
                 }
-                self.send_engine(Request::AnswerV2 { to, run, attempt, answer });
+                self.send_engine(Request::Answer { to, run, attempt, answer });
             }
-            Request::RelayTyped { run, attempt, delivery: call, .. } => {
+            Request::Relay { run, attempt, delivery: call, .. } => {
                 assert!(self.relays.insert(call, (run, attempt)).is_none(), "a relay starts once");
                 self.send_engine(request);
             }
@@ -759,7 +756,7 @@ impl World {
                 let acts = self.engine.reconnected(&runs);
                 self.acts(acts);
             }
-            Request::DeliverTyped { agent, ref words, .. } => {
+            Request::Message { agent, ref words, .. } => {
                 let owner = *self.agents.get(&agent).expect("a delivery is to a started agent");
                 let len = u64::try_from(words.len()).expect("fits");
                 assert!(len <= self.settings.host.event_bytes, "an event within the limits");
@@ -770,7 +767,7 @@ impl World {
                 hosted.delivered = Some(place);
                 self.parcel(request);
             }
-            Request::ReplyTyped { agent, ref call, ref reply } => {
+            Request::Reply { agent, ref call, ref reply } => {
                 let call = crate::fixtures::callback(call);
                 self.calls.end((agent, call));
                 if self.kept.remove(&(agent, call)) {
@@ -804,11 +801,11 @@ impl World {
                 assert!(hosted.prepared.is_none(), "an abort is of a prepare in flight");
                 self.parcel(request);
             }
-            Request::StartTyped { owner, .. } => {
+            Request::Start { owner, .. } => {
                 self.hosted.get_mut(&owner).expect("a start is of a hosted run").launch = Launch::Asked;
                 self.parcel(request);
             }
-            Request::DeliverV2 { .. } | Request::Save { .. } | Request::Release { .. } | Request::Grant { .. } => {
+            Request::Deliver { .. } | Request::Save { .. } | Request::Release { .. } | Request::Grant { .. } => {
                 self.parcel(request);
             }
         }
@@ -867,7 +864,7 @@ impl World {
                     self.stage.push(Arrival { event, stale, duplicate: false });
                 }
                 Delivery::Engine(request) => {
-                    if let Request::RelayTyped { delivery: call, .. } = &request
+                    if let Request::Relay { delivery: call, .. } = &request
                         && !self.relays.contains_key(call)
                     {
                         continue;
@@ -958,10 +955,10 @@ fn fact_kind(fact: Fact) -> &'static str {
 /// Checks that a run is answered as it first said it finishes: its own ending
 /// stands even after a stop, a cancel it reports after a stop being the
 /// worker's; a run that said nothing is answered as failed.
-fn check_word(hosted: &Hosted, answer: &host::EndingV2) {
+fn check_word(hosted: &Hosted, answer: &host::Ending) {
     let failure = match answer {
-        host::EndingV2::Failed { failure, .. } => Some(*failure),
-        host::EndingV2::Refused(_) | host::EndingV2::Ended { .. } | host::EndingV2::Parked { .. } => None,
+        host::Ending::Failed { failure, .. } => Some(*failure),
+        host::Ending::Refused(_) | host::Ending::Ended { .. } | host::Ending::Parked { .. } => None,
     };
     match hosted.word {
         Some(Word::Ended) => assert!(matches_ended(answer), "a run that said it ended is answered so: {answer:?}"),
@@ -982,28 +979,28 @@ fn check_word(hosted: &Hosted, answer: &host::EndingV2) {
     }
 }
 
-fn matches_ended(answer: &host::EndingV2) -> bool {
+fn matches_ended(answer: &host::Ending) -> bool {
     match answer {
-        host::EndingV2::Ended { .. } => true,
-        host::EndingV2::Refused(_) | host::EndingV2::Parked { .. } | host::EndingV2::Failed { .. } => false,
+        host::Ending::Ended { .. } => true,
+        host::Ending::Refused(_) | host::Ending::Parked { .. } | host::Ending::Failed { .. } => false,
     }
 }
 
-fn matches_parked(answer: &host::EndingV2) -> bool {
+fn matches_parked(answer: &host::Ending) -> bool {
     match answer {
-        host::EndingV2::Parked { .. } => true,
-        host::EndingV2::Refused(_) | host::EndingV2::Ended { .. } | host::EndingV2::Failed { .. } => false,
+        host::Ending::Parked { .. } => true,
+        host::Ending::Refused(_) | host::Ending::Ended { .. } | host::Ending::Failed { .. } => false,
     }
 }
 
 /// Where a cancelled run was when its cancel came, if before it was live.
-fn cancel_path(hosted: &Hosted, answer: &host::EndingV2) -> Option<&'static str> {
+fn cancel_path(hosted: &Hosted, answer: &host::Ending) -> Option<&'static str> {
     match answer {
-        host::EndingV2::Failed { failure: Failure::Cancelled(_), .. } => {}
-        host::EndingV2::Refused(_)
-        | host::EndingV2::Ended { .. }
-        | host::EndingV2::Parked { .. }
-        | host::EndingV2::Failed { .. } => {
+        host::Ending::Failed { failure: Failure::Cancelled(_), .. } => {}
+        host::Ending::Refused(_)
+        | host::Ending::Ended { .. }
+        | host::Ending::Parked { .. }
+        | host::Ending::Failed { .. } => {
             return None;
         }
     }

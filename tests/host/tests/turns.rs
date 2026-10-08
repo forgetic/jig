@@ -1,30 +1,30 @@
 //! Version-two worker host peers: engine commits, a lossy link, and an
 //! agent and workspace that settle through the host's requests.
 
-use jig_host::{AnsweredCall, DeliveryOutcome, EndingV2, Failure, Reason, SettledAnswer};
+use jig_host::{AnsweredCall, DeliveryOutcome, Ending, Failure, Reason, SettledAnswer};
 use jig_host_world::turn_world::World;
 use skein_lib::{Duration, Token};
 
 #[test]
 fn a_host_call_reaches_the_engine_with_its_tool_write_flag_and_input() {
     let mut world = World::new();
-    world.assign_typed(Box::new([]), Box::new([]));
-    world.relay_typed(true);
-    let Some(call) = world.typed_relay() else { panic!("the engine received the call") };
+    world.assign_conversation(Box::new([]), Box::new([]));
+    world.call(true);
+    let Some(call) = world.relayed_call() else { panic!("the engine received the call") };
     assert_eq!(&*call.name, b"call-one");
     assert_eq!(&*call.tool, b"inspect");
     assert!(call.writes);
     assert_eq!(&*call.input, b"input words");
     assert_eq!(call.deadline, Duration::from_nanos(37));
-    assert_eq!(world.typed_reply(), Some(&b"call-one"[..]));
+    assert_eq!(world.answered_call(), Some(&b"call-one"[..]));
 }
 
 #[test]
 fn a_message_reaches_the_agent_with_its_label_and_words() {
     let mut world = World::new();
-    world.assign_typed(Box::new([]), Box::new([]));
-    world.message_typed();
-    let Some(message) = world.typed_message() else { panic!("the agent received the message") };
+    world.assign_conversation(Box::new([]), Box::new([]));
+    world.message_from();
+    let Some(message) = world.received_message() else { panic!("the agent received the message") };
     assert_eq!(message.name, Token::new(17));
     assert_eq!(&*message.sender, b"requester");
     assert_eq!(&*message.words, b"please check");
@@ -49,8 +49,8 @@ fn a_resumed_run_starts_with_its_turn_bodies_and_answered_calls() {
             },
         },
     ];
-    world.assign_typed(turns, answered.into_boxed_slice());
-    let Some(start) = world.typed_start() else { panic!("the agent started") };
+    world.assign_conversation(turns, answered.into_boxed_slice());
+    let Some(start) = world.started_state() else { panic!("the agent started") };
     assert_eq!(start.activation, 932);
     assert_eq!(&*start.turns, &[Box::from(&b"first"[..]), Box::from(&b"second"[..])]);
     assert_eq!(&start.answered[0].name[..], b"call one");
@@ -98,7 +98,7 @@ fn an_answer_made_without_contact_follows_retained_turns_after_hello() {
     world.finish(1, false);
     world.reconnect();
     let Some(answer) = world.answer() else { panic!("the host answered") };
-    assert!(matches!(answer.ending, EndingV2::Ended { .. }));
+    assert!(matches!(answer.ending, Ending::Ended { .. }));
     world.commit_turn(1);
     world.acknowledge_answer();
     world.assert_settled();
@@ -116,7 +116,7 @@ fn contact_cancel_waits_for_the_agent_then_saves_and_answers() {
     assert!(world.answer().is_none(), "a live agent blocks workspace save and answer");
     world.gone();
     let Some(answer) = world.answer() else { panic!("the cancelled run answers after its agent is gone") };
-    assert!(matches!(&answer.ending, EndingV2::Failed { failure: Failure::Cancelled(Reason::Contact), .. }));
+    assert!(matches!(&answer.ending, Ending::Failed { failure: Failure::Cancelled(Reason::Contact), .. }));
     world.reconnect();
     world.commit_turn(1);
     world.acknowledge_answer();

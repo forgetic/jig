@@ -20,14 +20,14 @@ use core::mem;
 use skein_lib::{Env, Id, Queue, ReplyTo, Token};
 
 use crate::attempt::{Attempt, State, Where};
-use crate::boundary::{Bounce, Request, TypedCall, TypedMessage, Undelivered};
+use crate::boundary::{Bounce, Call, Message, Request, Undelivered};
 use crate::channel;
 use crate::domain::Domain;
 use crate::facts::Fact;
 
 /// A relayed call the parent has yet to answer.
 #[derive(PartialEq, Eq, Hash, Debug)]
-pub(crate) struct Call {
+pub(crate) struct PendingCall {
     attempt: Id<Attempt>,
     /// The worker's name for it, kept until the parent's answer.
     name: Box<[u8]>,
@@ -85,31 +85,31 @@ fn owned(domain: &Domain, channel: Token, run: Token, attempt: Token) -> Option<
 
 /// A typed call is passed through whole, with only its bounded name retained
 /// for the answer. A rejected call is returned whole to its parent.
-pub(crate) fn relay_typed(
+pub(crate) fn relay(
     domain: &mut Domain,
     env: &Env<crate::limits::Limits>,
     channel: Token,
     run: Token,
     attempt: Token,
-    call: TypedCall,
+    call: Call,
     out: &mut Queue<Request>,
 ) {
     let Some(id) = owned(domain, channel, run, attempt) else {
         domain.facts.push(Fact::Dropped);
-        out.push(Request::DropTyped { call });
+        out.push(Request::DropCall { call });
         return;
     };
     if u64::try_from(call.name.len()).expect("a length fits") > env.limits.call_name_bytes {
         domain.facts.push(Fact::Dropped);
-        out.push(Request::DropTyped { call });
+        out.push(Request::DropCall { call });
         return;
     }
     let name = call.name.clone();
-    match domain.calls.insert(Call { attempt: id, name }) {
-        Ok(id) => out.push(Request::RelayTyped { reply_to: ReplyTo::new(id.token()), run, attempt, call }),
+    match domain.calls.insert(PendingCall { attempt: id, name }) {
+        Ok(id) => out.push(Request::Relay { reply_to: ReplyTo::new(id.token()), run, attempt, call }),
         Err(_) => {
             domain.facts.push(Fact::Dropped);
-            out.push(Request::DropTyped { call });
+            out.push(Request::DropCall { call });
         }
     }
 }
@@ -117,7 +117,7 @@ pub(crate) fn relay_typed(
 /// The parent's answer to a relayed call: passed down to the run's worker,
 /// if its attempt is still the live claim and on a worker in contact.
 pub(crate) fn relayed(domain: &mut Domain, to: ReplyTo, answer: Token, out: &mut Queue<Request>) {
-    let id = Id::<Call>::from_token(to.into_token());
+    let id = Id::<PendingCall>::from_token(to.into_token());
     let entry = domain.calls.get_mut(id).expect("the parent answers a call in flight, which is kept until it does");
     let owner = entry.attempt;
     let name = mem::replace(&mut entry.name, Box::new([]));
@@ -125,7 +125,7 @@ pub(crate) fn relayed(domain: &mut Domain, to: ReplyTo, answer: Token, out: &mut
     match live(domain, owner) {
         Live::On(channel) => {
             let entry = domain.attempts.get(owner).expect("a live claim is tracked");
-            out.push(Request::RelayedTyped { channel, run: entry.run, attempt: entry.token, call: name, answer });
+            out.push(Request::Relayed { channel, run: entry.run, attempt: entry.token, call: name, answer });
         }
         Live::Adrift | Live::Not => {
             domain.facts.push(Fact::Dropped);
@@ -135,18 +135,12 @@ pub(crate) fn relayed(domain: &mut Domain, to: ReplyTo, answer: Token, out: &mut
 }
 
 /// A typed message follows the same host fence as an opaque inbound event.
-pub(crate) fn inbound_typed(
-    domain: &mut Domain,
-    run: Token,
-    attempt: Token,
-    message: TypedMessage,
-    out: &mut Queue<Request>,
-) {
+pub(crate) fn inbound(domain: &mut Domain, run: Token, attempt: Token, message: Message, out: &mut Queue<Request>) {
     let undelivered = match domain.names.get(&(run, attempt)) {
         Some(&id) => match &domain.attempts.get(id).expect("a named attempt is tracked").state {
             State::Claimed { at: Where::On(channel), .. } => {
                 let channel = channel::token(&domain.channels, *channel);
-                out.push(Request::InboundTyped { channel, run, attempt, message });
+                out.push(Request::Inbound { channel, run, attempt, message });
                 return;
             }
             State::Waiting { .. } => Undelivered::Unplaced,
@@ -161,7 +155,7 @@ pub(crate) fn inbound_typed(
         },
         None => Undelivered::Gone,
     };
-    out.push(Request::UndeliveredTyped { run, attempt, message, undelivered });
+    out.push(Request::Undelivered { run, attempt, message, undelivered });
 }
 
 /// A bounce, from a worker: up to the parent, if its attempt is the live

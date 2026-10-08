@@ -15,7 +15,7 @@ pub(crate) struct Call {
     pub(crate) hosted: Id<Hosted>,
     pub(crate) state: State,
     /// The agent's opaque name, moved out when its one reply is sent.
-    pub(crate) typed: Option<Box<[u8]>>,
+    pub(crate) name: Option<Box<[u8]>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

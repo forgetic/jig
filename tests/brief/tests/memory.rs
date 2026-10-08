@@ -9,7 +9,7 @@ use skein_world::domain::heap::{self, Meter};
 static HEAP: heap::Counting = heap::Counting;
 
 #[test]
-fn full_typed_sections_fit_the_declared_worst_case() {
+fn full_sections_fit_the_declared_worst_case() {
     let limits = LIMITS;
     let bound = gather_worst_case(&limits).expect("positive limits fit");
     let mut domain = GatherDomain::new(&limits);

@@ -11,7 +11,7 @@ use skein_lib::{Duration, ReplyTo, Token};
 #[derive(PartialEq, Eq, Debug)]
 pub enum Event {
     /// A named message with its sender label and words.
-    InboundTyped {
+    Inbound {
         run: Token,
         attempt: Token,
         name: Token,
@@ -19,20 +19,20 @@ pub enum Event {
         words: Box<[u8]>,
     },
     /// A host or delivery call named in the run's own bytes.
-    CalledTyped {
+    Called {
         owner: Token,
         call: Box<[u8]>,
         ask: Ask,
     },
     /// The agent withdrew its typed call after its deadline.
-    WithdrawnTyped {
+    Withdrawn {
         owner: Token,
         call: Box<[u8]>,
     },
     /// An assignment with ordered turn bodies and calls settled after them.
-    AssignTyped {
+    Assign {
         reply_to: ReplyTo,
-        assignment: AssignmentTyped,
+        assignment: Assignment,
     },
     /// One completed conversation turn, from its started agent.
     Turn {
@@ -51,11 +51,11 @@ pub enum Event {
         turn: u32,
     },
     /// Version-two last word, with cumulative accounting.
-    FinishedV2 {
+    Finished {
         owner: Token,
         turns: u32,
         spent: u64,
-        finish: FinishV2,
+        finish: Finish,
     },
     /// From the engine: cancel the run `run`'s attempt `attempt`.
     Cancel {
@@ -151,7 +151,7 @@ pub enum Event {
 #[derive(PartialEq, Eq, Debug)]
 pub enum Request {
     /// Relay a named host tool call with its effect classification and input.
-    RelayTyped {
+    Relay {
         run: Token,
         attempt: Token,
         call: Box<[u8]>,
@@ -162,20 +162,20 @@ pub enum Request {
         deadline: Duration,
     },
     /// Pass a named message to the agent.
-    DeliverTyped {
+    Message {
         agent: Token,
         name: Token,
         sender: Box<[u8]>,
         words: Box<[u8]>,
     },
     /// Answer a call under the agent's opaque name.
-    ReplyTyped {
+    Reply {
         agent: Token,
         call: Box<[u8]>,
         reply: Reply,
     },
     /// Start an agent with its activation and committed conversation state.
-    StartTyped {
+    Start {
         owner: Token,
         workspace: Option<Token>,
         charter: Box<[u8]>,
@@ -184,11 +184,11 @@ pub enum Request {
         answered: Box<[AnsweredCall]>,
         grants: Box<[Grant]>,
     },
-    AnswerV2 {
+    Answer {
         to: ReplyTo,
         run: Token,
         attempt: Token,
-        answer: AnswerV2,
+        answer: Answer,
     },
     /// A transmission copy of a turn retained until engine acknowledgement.
     Turn {
@@ -202,7 +202,7 @@ pub enum Request {
         agent: Token,
         turn: u32,
     },
-    DeliverV2 {
+    Deliver {
         owner: Token,
         workspace: Token,
         title: Box<[u8]>,
@@ -266,20 +266,20 @@ pub enum Request {
 #[derive(PartialEq, Eq, Debug)]
 pub enum ToAgent {
     /// Pass a named message with its sender label and words.
-    MessageTyped {
+    Message {
         agent: Token,
         name: Token,
         sender: Box<[u8]>,
         words: Box<[u8]>,
     },
     /// Answer a call under the agent's opaque name.
-    AnswerTyped {
+    Answer {
         agent: Token,
         call: Box<[u8]>,
         reply: Reply,
     },
     /// Start an agent with its activation and committed conversation state.
-    StartTyped {
+    Start {
         owner: Token,
         workspace: Option<Token>,
         charter: Box<[u8]>,
@@ -307,13 +307,13 @@ pub enum ToAgent {
 #[derive(PartialEq, Eq, Debug)]
 pub enum FromAgent {
     /// A named host or delivery call with typed arguments.
-    CalledTyped {
+    Called {
         owner: Token,
         call: Box<[u8]>,
         ask: Ask,
     },
     /// The agent withdrew its named call.
-    WithdrawnTyped {
+    Withdrawn {
         owner: Token,
         call: Box<[u8]>,
     },
@@ -325,11 +325,11 @@ pub enum FromAgent {
         owner: Token,
         fact: Box<[u8]>,
     },
-    FinishedV2 {
+    Finished {
         owner: Token,
         turns: u32,
         spent: u64,
-        finish: FinishV2,
+        finish: Finish,
     },
     Started {
         owner: Token,
@@ -358,11 +358,11 @@ impl Event {
     #[must_use]
     pub fn from_agent(event: FromAgent) -> Event {
         match event {
-            FromAgent::CalledTyped { owner, call, ask } => Event::CalledTyped { owner, call, ask },
-            FromAgent::WithdrawnTyped { owner, call } => Event::WithdrawnTyped { owner, call },
+            FromAgent::Called { owner, call, ask } => Event::Called { owner, call, ask },
+            FromAgent::Withdrawn { owner, call } => Event::Withdrawn { owner, call },
             FromAgent::Turn { owner, turn } => Event::Turn { owner, turn },
             FromAgent::Facts { owner, fact } => Event::Facts { owner, fact },
-            FromAgent::FinishedV2 { owner, turns, spent, finish } => Event::FinishedV2 { owner, turns, spent, finish },
+            FromAgent::Finished { owner, turns, spent, finish } => Event::Finished { owner, turns, spent, finish },
             FromAgent::Started { owner, agent } => Event::Started { owner, agent },
             FromAgent::Bounced { owner, name, bounce } => Event::Bounced { owner, name, bounce },
             FromAgent::Yielded { owner } => Event::Yielded { owner },
@@ -377,21 +377,19 @@ impl Request {
     /// any request addressed to another capability unchanged.
     pub fn to_agent(self) -> Result<ToAgent, Request> {
         match self {
-            Request::DeliverTyped { agent, name, sender, words } => {
-                Ok(ToAgent::MessageTyped { agent, name, sender, words })
-            }
-            Request::ReplyTyped { agent, call, reply } => Ok(ToAgent::AnswerTyped { agent, call, reply }),
-            Request::StartTyped { owner, workspace, charter, activation, turns, answered, grants } => {
-                Ok(ToAgent::StartTyped { owner, workspace, charter, activation, turns, answered, grants })
+            Request::Message { agent, name, sender, words } => Ok(ToAgent::Message { agent, name, sender, words }),
+            Request::Reply { agent, call, reply } => Ok(ToAgent::Answer { agent, call, reply }),
+            Request::Start { owner, workspace, charter, activation, turns, answered, grants } => {
+                Ok(ToAgent::Start { owner, workspace, charter, activation, turns, answered, grants })
             }
 
             Request::Grant { agent, grant } => Ok(ToAgent::Grant { agent, grant }),
             Request::AcknowledgeAgentTurn { agent, turn } => Ok(ToAgent::Acknowledge { agent, turn }),
             Request::Stop { agent } => Ok(ToAgent::Cancel { agent }),
-            other @ (Request::RelayTyped { .. }
-            | Request::AnswerV2 { .. }
+            other @ (Request::Relay { .. }
+            | Request::Answer { .. }
             | Request::Turn { .. }
-            | Request::DeliverV2 { .. }
+            | Request::Deliver { .. }
             | Request::CancelRelay { .. }
             | Request::Bounced { .. }
             | Request::Hosting { .. }
@@ -405,7 +403,7 @@ impl Request {
 
 /// What the core gives the host for one run (domain/hosts.md, section 2).
 #[derive(PartialEq, Eq, Hash, Debug)]
-pub struct Assignment {
+pub struct RunAssignment {
     /// The engine's names for the run and for this attempt at it.
     pub run: Token,
     pub attempt: Token,
@@ -420,8 +418,8 @@ pub struct Assignment {
 
 /// An assignment with the conversation state the agent consumes (hosts.md, 2).
 #[derive(PartialEq, Eq, Hash, Debug)]
-pub struct AssignmentTyped {
-    pub assignment: Assignment,
+pub struct Assignment {
+    pub assignment: RunAssignment,
     /// Ordered committed turn bodies. An empty list starts a fresh conversation.
     pub turns: Box<[Box<[u8]>]>,
     /// Calls settled after the last committed turn, in commit order.
@@ -457,21 +455,21 @@ pub struct Turn {
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
-pub enum FinishV2 {
+pub enum Finish {
     Ended { outcome: Box<[u8]> },
     Parked,
     Failed { failure: RunFailure },
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
-pub struct AnswerV2 {
+pub struct Answer {
     pub turns: u32,
     pub spent: u64,
-    pub ending: EndingV2,
+    pub ending: Ending,
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
-pub enum EndingV2 {
+pub enum Ending {
     Refused(Refusal),
     Ended { outcome: Box<[u8]>, work: Work },
     Parked { work: Work },
@@ -491,13 +489,13 @@ pub struct Workspace {
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub enum Ask {
     /// A host tool call, carrying its charter name, write flag, input and time left.
-    RelayTyped {
+    Relay {
         tool: Box<[u8]>,
         writes: bool,
         input: Box<[u8]>,
         deadline: Duration,
     },
-    DeliverV2 {
+    Deliver {
         title: Box<[u8]>,
         body: Box<[u8]>,
     },

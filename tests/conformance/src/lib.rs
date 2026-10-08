@@ -287,7 +287,7 @@ impl Application for Testing {
     ) -> Vec<Input<root::Event, root::Record>> {
         let Delivery::Held(mut delivery) = delivery else {
             return match delivery {
-                Delivery::Now(core::Now::CallTyped { to, run, attempt, call }) => {
+                Delivery::Now(core::Now::Call { to, run, attempt, call }) => {
                     peers.peers.opaque_answer(to, run, attempt, &call).into_iter().map(Input::Event).collect()
                 }
                 Delivery::Now(core::Now::Account(accounts::Request::Refresh { account, generation })) => {
@@ -378,7 +378,7 @@ impl Application for Testing {
                     more,
                 })))]
             }
-            root::Delivery::Core(_) | root::Delivery::TypedAnswer { .. } | root::Delivery::Message { .. } => Vec::new(),
+            root::Delivery::Core(_) | root::Delivery::CallAnswer { .. } | root::Delivery::Message { .. } => Vec::new(),
             root::Delivery::Fleet(_) => panic!("root consumes fleet continuations"),
         }
     }

@@ -116,11 +116,11 @@ pub enum Held {
     /// A rendered answer and all opaque evidence have reached the store.
     SettledCall { to: ReplyTo, key: CallKey, call: crate::SettledCall },
     /// A claimed host receives the parent's typed conversation references.
-    AssignTyped { channel: Token, run: Token, attempt: Token, activation: u64, assignment: fleet::TypedAssignment },
+    Assign { channel: Token, run: Token, attempt: Token, activation: u64, assignment: fleet::Assignment },
     /// The host receives an answer under its original opaque call name.
-    RelayedTyped { channel: Token, run: Token, attempt: Token, call: Box<[u8]>, answer: Token },
+    Relayed { channel: Token, run: Token, attempt: Token, call: Box<[u8]>, answer: Token },
     /// The host receives the same named label and words the root supplied.
-    InboundTyped { channel: Token, run: Token, attempt: Token, message: fleet::TypedMessage },
+    Inbound { channel: Token, run: Token, attempt: Token, message: fleet::Message },
     /// A saved word relayed to its fenced live attempt after commit.
     Relay { task: u64, attempt: u64, previous: Option<u64>, word: tasks::Word },
     /// A party's keyed terminal, released after its decision is durable.
@@ -169,11 +169,11 @@ pub enum Now {
     /// A settled answer exceeded its bounded record or no retained call owns it.
     SettledCallRefused { to: ReplyTo, key: CallKey, name: Box<[u8]>, tool: Box<[u8]> },
     /// The protocol layer decodes this attested tool and input at the root boundary.
-    CallTyped { to: ReplyTo, run: Token, attempt: Token, call: fleet::TypedCall },
+    Call { to: ReplyTo, run: Token, attempt: Token, call: fleet::Call },
     /// A fenced or over-capacity typed call changed nothing.
-    DropTyped { call: fleet::TypedCall },
+    DropCall { call: fleet::Call },
     /// The host did not take this typed message; its durable inbox word remains unread.
-    UndeliveredTyped { run: Token, attempt: Token, message: fleet::TypedMessage },
+    Undelivered { run: Token, attempt: Token, message: fleet::Message },
     /// A sign-in whose core-owned person or session counter is exhausted.
     SignInRefused { to: ReplyTo },
     /// A volatile watch refused before any durable decision.
@@ -5145,12 +5145,12 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                 );
                 continue;
             }
-            fleet::Request::AssignTyped { channel, kind, run, attempt, activation, assignment } => {
+            fleet::Request::Assign { channel, kind, run, attempt, activation, assignment } => {
                 record_host(core, &mut out, run, attempt, kind);
                 out.push(Request::Held(Box::new(Held::ViewStart { run, attempt })));
-                Request::Held(Box::new(Held::AssignTyped { channel, run, attempt, activation, assignment }))
+                Request::Held(Box::new(Held::Assign { channel, run, attempt, activation, assignment }))
             }
-            fleet::Request::InboundTyped { channel, run, attempt, message } => {
+            fleet::Request::Inbound { channel, run, attempt, message } => {
                 let deliver = match core.relaying.take() {
                     Some(relay) => {
                         assert!(message.name.raw() == relay.message, "relay name identifies word");
@@ -5174,18 +5174,18 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                     });
                     out.push(Request::Write(Write::Save(Record::Core(CoreRecord::RunProof(proof.clone())))));
                 }
-                Request::Held(Box::new(Held::InboundTyped { channel, run, attempt, message }))
+                Request::Held(Box::new(Held::Inbound { channel, run, attempt, message }))
             }
-            fleet::Request::RelayTyped { reply_to, run, attempt, call } => {
-                Request::Now(Box::new(Now::CallTyped { to: reply_to, run, attempt, call }))
+            fleet::Request::Relay { reply_to, run, attempt, call } => {
+                Request::Now(Box::new(Now::Call { to: reply_to, run, attempt, call }))
             }
-            fleet::Request::RelayedTyped { channel, run, attempt, call, answer } => {
-                Request::Held(Box::new(Held::RelayedTyped { channel, run, attempt, call, answer }))
+            fleet::Request::Relayed { channel, run, attempt, call, answer } => {
+                Request::Held(Box::new(Held::Relayed { channel, run, attempt, call, answer }))
             }
-            fleet::Request::DropTyped { call } => Request::Now(Box::new(Now::DropTyped { call })),
-            fleet::Request::UndeliveredTyped { run, attempt, message, undelivered: _ } => {
+            fleet::Request::DropCall { call } => Request::Now(Box::new(Now::DropCall { call })),
+            fleet::Request::Undelivered { run, attempt, message, undelivered: _ } => {
                 let _pending = core.relaying.take();
-                Request::Now(Box::new(Now::UndeliveredTyped { run, attempt, message }))
+                Request::Now(Box::new(Now::Undelivered { run, attempt, message }))
             }
             fleet::Request::Grant { .. }
             | fleet::Request::Rejected { .. }
@@ -5367,7 +5367,7 @@ pub fn resume_fleet(core: &mut Core, env: &Env<Limits>) -> Requests {
 #[expect(clippy::too_many_lines, reason = "each bounded child event has one exhaustive route")]
 fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<Event>) -> Requests {
     match event {
-        Event::SettledCall { to, key, call } => crate::typed::settle(core, &env.limits, to, key, call),
+        Event::SettledCall { to, key, call } => crate::conversation::settle(core, &env.limits, to, key, call),
         Event::EffectStart { owner, connector, origin } => crate::effects::start(core, env, owner, connector, origin),
         Event::EffectConnector(event) => crate::effects::connector(core, env, work, event),
         Event::EffectDeadline => crate::effects::deadline(core, env),

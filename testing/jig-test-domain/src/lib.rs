@@ -92,7 +92,7 @@ pub enum Delivery {
     /// Core-held party, host, task or view output.
     Core(core::Held),
     /// A typed settled answer with its original opaque call name.
-    TypedAnswer { channel: Token, task: u64, attempt: u64, name: Box<[u8]>, call: core::SettledCall },
+    CallAnswer { channel: Token, task: u64, attempt: u64, name: Box<[u8]>, call: core::SettledCall },
     /// A prepared worker assignment, after the claim is durable.
     Assigned { channel: Token, assignment: Assignment },
     /// A post-commit continuation inside the core's fleet.
@@ -389,7 +389,7 @@ enum Work {
 enum Payload {
     Turn { task: u64, attempt: u64, turn: u32, cumulative: u64, read: Option<u64>, transcript: Box<[u8]> },
     Answer { task: u64, attempt: u64, cumulative: u64, end: tasks::End },
-    TypedAnswer(core::SettledCall),
+    SettledCall(core::SettledCall),
     InboxWord(tasks::Word),
 }
 
@@ -692,7 +692,7 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
             }
             other @ (Delivery::Message { .. }
             | Delivery::Restart(_)
-            | Delivery::TypedAnswer { .. }
+            | Delivery::CallAnswer { .. }
             | Delivery::Core(_)
             | Delivery::Assigned { .. }
             | Delivery::System { .. }
@@ -845,9 +845,9 @@ fn relay_message(domain: &mut Domain, task: u64, attempt: u64, previous: Option<
         domain.core.relaying.replace(core::PendingRelay { previous, message: name.raw() }).is_none(),
         "one committed relay in flight"
     );
-    Event::Core(core::Event::Fleet(fleet::Event::InboundTyped {
+    Event::Core(core::Event::Fleet(fleet::Event::Inbound {
         run: Token::new(task),
         attempt: Token::new(attempt),
-        message: fleet::TypedMessage { name, sender: body, words: body },
+        message: fleet::Message { name, sender: body, words: body },
     }))
 }

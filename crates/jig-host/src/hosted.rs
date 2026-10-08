@@ -11,8 +11,8 @@ use skein_lib::{Env, Id, List, Map, Queue, ReplyTo, Set, Slab, Token};
 
 use crate::assignment::{self, len};
 use crate::boundary::{
-    AgentFailure, AnsweredCall, Ask, Assignment, AssignmentTyped, Bounce, Delivery, EndingV2, Failure, FinishV2, Grant,
-    Hosting, Phase, Preparation, Reason, Refusal, Reply, Request, RunFailure, SettledAnswer, Work,
+    AgentFailure, AnsweredCall, Ask, Assignment, Bounce, Delivery, Ending, Failure, Finish, Grant, Hosting, Phase,
+    Preparation, Reason, Refusal, Reply, Request, RunAssignment, RunFailure, SettledAnswer, Work,
 };
 use crate::call::{self, Call};
 use crate::domain::Domain;
@@ -41,7 +41,7 @@ pub(crate) struct Hosted {
 
 #[derive(Debug)]
 struct Runtime {
-    start: Option<TypedStart>,
+    start: Option<Conversation>,
     turns: u32,
     spent: u64,
 }
@@ -49,15 +49,15 @@ struct Runtime {
 type CallName = Box<[u8]>;
 
 fn reply(agent: Token, call: CallName, reply: Reply, out: &mut Queue<Request>) {
-    out.push(Request::ReplyTyped { agent, call, reply });
+    out.push(Request::Reply { agent, call, reply });
 }
 
 fn take_name(call: &mut Call) -> CallName {
-    call.typed.take().expect("one reply for each typed call")
+    call.name.take().expect("one reply for each typed call")
 }
 
 #[derive(Debug)]
-struct TypedStart {
+struct Conversation {
     turns: Box<[Box<[u8]>]>,
     answered: Box<[AnsweredCall]>,
 }
@@ -88,16 +88,16 @@ enum State {
     Waiting { reply_to: ReplyTo, workspace: Option<Token>, agent: Token },
     /// It ends with `ending` once its agent has gone (`gone`) and its delivery in
     /// flight has settled.
-    Stopping { reply_to: ReplyTo, workspace: Option<Token>, agent: Token, ending: Ending, gone: bool },
+    Stopping { reply_to: ReplyTo, workspace: Option<Token>, agent: Token, ending: RunEnding, gone: bool },
     /// Its unfinished work is being saved; it ends with `ending` once it is.
-    Saving { reply_to: ReplyTo, workspace: Token, ending: Ending },
+    Saving { reply_to: ReplyTo, workspace: Token, ending: RunEnding },
     /// Terminal: holds nothing.
     Closed,
 }
 
 /// How a run ends.
 #[derive(Debug)]
-enum Ending {
+enum RunEnding {
     /// It ended with `outcome`, as it said.
     Ended { outcome: Box<[u8]> },
     /// It parked, as it said.
@@ -113,24 +113,24 @@ enum Ending {
 // Entry points, one per event: look the run up, take its state out, run the
 // cell's handler, conclude from the run's new state.
 
-pub(crate) fn assign_typed(
+pub(crate) fn assign(
     domain: &mut Domain,
     env: &Env<Limits>,
     reply_to: ReplyTo,
-    next: AssignmentTyped,
+    next: Assignment,
     out: &mut Queue<Request>,
 ) {
-    let AssignmentTyped { assignment, turns, answered } = next;
-    if !typed_fits(&turns, &answered, &env.limits) {
+    let Assignment { assignment, turns, answered } = next;
+    if !conversation_fits(&turns, &answered, &env.limits) {
         let invalid = crate::Invalid::Transcript;
-        refuse_v2(reply_to, &assignment, Refusal::Invalid(invalid), out);
+        refuse(reply_to, &assignment, Refusal::Invalid(invalid), out);
         return;
     }
-    let typed = TypedStart { turns, answered };
-    assign_runtime(domain, env, reply_to, assignment, Runtime { start: Some(typed), turns: 0, spent: 0 }, out);
+    let conversation = Conversation { turns, answered };
+    assign_runtime(domain, env, reply_to, assignment, Runtime { start: Some(conversation), turns: 0, spent: 0 }, out);
 }
 
-fn typed_fits(turns: &[Box<[u8]>], answered: &[AnsweredCall], limits: &Limits) -> bool {
+fn conversation_fits(turns: &[Box<[u8]>], answered: &[AnsweredCall], limits: &Limits) -> bool {
     let Ok(turn_count) = u64::try_from(turns.len()) else { return false };
     let Ok(turn_size) = u64::try_from(size_of::<Box<[u8]>>()) else { return false };
     let Some(mut bytes) = turn_count.checked_mul(turn_size) else {
@@ -175,7 +175,7 @@ fn assign_runtime(
     domain: &mut Domain,
     env: &Env<Limits>,
     reply_to: ReplyTo,
-    assignment: Assignment,
+    assignment: RunAssignment,
     runtime: Runtime,
     out: &mut Queue<Request>,
 ) {
@@ -199,7 +199,7 @@ fn assign_runtime(
         refused(reply_to, &assignment, Refusal::Busy, &runtime, out);
         return;
     }
-    let Assignment { run, attempt, workspace, save, charter, grants } = assignment;
+    let RunAssignment { run, attempt, workspace, save, charter, grants } = assignment;
     let held = Queue::with_capacity(env.limits.held);
     let entry = Hosted {
         run,
@@ -224,7 +224,7 @@ fn assign_runtime(
 }
 
 #[expect(clippy::too_many_arguments, reason = "one typed message's fields enter through the host boundary")]
-pub(crate) fn inbound_typed(
+pub(crate) fn inbound(
     domain: &mut Domain,
     env: &Env<Limits>,
     run: Token,
@@ -296,7 +296,7 @@ pub(crate) fn is_hosting(domain: &Domain, run: Token, attempt: Token) -> bool {
     fenced(&domain.names, &domain.hosted, run, attempt).is_some()
 }
 
-pub(crate) fn is_relayed_for(domain: &Domain, run: Token, attempt: Token, call: Token) -> bool {
+pub(crate) fn owns_relay(domain: &Domain, run: Token, attempt: Token, call: Token) -> bool {
     let Some(id) = fenced(&domain.names, &domain.hosted, run, attempt) else {
         return false;
     };
@@ -415,21 +415,21 @@ fn start_prepared(domain: &mut Domain, owner: Token, workspace: Option<Token>, o
             for grant in &entry.grants {
                 grants.push(*grant).expect("room for every grant");
             }
-            let typed = entry.runtime.start.take().expect("an agent is started once");
-            out.push(Request::StartTyped {
+            let conversation = entry.runtime.start.take().expect("an agent is started once");
+            out.push(Request::Start {
                 owner,
                 workspace,
                 charter,
                 activation: entry.attempt.raw(),
-                turns: typed.turns,
-                answered: typed.answered,
+                turns: conversation.turns,
+                answered: conversation.answered,
                 grants: grants.into_boxed(),
             });
             entry.refreshed = false;
             State::Starting { reply_to, workspace, held }
         }
         State::Cancelling { reply_to, reason } => {
-            let ending = Ending::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
+            let ending = RunEnding::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
             release(entry, facts, reply_to, workspace, ending, None, out)
         }
         State::Starting { .. }
@@ -460,12 +460,12 @@ pub(crate) fn unprepared(
         State::Preparing { reply_to, held, .. } => {
             bounce_held(held, entry.run, entry.attempt, out);
             let detail = tail(detail, &env.limits);
-            let ending = Ending::Failed { failure: Failure::Unprepared(failure), detail };
+            let ending = RunEnding::Failed { failure: Failure::Unprepared(failure), detail };
             answer(entry, facts, reply_to, ending, None, out)
         }
         // Cancelled first: the prepare's failure is not the answer's.
         State::Cancelling { reply_to, reason } => {
-            let ending = Ending::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
+            let ending = RunEnding::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
             answer(entry, facts, reply_to, ending, None, out)
         }
         State::Starting { .. }
@@ -505,7 +505,7 @@ pub(crate) fn started(domain: &mut Domain, env: &Env<Limits>, owner: Token, agen
         }
         State::Unwanted { reply_to, workspace, reason } => {
             out.push(Request::Stop { agent });
-            let ending = Ending::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
+            let ending = RunEnding::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
             State::Stopping { reply_to, workspace, agent, ending, gone: false }
         }
         State::Preparing { .. }
@@ -520,7 +520,7 @@ pub(crate) fn started(domain: &mut Domain, env: &Env<Limits>, owner: Token, agen
     conclude(domain, id, out);
 }
 
-pub(crate) fn called_typed(
+pub(crate) fn called(
     domain: &mut Domain,
     env: &Env<Limits>,
     owner: Token,
@@ -565,7 +565,7 @@ fn called_named(
     conclude(domain, id, out);
 }
 
-pub(crate) fn withdrawn_typed(domain: &mut Domain, owner: Token, call: Box<[u8]>, out: &mut Queue<Request>) {
+pub(crate) fn withdrawn(domain: &mut Domain, owner: Token, call: Box<[u8]>, out: &mut Queue<Request>) {
     withdrawn_named(domain, owner, call, out);
 }
 
@@ -623,11 +623,11 @@ pub(crate) fn yielded(domain: &mut Domain, owner: Token, out: &mut Queue<Request
     conclude(domain, id, out);
 }
 
-pub(crate) fn finished(
+pub(crate) fn finish_run(
     domain: &mut Domain,
     env: &Env<Limits>,
     owner: Token,
-    finish: FinishV2,
+    finish: Finish,
     out: &mut Queue<Request>,
 ) {
     let Domain { hosted, calls, .. } = domain;
@@ -645,9 +645,9 @@ pub(crate) fn finished(
             let ending = match ending {
                 // Stopped by the host, the run says how it finishes as it
                 // winds down: its own ending wins.
-                Ending::Stopped { failure, detail: _ } => said(finish, failure, &env.limits),
+                RunEnding::Stopped { failure, detail: _ } => said(finish, failure, &env.limits),
                 // It said how it finishes already, or its agent exited.
-                ending @ (Ending::Ended { .. } | Ending::Parked | Ending::Failed { .. }) => ending,
+                ending @ (RunEnding::Ended { .. } | RunEnding::Parked | RunEnding::Failed { .. }) => ending,
             };
             State::Stopping { reply_to, workspace, agent, ending, gone }
         }
@@ -675,7 +675,7 @@ pub(crate) fn faulted(
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
         State::Active { reply_to, workspace, agent } | State::Waiting { reply_to, workspace, agent } => {
-            let ending = Ending::Stopped { failure: Failure::Agent(fault), detail: Box::new([]) };
+            let ending = RunEnding::Stopped { failure: Failure::Agent(fault), detail: Box::new([]) };
             leave(&entry.relays, calls, out);
             out.push(Request::Stop { agent });
             State::Stopping { reply_to, workspace, agent, ending, gone: false }
@@ -703,16 +703,16 @@ pub(crate) fn gone(domain: &mut Domain, env: &Env<Limits>, owner: Token, detail:
         // Nothing ran: nothing to save.
         State::Starting { reply_to, workspace, held } => {
             bounce_held(held, entry.run, entry.attempt, out);
-            let ending = Ending::Failed { failure: Failure::Agent(AgentFailure::Unstarted), detail };
+            let ending = RunEnding::Failed { failure: Failure::Agent(AgentFailure::Unstarted), detail };
             release(entry, facts, reply_to, workspace, ending, None, out)
         }
         State::Unwanted { reply_to, workspace, reason } => {
-            let ending = Ending::Stopped { failure: Failure::Cancelled(reason), detail };
+            let ending = RunEnding::Stopped { failure: Failure::Cancelled(reason), detail };
             release(entry, facts, reply_to, workspace, ending, None, out)
         }
         // It exited without saying how its run finishes.
         State::Active { reply_to, workspace, agent } | State::Waiting { reply_to, workspace, agent } => {
-            let ending = Ending::Failed { failure: Failure::Agent(AgentFailure::Exited), detail };
+            let ending = RunEnding::Failed { failure: Failure::Agent(AgentFailure::Exited), detail };
             leave(&entry.relays, calls, out);
             State::Stopping { reply_to, workspace, agent, ending, gone: true }
         }
@@ -735,7 +735,7 @@ pub(crate) fn delivered(domain: &mut Domain, owner: Token, delivery: Delivery, o
     let call = calls.get_mut(call_id).expect("a delivery call lives until it settles");
     let id = call.hosted;
     let state = mem::replace(&mut call.state, call::State::Closed);
-    let typed = call.typed.take();
+    let name = call.name.take();
     calls.retire(call_id);
     let entry = hosted.get_mut(id).expect("a run lives until its delivery settles");
     assert!(entry.delivery == Some(call_id), "one delivery is in flight");
@@ -745,7 +745,7 @@ pub(crate) fn delivered(domain: &mut Domain, owner: Token, delivery: Delivery, o
     }
     match state {
         call::State::Delivering { agent } => {
-            let name = typed.expect("a delivery retains its typed name");
+            let name = name.expect("a delivery retains its typed name");
             reply(agent, name, Reply::Delivered(delivery), out);
         }
         call::State::Relayed { .. } | call::State::Settling | call::State::Closed => {
@@ -817,7 +817,7 @@ fn stop(domain: &mut Domain, env: &Env<Limits>, id: Id<Hosted>, reason: Reason, 
             State::Unwanted { reply_to, workspace, reason }
         }
         State::Active { reply_to, workspace, agent } | State::Waiting { reply_to, workspace, agent } => {
-            let ending = Ending::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
+            let ending = RunEnding::Stopped { failure: Failure::Cancelled(reason), detail: Box::new([]) };
             leave(&entry.relays, calls, out);
             out.push(Request::Stop { agent });
             State::Stopping { reply_to, workspace, agent, ending, gone: false }
@@ -915,12 +915,12 @@ fn settle(
     id: Id<Hosted>,
     reply_to: ReplyTo,
     workspace: Option<Token>,
-    ending: Ending,
+    ending: RunEnding,
     out: &mut Queue<Request>,
 ) -> State {
     let delivered_end = match &ending {
-        Ending::Ended { .. } => entry.left.is_some(),
-        Ending::Parked | Ending::Failed { .. } | Ending::Stopped { .. } => false,
+        RunEnding::Ended { .. } => entry.left.is_some(),
+        RunEnding::Parked | RunEnding::Failed { .. } | RunEnding::Stopped { .. } => false,
     };
     match workspace {
         Some(workspace) if entry.save && !delivered_end => {
@@ -937,7 +937,7 @@ fn release(
     facts: &mut Facts,
     reply_to: ReplyTo,
     workspace: Option<Token>,
-    ending: Ending,
+    ending: RunEnding,
     saved: Option<Token>,
     out: &mut Queue<Request>,
 ) -> State {
@@ -952,27 +952,27 @@ fn answer(
     entry: &Hosted,
     facts: &mut Facts,
     reply_to: ReplyTo,
-    ending: Ending,
+    ending: RunEnding,
     saved: Option<Token>,
     out: &mut Queue<Request>,
 ) -> State {
     let (run, attempt) = (entry.run, entry.attempt);
     let work = Work { left: entry.left, saved };
     let answer = match ending {
-        Ending::Ended { outcome } => {
+        RunEnding::Ended { outcome } => {
             facts.push(Fact::Ended { run, attempt });
-            EndingV2::Ended { outcome, work }
+            Ending::Ended { outcome, work }
         }
-        Ending::Parked => {
+        RunEnding::Parked => {
             facts.push(Fact::Parked { run, attempt });
-            EndingV2::Parked { work }
+            Ending::Parked { work }
         }
-        Ending::Failed { failure, detail } | Ending::Stopped { failure, detail } => {
+        RunEnding::Failed { failure, detail } | RunEnding::Stopped { failure, detail } => {
             facts.push(Fact::Failed { run, attempt, failure });
-            EndingV2::Failed { failure, detail, work }
+            Ending::Failed { failure, detail, work }
         }
     };
-    out.push(Request::AnswerV2 {
+    out.push(Request::Answer {
         to: reply_to,
         run,
         attempt,
@@ -991,7 +991,7 @@ fn hold(held: &mut Queue<NamedEvent>, event: NamedEvent, run: Token, attempt: To
 
 fn deliver_message(agent: Token, message: NamedEvent, out: &mut Queue<Request>) {
     match message.sender {
-        Some(sender) => out.push(Request::DeliverTyped { agent, name: message.name, sender, words: message.event }),
+        Some(sender) => out.push(Request::Message { agent, name: message.name, sender, words: message.event }),
         None => unreachable!("every held message retains its sender label"),
     }
 }
@@ -1020,19 +1020,19 @@ fn serve(
 ) {
     let name_fits = len(&call) <= limits.event_bytes;
     let input_fits = match &ask {
-        Ask::RelayTyped { tool, input, .. } => match len(tool).checked_add(len(input)) {
+        Ask::Relay { tool, input, .. } => match len(tool).checked_add(len(input)) {
             Some(bytes) => bytes <= limits.event_bytes,
             None => false,
         },
-        Ask::DeliverV2 { .. } => true,
+        Ask::Deliver { .. } => true,
     };
     if !name_fits || !input_fits {
         reply(agent, call, Reply::Unavailable, out);
         return;
     }
     let delivery = match &ask {
-        Ask::DeliverV2 { .. } => true,
-        Ask::RelayTyped { .. } => false,
+        Ask::Deliver { .. } => true,
+        Ask::Relay { .. } => false,
     };
     if delivery && workspace.is_none() {
         reply(agent, call, Reply::Unavailable, out);
@@ -1040,7 +1040,7 @@ fn serve(
     }
     for pending in &entry.relays {
         let pending = calls.get(*pending).expect("the run owns every relay");
-        if pending.typed.as_ref() == Some(&call) {
+        if pending.name.as_ref() == Some(&call) {
             reply(agent, call, Reply::Busy, out);
             return;
         }
@@ -1051,29 +1051,29 @@ fn serve(
         reply(agent, call, Reply::Busy, out);
         return;
     }
-    let typed = Some(call.clone());
+    let name = Some(call.clone());
     let state = if delivery { call::State::Delivering { agent } } else { call::State::Relayed { agent } };
     // Calls answered in this iteration keep their slots until the reclaim
     // point: a call may find none free even within its run's limit.
-    let Ok(call_id) = calls.insert(Call { hosted: id, state, typed }) else {
+    let Ok(call_id) = calls.insert(Call { hosted: id, state, name }) else {
         reply(agent, call, Reply::Busy, out);
         return;
     };
     match ask {
-        Ask::DeliverV2 { title, body } => {
+        Ask::Deliver { title, body } => {
             entry.delivery = Some(call_id);
-            out.push(Request::DeliverV2 {
+            out.push(Request::Deliver {
                 owner: call_id.token(),
                 workspace: workspace.expect("a delivery has a workspace"),
                 title,
                 body,
             });
         }
-        Ask::RelayTyped { tool, writes, input, deadline } => {
+        Ask::Relay { tool, writes, input, deadline } => {
             let added = entry.relays.insert(call_id).expect("checked the run's calls for room above");
             assert!(added, "a call is new to its run");
 
-            out.push(Request::RelayTyped {
+            out.push(Request::Relay {
                 run: entry.run,
                 attempt: entry.attempt,
                 call,
@@ -1094,7 +1094,7 @@ fn withdraw(entry: &mut Hosted, calls: &mut Slab<Call>, call: CallName, out: &mu
     let mut found = None;
     for call_id in &entry.relays {
         let relayed = calls.get(*call_id).expect("a run's calls live until they close");
-        let same = relayed.typed.as_ref() == Some(&call);
+        let same = relayed.name.as_ref() == Some(&call);
         if same {
             found = Some(*call_id);
         }
@@ -1138,25 +1138,25 @@ fn leave(relays: &Set<Id<Call>>, calls: &mut Slab<Call>, out: &mut Queue<Request
 
 /// How the run ends, as it says it finishes; a cancel it reports is
 /// `cancelled`. Saying more than the limits allow breaks the rules.
-fn said(finish: FinishV2, cancelled: Failure, limits: &Limits) -> Ending {
-    let rules = Ending::Failed { failure: Failure::Agent(AgentFailure::Rules), detail: Box::new([]) };
+fn said(finish: Finish, cancelled: Failure, limits: &Limits) -> RunEnding {
+    let rules = RunEnding::Failed { failure: Failure::Agent(AgentFailure::Rules), detail: Box::new([]) };
     match finish {
-        FinishV2::Ended { outcome } if len(&outcome) > limits.outcome_bytes => rules,
-        FinishV2::Ended { outcome } => Ending::Ended { outcome },
-        FinishV2::Parked => Ending::Parked,
-        FinishV2::Failed { failure: RunFailure::Cancelled } => {
-            Ending::Failed { failure: cancelled, detail: Box::new([]) }
+        Finish::Ended { outcome } if len(&outcome) > limits.outcome_bytes => rules,
+        Finish::Ended { outcome } => RunEnding::Ended { outcome },
+        Finish::Parked => RunEnding::Parked,
+        Finish::Failed { failure: RunFailure::Cancelled } => {
+            RunEnding::Failed { failure: cancelled, detail: Box::new([]) }
         }
-        FinishV2::Failed { failure } => Ending::Failed { failure: Failure::Run(failure), detail: Box::new([]) },
+        Finish::Failed { failure } => RunEnding::Failed { failure: Failure::Run(failure), detail: Box::new([]) },
     }
 }
 
 /// A failure's ending gains the detail its agent left as it went.
-fn explained(ending: Ending, detail: Box<[u8]>) -> Ending {
+fn explained(ending: RunEnding, detail: Box<[u8]>) -> RunEnding {
     match ending {
-        Ending::Failed { failure, detail: _ } => Ending::Failed { failure, detail },
-        Ending::Stopped { failure, detail: _ } => Ending::Stopped { failure, detail },
-        ending @ (Ending::Ended { .. } | Ending::Parked) => ending,
+        RunEnding::Failed { failure, detail: _ } => RunEnding::Failed { failure, detail },
+        RunEnding::Stopped { failure, detail: _ } => RunEnding::Stopped { failure, detail },
+        ending @ (RunEnding::Ended { .. } | RunEnding::Parked) => ending,
     }
 }
 
@@ -1211,21 +1211,27 @@ pub(crate) fn grant(domain: &mut Domain, run: Token, attempt: Token, grant: Gran
     }
 }
 
-fn next_answer(turns: u32, spent: u64, answer: EndingV2) -> crate::AnswerV2 {
-    crate::AnswerV2 { turns, spent, ending: answer }
+fn next_answer(turns: u32, spent: u64, answer: Ending) -> crate::Answer {
+    crate::Answer { turns, spent, ending: answer }
 }
 
-fn refuse_v2(reply_to: ReplyTo, assignment: &Assignment, refusal: Refusal, out: &mut Queue<Request>) {
-    out.push(Request::AnswerV2 {
+fn refuse(reply_to: ReplyTo, assignment: &RunAssignment, refusal: Refusal, out: &mut Queue<Request>) {
+    out.push(Request::Answer {
         to: reply_to,
         run: assignment.run,
         attempt: assignment.attempt,
-        answer: next_answer(0, 0, EndingV2::Refused(refusal)),
+        answer: next_answer(0, 0, Ending::Refused(refusal)),
     });
 }
 
-fn refused(reply_to: ReplyTo, assignment: &Assignment, refusal: Refusal, _runtime: &Runtime, out: &mut Queue<Request>) {
-    refuse_v2(reply_to, assignment, refusal, out);
+fn refused(
+    reply_to: ReplyTo,
+    assignment: &RunAssignment,
+    refusal: Refusal,
+    _runtime: &Runtime,
+    out: &mut Queue<Request>,
+) {
+    refuse(reply_to, assignment, refusal, out);
 }
 
 pub(crate) fn turned(
@@ -1298,13 +1304,13 @@ pub(crate) fn told(domain: &mut Domain, env: &Env<Limits>, owner: Token, fact: B
     domain.told.push(Told { run: hosting.run, attempt: hosting.attempt, fact }, env.limits.fact_bytes);
 }
 
-pub(crate) fn finished_v2(
+pub(crate) fn finished(
     domain: &mut Domain,
     env: &Env<Limits>,
     owner: Token,
     turns: u32,
     spent: u64,
-    finish: FinishV2,
+    finish: Finish,
     out: &mut Queue<Request>,
 ) {
     let Some(entry) = domain.hosted.get_mut(Id::<Hosted>::from_token(owner)) else {
@@ -1318,5 +1324,5 @@ pub(crate) fn finished_v2(
         faulted(domain, env, owner, AgentFailure::Rules, out);
         return;
     }
-    finished(domain, env, owner, finish, out);
+    finish_run(domain, env, owner, finish, out);
 }

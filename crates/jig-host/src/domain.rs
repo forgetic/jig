@@ -98,20 +98,20 @@ impl Domain {
 
     /// Whether a wire answer names a pending relay of this exact attempt.
     #[must_use]
-    pub fn is_relayed_for(&self, run: Token, attempt: Token, call: Token) -> bool {
-        hosted::is_relayed_for(self, run, attempt, call)
+    pub fn owns_relay(&self, run: Token, attempt: Token, call: Token) -> bool {
+        hosted::owns_relay(self, run, attempt, call)
     }
 
     /// Whether a typed engine answer names this pending delivery and its opaque call name.
     #[must_use]
-    pub fn is_relayed_typed_for(&self, run: Token, attempt: Token, delivery: Token, call: &[u8]) -> bool {
-        if !self.is_relayed_for(run, attempt, delivery) {
+    pub fn is_relayed_for(&self, run: Token, attempt: Token, delivery: Token, call: &[u8]) -> bool {
+        if !self.owns_relay(run, attempt, delivery) {
             return false;
         }
         let Some(entry) = self.calls.get(Id::from_token(delivery)) else {
             return false;
         };
-        match &entry.typed {
+        match &entry.name {
             Some(name) => name.as_ref() == call,
             None => false,
         }
@@ -214,17 +214,17 @@ impl Domain {
 /// Handles one event, emitting at most [`max_out`] requests.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
-        Event::InboundTyped { run, attempt, name, sender, words } => {
-            hosted::inbound_typed(domain, env, run, attempt, name, sender, words, out);
+        Event::Inbound { run, attempt, name, sender, words } => {
+            hosted::inbound(domain, env, run, attempt, name, sender, words, out);
         }
-        Event::CalledTyped { owner, call, ask } => hosted::called_typed(domain, env, owner, call, ask, out),
-        Event::WithdrawnTyped { owner, call } => hosted::withdrawn_typed(domain, owner, call, out),
-        Event::AssignTyped { reply_to, assignment } => hosted::assign_typed(domain, env, reply_to, assignment, out),
+        Event::Called { owner, call, ask } => hosted::called(domain, env, owner, call, ask, out),
+        Event::Withdrawn { owner, call } => hosted::withdrawn(domain, owner, call, out),
+        Event::Assign { reply_to, assignment } => hosted::assign(domain, env, reply_to, assignment, out),
         Event::Turn { owner, turn } => hosted::turned(domain, env, owner, turn, out),
         Event::Facts { owner, fact } => hosted::told(domain, env, owner, fact),
         Event::AcknowledgeTurn { run, attempt, turn } => hosted::acknowledge_turn(domain, env, run, attempt, turn, out),
-        Event::FinishedV2 { owner, turns, spent, finish } => {
-            hosted::finished_v2(domain, env, owner, turns, spent, finish, out);
+        Event::Finished { owner, turns, spent, finish } => {
+            hosted::finished(domain, env, owner, turns, spent, finish, out);
         }
         Event::Grant { run, attempt, grant } => hosted::grant(domain, run, attempt, grant, out),
         Event::Cancel { run, attempt } => hosted::cancel(domain, env, run, attempt, out),

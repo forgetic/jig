@@ -699,7 +699,7 @@ impl World {
                 | core::Held::ViewTaskPhase { .. }
                 | core::Held::ViewTurn { .. },
             ) => {}
-            other @ (root::Delivery::TypedAnswer { .. }
+            other @ (root::Delivery::CallAnswer { .. }
             | root::Delivery::Core(_)
             | root::Delivery::Fleet(_)
             | root::Delivery::System { .. }

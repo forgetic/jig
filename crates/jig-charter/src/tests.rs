@@ -42,9 +42,9 @@ fn core_charter_encodes_with_the_same_sections_tools_contract_and_model() {
         resumes: true,
     };
     let sections = Box::new([Section { title: Box::from(&b"Task"[..]), text: Box::from(&b"Do it"[..]) }]);
-    let typed = charter(source, sections, false).expect("bounded charter");
+    let charter = charter(source, sections, false).expect("bounded charter");
     let names = [EndpointName { number: 7, dialect: 4, account: 5, name: Box::from(&b"primary"[..]) }];
-    let bytes = encode(typed, &names, &wire::CEILINGS).expect("bounded encoding");
+    let bytes = encode(charter, &names, &wire::CEILINGS).expect("bounded encoding");
     let decoded = wire::Charter::decode(&wire::CEILINGS, &mut Reader::new(&bytes)).expect("Smith codec accepts it");
     assert_eq!(decoded.instructions(), b"help");
     assert_eq!(decoded.brief().get(0).expect("one section").title(), b"Task");

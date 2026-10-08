@@ -462,7 +462,7 @@ fn a_delegate_failing_past_its_tries_is_held_and_released_finishes() {
 }
 
 #[test]
-fn typed_hold_reasons_survive_restart_and_release_without_losing_task_state() {
+fn hold_reasons_survive_restart_and_release_without_losing_task_state() {
     let reasons = [
         Hold::Stalled,
         Hold::EffectFailed,

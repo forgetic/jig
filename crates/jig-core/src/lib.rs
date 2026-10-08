@@ -43,8 +43,8 @@ pub use routing::{
     Request, Requests, Timer, ToolKind, Write, fire, resume_fleet, room, room_max, step,
 };
 pub use sibling_routes::{MadeRoute, PersonMessage, SentRoute};
-mod typed;
-pub use typed::{DeliveryOutcome, SettledAnswer, SettledCall, typed_worst_case};
+mod conversation;
+pub use conversation::{DeliveryOutcome, SettledAnswer, SettledCall, conversation_worst_case};
 mod stored;
 mod translate;
 mod watch;

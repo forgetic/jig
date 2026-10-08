@@ -1,11 +1,11 @@
 //! Admission bounds for a hosted run (domain/hosts.md, section 6.2).
 //! Workspace items belong to the application and stay opaque here.
 
-use crate::boundary::{Assignment, Invalid};
+use crate::boundary::{Invalid, RunAssignment};
 use crate::limits::Limits;
 
 /// Whether `assignment` fits `limits`, and what about it does not.
-pub(crate) fn check(assignment: &Assignment, limits: &Limits) -> Result<(), Invalid> {
+pub(crate) fn check(assignment: &RunAssignment, limits: &Limits) -> Result<(), Invalid> {
     if len(&assignment.charter) > limits.charter_bytes {
         return Err(Invalid::Charter);
     }

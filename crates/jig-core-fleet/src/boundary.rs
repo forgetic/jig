@@ -101,7 +101,7 @@ pub struct Grant {
 /// References to the parent's ordered turn bodies and settled call tail.
 /// The fleet retains these tokens while placement waits and reads neither value.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TypedAssignment {
+pub struct Assignment {
     /// The parent's ordered turn-body collection.
     pub turns: Token,
     /// The parent's calls settled since its last turn, including opaque delivery evidence.
@@ -110,7 +110,7 @@ pub struct TypedAssignment {
 
 /// A message's name and the parent's label and words, passed through unchanged.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct TypedMessage {
+pub struct Message {
     pub name: Token,
     pub sender: Token,
     pub words: Token,
@@ -119,7 +119,7 @@ pub struct TypedMessage {
 /// A named host call (hosts.md, section 2). Only its name is kept while
 /// the parent decides it; its other fields are moved into the parent's request.
 #[derive(PartialEq, Eq, Hash, Debug)]
-pub struct TypedCall {
+pub struct Call {
     /// The run's opaque call name, bounded by the fleet's call-name limit.
     pub name: Box<[u8]>,
     /// The host tool's name as declared in the charter.
@@ -134,26 +134,26 @@ pub struct TypedCall {
 #[derive(PartialEq, Eq, Debug)]
 pub enum Event {
     /// Place a run with references to its ordered committed conversation state.
-    StartTyped {
+    Start {
         reply_to: ReplyTo,
         run: Token,
         attempt: Token,
         workstream: u64,
         kinds: Kinds,
-        assignment: TypedAssignment,
+        assignment: Assignment,
     },
     /// Pass a named message and its label and words to the live host.
-    InboundTyped {
+    Inbound {
         run: Token,
         attempt: Token,
-        message: TypedMessage,
+        message: Message,
     },
     /// Pass a named host call with its declared tool and input to the parent.
-    RelayTyped {
+    Relay {
         channel: Token,
         run: Token,
         attempt: Token,
-        call: TypedCall,
+        call: Call,
     },
     /// From the parent, a claim restored after restart. A worker may report
     /// it within the grace; an engine-hosted claim is settled at once.
@@ -276,31 +276,31 @@ pub enum Event {
 #[derive(PartialEq, Eq, Debug)]
 pub enum Request {
     /// Place the attempt with its typed conversation state.
-    AssignTyped {
+    Assign {
         channel: Token,
         kind: HostKind,
         run: Token,
         attempt: Token,
         /// The attempt number used as the agent's activation.
         activation: u64,
-        assignment: TypedAssignment,
+        assignment: Assignment,
     },
     /// Pass a named message with its label and words to the current host.
-    InboundTyped {
+    Inbound {
         channel: Token,
         run: Token,
         attempt: Token,
-        message: TypedMessage,
+        message: Message,
     },
     /// Pass a typed host call to the parent for an answer.
-    RelayTyped {
+    Relay {
         reply_to: ReplyTo,
         run: Token,
         attempt: Token,
-        call: TypedCall,
+        call: Call,
     },
     /// Answer a typed call under the name its agent gave it.
-    RelayedTyped {
+    Relayed {
         channel: Token,
         run: Token,
         attempt: Token,
@@ -308,8 +308,8 @@ pub enum Request {
         answer: Token,
     },
     /// Return a typed call that cannot be relayed; the parent owns its bytes.
-    DropTyped {
-        call: TypedCall,
+    DropCall {
+        call: Call,
     },
     Grant {
         channel: Token,
@@ -436,10 +436,10 @@ pub enum Request {
         bounce: Bounce,
     },
     /// A typed message reached no live host; all its values remain the parent's.
-    UndeliveredTyped {
+    Undelivered {
         run: Token,
         attempt: Token,
-        message: TypedMessage,
+        message: Message,
         undelivered: Undelivered,
     },
     /// To the parent: a fact the run told.

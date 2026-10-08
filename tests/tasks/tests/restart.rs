@@ -39,7 +39,7 @@ fn make_and_claim_have_independent_before_and_after_durable_cuts() {
 }
 
 #[test]
-fn stale_claims_and_replayed_terminal_are_typed_and_do_not_mutate() {
+fn stale_claims_and_replayed_terminal_are_and_do_not_mutate() {
     let mut w = World::new(22, LIMITS);
     w.make(Party::Person(1), vec![task(1, &[])]);
     w.claim(1, 4);

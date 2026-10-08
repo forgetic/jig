@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use jig_host::{
-    self as host, AnswerV2, AnsweredCall, Ask, Assignment, AssignmentTyped, Delivery, DeliveryOutcome, EndingV2, Event,
-    FinishV2, Limits, Reason, Request, Turn, Workspace,
+    self as host, Answer, AnsweredCall, Ask, Assignment, Delivery, DeliveryOutcome, Ending, Event, Finish, Limits,
+    Reason, Request, RunAssignment, Turn, Workspace,
 };
 use skein_lib::{Duration, Env, Queue, ReplyTo, Time, Token, Wall};
 
@@ -71,17 +71,17 @@ pub struct World {
     stop_pending: bool,
     has_workspace: bool,
     space_live: bool,
-    answer: Option<AnswerV2>,
+    answer: Option<Answer>,
     answer_seen: Option<String>,
     answer_acked: bool,
     seen: BTreeMap<u32, Turn>,
     committed: BTreeSet<u32>,
     acked: BTreeSet<u32>,
     stats: Stats,
-    typed_start: Option<StartedState>,
-    typed_relay: Option<RelayedCall>,
-    typed_reply: Option<Box<[u8]>>,
-    typed_message: Option<ReceivedMessage>,
+    started_state: Option<StartedState>,
+    relayed_call: Option<RelayedCall>,
+    answered_call: Option<Box<[u8]>>,
+    received_message: Option<ReceivedMessage>,
 }
 
 impl World {
@@ -118,10 +118,10 @@ impl World {
             committed: BTreeSet::new(),
             acked: BTreeSet::new(),
             stats: Stats::default(),
-            typed_start: None,
-            typed_relay: None,
-            typed_reply: None,
-            typed_message: None,
+            started_state: None,
+            relayed_call: None,
+            answered_call: None,
+            received_message: None,
         }
     }
 
@@ -136,7 +136,7 @@ impl World {
     }
 
     #[must_use]
-    pub fn answer(&self) -> Option<&AnswerV2> {
+    pub fn answer(&self) -> Option<&Answer> {
         self.answer.as_ref()
     }
 
@@ -151,7 +151,7 @@ impl World {
         self.has_workspace = workspace;
         self.send(Event::Unacknowledged { answers: u32::from(self.answer.is_some() && !self.answer_acked) });
         let workspace = if workspace { Some(Workspace { workstream: 3, items: Token::new(4) }) } else { None };
-        let assignment = Assignment {
+        let assignment = RunAssignment {
             run: RUN,
             attempt: ATTEMPT,
             workspace,
@@ -159,9 +159,9 @@ impl World {
             charter: Box::from(&b"charter"[..]),
             grants: Box::new([]),
         };
-        self.send(Event::AssignTyped {
+        self.send(Event::Assign {
             reply_to: ReplyTo::new(RUN),
-            assignment: AssignmentTyped {
+            assignment: Assignment {
                 assignment,
                 turns: vec![Box::from(&b"prior turn"[..])].into_boxed_slice(),
                 answered: Box::new([]),
@@ -171,9 +171,9 @@ impl World {
     }
 
     /// Assign a resumed run with each turn and its settled call tail intact.
-    pub fn assign_typed(&mut self, turns: Box<[Box<[u8]>]>, answered: Box<[AnsweredCall]>) {
+    pub fn assign_conversation(&mut self, turns: Box<[Box<[u8]>]>, answered: Box<[AnsweredCall]>) {
         self.send(Event::Unacknowledged { answers: 0 });
-        let assignment = Assignment {
+        let assignment = RunAssignment {
             run: RUN,
             attempt: ATTEMPT,
             workspace: None,
@@ -181,35 +181,35 @@ impl World {
             charter: Box::from(&b"charter"[..]),
             grants: Box::new([]),
         };
-        self.send(Event::AssignTyped {
+        self.send(Event::Assign {
             reply_to: ReplyTo::new(RUN),
-            assignment: AssignmentTyped { assignment, turns, answered },
+            assignment: Assignment { assignment, turns, answered },
         });
         assert!(self.owner.is_some() && self.agent_live && self.reading);
     }
 
     /// The typed activation and committed state the scripted agent received.
     #[must_use]
-    pub fn typed_start(&self) -> Option<&StartedState> {
-        self.typed_start.as_ref()
+    pub fn started_state(&self) -> Option<&StartedState> {
+        self.started_state.as_ref()
     }
 
     /// The typed call the engine saw.
     #[must_use]
-    pub fn typed_relay(&self) -> Option<&RelayedCall> {
-        self.typed_relay.as_ref()
+    pub fn relayed_call(&self) -> Option<&RelayedCall> {
+        self.relayed_call.as_ref()
     }
 
     /// The name under which the agent received the call's answer.
     #[must_use]
-    pub fn typed_reply(&self) -> Option<&[u8]> {
-        self.typed_reply.as_deref()
+    pub fn answered_call(&self) -> Option<&[u8]> {
+        self.answered_call.as_deref()
     }
 
     /// The typed message the agent saw.
     #[must_use]
-    pub fn typed_message(&self) -> Option<&ReceivedMessage> {
-        self.typed_message.as_ref()
+    pub fn received_message(&self) -> Option<&ReceivedMessage> {
+        self.received_message.as_ref()
     }
 
     pub fn turn(&mut self, number: u32, body: &[u8]) {
@@ -224,15 +224,15 @@ impl World {
     }
 
     pub fn deliver(&mut self) {
-        self.send(Event::CalledTyped {
+        self.send(Event::Called {
             owner: self.owner.expect("assigned"),
             call: Box::from(Token::new(71).raw().to_be_bytes()),
-            ask: Ask::DeliverV2 { title: Box::from(&b"title"[..]), body: Box::from(&b"body"[..]) },
+            ask: Ask::Deliver { title: Box::from(&b"title"[..]), body: Box::from(&b"body"[..]) },
         });
     }
 
     pub fn relay(&mut self) {
-        self.send(Event::CalledTyped {
+        self.send(Event::Called {
             owner: self.owner.expect("assigned"),
             call: Box::from(Token::new(72).raw().to_be_bytes()),
             ask: crate::fixtures::relay(Box::from(&b"read"[..])),
@@ -240,11 +240,11 @@ impl World {
     }
 
     /// The agent calls an engine host tool under its opaque name.
-    pub fn relay_typed(&mut self, writes: bool) {
-        self.send(Event::CalledTyped {
+    pub fn call(&mut self, writes: bool) {
+        self.send(Event::Called {
             owner: self.owner.expect("assigned"),
             call: Box::from(&b"call-one"[..]),
-            ask: Ask::RelayTyped {
+            ask: Ask::Relay {
                 tool: Box::from(&b"inspect"[..]),
                 writes,
                 input: Box::from(&b"input words"[..]),
@@ -254,8 +254,8 @@ impl World {
     }
 
     /// The engine sends a named message with its label and words.
-    pub fn message_typed(&mut self) {
-        self.send(Event::InboundTyped {
+    pub fn message_from(&mut self) {
+        self.send(Event::Inbound {
             run: RUN,
             attempt: ATTEMPT,
             name: Token::new(17),
@@ -265,8 +265,8 @@ impl World {
     }
 
     pub fn finish(&mut self, turns: u32, parked: bool) {
-        let finish = if parked { FinishV2::Parked } else { FinishV2::Ended { outcome: Box::from(&b"done"[..]) } };
-        self.send(Event::FinishedV2 {
+        let finish = if parked { Finish::Parked } else { Finish::Ended { outcome: Box::from(&b"done"[..]) } };
+        self.send(Event::Finished {
             owner: self.owner.expect("assigned"),
             turns,
             spent: u64::from(turns) * 17,
@@ -392,9 +392,9 @@ impl World {
 
     fn route(&mut self, request: Request) {
         match request {
-            Request::RelayTyped { run, attempt, call, delivery, tool, writes, input, deadline } => {
+            Request::Relay { run, attempt, call, delivery, tool, writes, input, deadline } => {
                 assert_eq!((run, attempt), (RUN, ATTEMPT));
-                self.typed_relay = Some(RelayedCall { name: call, tool, writes, input, deadline });
+                self.relayed_call = Some(RelayedCall { name: call, tool, writes, input, deadline });
                 self.stats.relays += 1;
                 self.events.push_back(Event::Relayed {
                     run,
@@ -403,18 +403,18 @@ impl World {
                     answer: Box::from(&b"reply"[..]),
                 });
             }
-            Request::ReplyTyped { agent, call, reply: _ } => {
+            Request::Reply { agent, call, reply: _ } => {
                 assert_eq!(agent, AGENT);
 
-                self.typed_reply = Some(call);
+                self.answered_call = Some(call);
                 self.stats.replies += 1;
             }
-            Request::DeliverTyped { agent, name, sender, words } => {
+            Request::Message { agent, name, sender, words } => {
                 assert_eq!(agent, AGENT);
-                self.typed_message = Some(ReceivedMessage { name, sender, words });
+                self.received_message = Some(ReceivedMessage { name, sender, words });
             }
-            Request::StartTyped { owner, workspace, charter, activation, turns, answered, grants } => {
-                self.start_typed(owner, workspace, &charter, activation, turns, answered, &grants);
+            Request::Start { owner, workspace, charter, activation, turns, answered, grants } => {
+                self.start(owner, workspace, &charter, activation, turns, answered, &grants);
             }
             Request::Prepare { owner, .. } => {
                 self.owner = Some(owner);
@@ -433,7 +433,7 @@ impl World {
                 self.reading = true;
             }
 
-            Request::DeliverV2 { owner, workspace, .. } => {
+            Request::Deliver { owner, workspace, .. } => {
                 assert!(self.agent_live && self.space_live && workspace == SPACE);
                 self.stats.deliveries += 1;
                 self.events.push_back(Event::Delivered {
@@ -461,7 +461,7 @@ impl World {
                 self.space_live = false;
                 self.stats.releases += 1;
             }
-            Request::AnswerV2 { to, run, attempt, answer } => {
+            Request::Answer { to, run, attempt, answer } => {
                 assert_eq!((to, run, attempt), (ReplyTo::new(RUN), RUN, ATTEMPT));
                 assert!(!self.agent_live && !self.space_live);
                 assert!(self.answer.is_none(), "one answer");
@@ -480,7 +480,7 @@ impl World {
     }
 
     #[expect(clippy::too_many_arguments, reason = "the scripted peer receives the complete start request")]
-    fn start_typed(
+    fn start(
         &mut self,
         owner: Token,
         workspace: Option<Token>,
@@ -496,7 +496,7 @@ impl World {
         self.owner = Some(owner);
         self.agent_live = true;
         self.reading = true;
-        self.typed_start = Some(StartedState { activation, turns, answered });
+        self.started_state = Some(StartedState { activation, turns, answered });
         self.events.push_back(Event::Started { owner, agent: AGENT });
     }
 
@@ -510,10 +510,10 @@ impl World {
         self.stats.transmissions += 1;
     }
 
-    fn receive_answer(&mut self, answer: &AnswerV2) {
+    fn receive_answer(&mut self, answer: &Answer) {
         assert_eq!(usize::try_from(answer.turns).expect("bounded"), self.seen.len(), "turns precede their answer");
         match &answer.ending {
-            EndingV2::Ended { .. } | EndingV2::Parked { .. } | EndingV2::Failed { .. } | EndingV2::Refused(_) => {}
+            Ending::Ended { .. } | Ending::Parked { .. } | Ending::Failed { .. } | Ending::Refused(_) => {}
         }
         let copy = format!("{answer:?}");
         if let Some(previous) = &self.answer_seen {

@@ -28,28 +28,28 @@ pub(super) fn route_core(
             }
             core::Request::Write(core::Write::Erase(key)) => write(domain, decision, Write::Erase(Key::Core(key))),
             core::Request::Held(held) => match *held {
-                core::Held::AssignTyped { channel, run, attempt, .. } => {
+                core::Held::Assign { channel, run, attempt, .. } => {
                     let assignment = domain.assignments.remove(&run.raw()).expect("prepared claim has assignment");
                     assert!(assignment.attempt == attempt.raw(), "current assignment fence");
                     hold(decision, Delivery::Assigned { channel, assignment });
                 }
                 core::Held::SettledCall { to, call, .. } => {
-                    let answer = crate::payload(domain, crate::Payload::TypedAnswer(call));
+                    let answer = crate::payload(domain, crate::Payload::SettledCall(call));
                     hold(decision, Delivery::Fleet(fleet::Event::Relayed { to, answer }));
                 }
-                core::Held::RelayedTyped { channel, run, attempt, call: name, answer } => {
-                    let Some(crate::Payload::TypedAnswer(call)) = domain.payloads.remove(&answer) else {
+                core::Held::Relayed { channel, run, attempt, call: name, answer } => {
+                    let Some(crate::Payload::SettledCall(call)) = domain.payloads.remove(&answer) else {
                         unreachable!("typed answer payload")
                     };
                     hold(
                         decision,
-                        Delivery::TypedAnswer { channel, task: run.raw(), attempt: attempt.raw(), name, call },
+                        Delivery::CallAnswer { channel, task: run.raw(), attempt: attempt.raw(), name, call },
                     );
                 }
                 core::Held::MakeEffect { connector, entry } => {
                     hold(decision, Delivery::Core(core::Held::MakeEffect { connector, entry }));
                 }
-                core::Held::InboundTyped { channel, run, attempt, message } => {
+                core::Held::Inbound { channel, run, attempt, message } => {
                     let Some(crate::Payload::InboxWord(line)) = domain.payloads.remove(&message.words) else {
                         unreachable!("inbox word payload")
                     };
@@ -144,12 +144,12 @@ fn route_ask(
             if number == 1 {
                 hold(
                     decision,
-                    Delivery::Fleet(fleet::Event::StartTyped {
+                    Delivery::Fleet(fleet::Event::Start {
                         reply_to: ReplyTo::new(Token::new(task)),
                         run: Token::new(task),
                         attempt: Token::new(attempt),
                         workstream: task,
-                        assignment: fleet::TypedAssignment { turns: Token::new(task), answered: Token::new(task) },
+                        assignment: fleet::Assignment { turns: Token::new(task), answered: Token::new(task) },
                         kinds: domain.hosting,
                     }),
                 );
@@ -257,7 +257,7 @@ fn route_now(
     work: &mut Queue<Work>,
 ) {
     match now {
-        core::Now::UndeliveredTyped { message, .. } => {
+        core::Now::Undelivered { message, .. } => {
             drop(domain.payloads.remove(&message.words));
         }
 
@@ -355,7 +355,7 @@ fn route_now(
             let payload = domain.payloads.get(&body).expect("fleet retained the turn body");
             let (cumulative, read) = match payload {
                 crate::Payload::Turn { cumulative, read, .. } => (*cumulative, *read),
-                crate::Payload::InboxWord(_) | crate::Payload::TypedAnswer(_) | crate::Payload::Answer { .. } => {
+                crate::Payload::InboxWord(_) | crate::Payload::SettledCall(_) | crate::Payload::Answer { .. } => {
                     unreachable!("turn body family")
                 }
             };
@@ -365,7 +365,7 @@ fn route_now(
             let body = domain.payloads.get(&payload).expect("fleet retained the answer body");
             let (cumulative, end) = match body {
                 crate::Payload::Answer { cumulative, end, .. } => (*cumulative, end.clone()),
-                crate::Payload::InboxWord(_) | crate::Payload::TypedAnswer(_) | crate::Payload::Turn { .. } => {
+                crate::Payload::InboxWord(_) | crate::Payload::SettledCall(_) | crate::Payload::Turn { .. } => {
                     unreachable!("answer body family")
                 }
             };
@@ -383,7 +383,7 @@ fn route_now(
             let body = domain.payloads.remove(&payload).expect("accepted turn body");
             let (cumulative, read, transcript) = match body {
                 crate::Payload::Turn { cumulative, read, transcript, .. } => (cumulative, read, transcript),
-                crate::Payload::InboxWord(_) | crate::Payload::TypedAnswer(_) | crate::Payload::Answer { .. } => {
+                crate::Payload::InboxWord(_) | crate::Payload::SettledCall(_) | crate::Payload::Answer { .. } => {
                     unreachable!("accepted turn body family")
                 }
             };
@@ -405,7 +405,7 @@ fn route_now(
                 Some(crate::Payload::Answer { task, attempt, .. }) => {
                     Some(core::PayloadRefusal::Answer { task, attempt })
                 }
-                Some(crate::Payload::InboxWord(_) | crate::Payload::TypedAnswer(_)) => {
+                Some(crate::Payload::InboxWord(_) | crate::Payload::SettledCall(_)) => {
                     unreachable!("typed answer is not a turn or terminal")
                 }
                 None => None,
@@ -421,8 +421,8 @@ fn route_now(
             unreachable!("this route awaits the testing application's scripted peer");
         }
         other @ (core::Now::SettledCallRefused { .. }
-        | core::Now::CallTyped { .. }
-        | core::Now::DropTyped { .. }
+        | core::Now::Call { .. }
+        | core::Now::DropCall { .. }
         | core::Now::EffectAnswer { .. }
         | core::Now::SignInRefused { .. }
         | core::Now::WatchRefused { .. }

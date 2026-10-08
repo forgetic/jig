@@ -37,7 +37,7 @@ fn a_run_placed_on_the_engine_slots_is_settled_as_not_started_by_a_restart_befor
         step(
             &mut domain,
             limits,
-            Event::StartTyped {
+            Event::Start {
                 reply_to: ReplyTo::new(attempt),
                 run: task,
                 attempt,
@@ -51,7 +51,7 @@ fn a_run_placed_on_the_engine_slots_is_settled_as_not_started_by_a_restart_befor
     assert_eq!(
         place(&mut domain, limits),
         vec![
-            Request::AssignTyped {
+            Request::Assign {
                 channel: Token::new(0),
                 kind: HostKind::Engine,
                 run: task,
@@ -108,7 +108,7 @@ fn a_charter_for_workers_only_waits_while_only_engine_slots_are_free() {
         step(
             &mut domain,
             limits,
-            Event::StartTyped {
+            Event::Start {
                 reply_to: ReplyTo::new(attempt),
                 run: task,
                 attempt,
@@ -140,7 +140,7 @@ fn a_charter_for_workers_only_waits_while_only_engine_slots_are_free() {
     assert_eq!(
         place(&mut domain, limits),
         vec![
-            Request::AssignTyped {
+            Request::Assign {
                 channel: Token::new(5),
                 kind: HostKind::Worker,
                 run: task,
@@ -179,7 +179,7 @@ fn a_worker_holding_the_workstream_is_preferred_over_a_free_engine_slot() {
         step(
             &mut domain,
             limits,
-            Event::StartTyped {
+            Event::Start {
                 reply_to: ReplyTo::new(attempt),
                 run: task,
                 attempt,
@@ -193,7 +193,7 @@ fn a_worker_holding_the_workstream_is_preferred_over_a_free_engine_slot() {
     assert_eq!(
         place(&mut domain, limits),
         vec![
-            Request::AssignTyped {
+            Request::Assign {
                 channel: Token::new(11),
                 kind: HostKind::Worker,
                 run: task,
@@ -221,7 +221,7 @@ fn a_worker_holding_the_workstream_is_preferred_over_a_free_engine_slot() {
     assert_eq!(
         place(&mut domain, limits),
         vec![
-            Request::AssignTyped {
+            Request::Assign {
                 channel: Token::new(0),
                 kind: HostKind::Engine,
                 run: task,
@@ -234,6 +234,6 @@ fn a_worker_holding_the_workstream_is_preferred_over_a_free_engine_slot() {
     );
 }
 
-fn refs() -> jig_core_fleet::TypedAssignment {
-    jig_core_fleet::TypedAssignment { turns: Token::new(0), answered: Token::new(0) }
+fn refs() -> jig_core_fleet::Assignment {
+    jig_core_fleet::Assignment { turns: Token::new(0), answered: Token::new(0) }
 }

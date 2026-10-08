@@ -21,7 +21,7 @@ fn fixture() -> (Agent, Limits, host::Start) {
         cancel_grace: Duration::from_secs(2),
     };
     let names = [charter::EndpointName { number: 0, dialect: 0, account: 0, name: Box::from(&b"fake"[..]) }];
-    let typed = charter::charter(
+    let charter = charter::charter(
         charter::Charter {
             instructions: Box::from(&b"Answer this task"[..]),
             tools: Box::new([]),
@@ -52,7 +52,7 @@ fn fixture() -> (Agent, Limits, host::Start) {
         false,
     )
     .expect("valid charter");
-    let encoded = charter::encode(typed, &names, &limits.charter).expect("encodable charter");
+    let encoded = charter::encode(charter, &names, &limits.charter).expect("encodable charter");
     let mut entries = List::with_capacity(1);
     entries
         .push(protocol::Endpoint { name: Box::from(&b"fake"[..]), number: 0, dialect: 0, account: 0 })
@@ -98,5 +98,5 @@ fn inline_spawn_routes_admission_and_provider_request_then_grace_settles() {
             faulted = true;
         }
     }
-    assert!(faulted, "grace expiration reports a typed fault");
+    assert!(faulted, "grace expiration reports a charter fault");
 }

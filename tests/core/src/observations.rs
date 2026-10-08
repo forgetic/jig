@@ -195,7 +195,7 @@ pub struct Observer {
     requests: BTreeMap<u64, (u64, [u8; 16])>,
     proposals: BTreeMap<u64, (u16, connector::Effect)>,
     accepted: BTreeMap<(u16, connector::Key), r::Source>,
-    typed: BTreeSet<(u64, u64, u64)>,
+    settled_calls: BTreeSet<(u64, u64, u64)>,
     words: BTreeSet<(u64, u64)>,
     policy_changes: BTreeMap<(u64, [u8; 16]), (u32, people::PolicyChange)>,
     applied_changes: BTreeSet<(u64, [u8; 16])>,
@@ -293,7 +293,7 @@ impl Observer {
             requests: BTreeMap::new(),
             proposals: BTreeMap::new(),
             accepted: BTreeMap::new(),
-            typed: BTreeSet::new(),
+            settled_calls: BTreeSet::new(),
             words: BTreeSet::new(),
             policy_changes: BTreeMap::new(),
             applied_changes: BTreeSet::new(),
@@ -619,7 +619,7 @@ impl Observer {
                 root::Record::Core(core::Record::Core(core::CoreRecord::Call(value))) => {
                     snapshot.receipts.insert(call(value.key));
                     if let Some(settled) = &value.settled {
-                        self.typed.insert((value.key.task, value.key.attempt, settled.serial));
+                        self.settled_calls.insert((value.key.task, value.key.attempt, settled.serial));
                     }
                     if let core::CallPart::Delegated(members) = &value.part {
                         snapshot.batches.push(members.to_vec());
@@ -745,10 +745,10 @@ impl Observer {
             root::Delivery::Core(core::Held::CallAnswer { key, .. }) => {
                 requires.push(call(*key));
             }
-            root::Delivery::TypedAnswer { task, attempt, call: settled, .. } => {
+            root::Delivery::CallAnswer { task, attempt, call: settled, .. } => {
                 // The named settled body must already occur in a durable call.
                 assert!(
-                    self.typed.contains(&(*task, *attempt, settled.serial)),
+                    self.settled_calls.contains(&(*task, *attempt, settled.serial)),
                     "typed answer preceded its durable named-call record"
                 );
             }

@@ -28,8 +28,8 @@ pub struct World {
     pub domain: root::Domain,
     pub store: Store,
     pub systems: [System; 2],
-    pub typed_calls: Vec<(Token, u64, u64, fleet::TypedCall)>,
-    pub typed_answers: Vec<(Box<[u8]>, core::SettledCall)>,
+    pub host_calls: Vec<(Token, u64, u64, fleet::Call)>,
+    pub host_answers: Vec<(Box<[u8]>, core::SettledCall)>,
     pub inbound: Vec<tasks::Word>,
     pub answers: Vec<(Token, core::CallKey, core::CallPart)>,
     pub assigned: Option<root::Assignment>,
@@ -197,8 +197,8 @@ impl World {
             domain: root::Domain::new(configuration, limits),
             store: Store::new(),
             systems: [System::new(), System::new()],
-            typed_calls: Vec::new(),
-            typed_answers: Vec::new(),
+            host_calls: Vec::new(),
+            host_answers: Vec::new(),
             inbound: Vec::new(),
             answers: Vec::new(),
             assigned: None,
@@ -346,11 +346,11 @@ impl World {
                         }
                         self.events.push_back(root::Event::TranscriptLoaded { task, rows: Box::new([]), done: true });
                     }
-                    root::Request::Now(core::Now::CallTyped { to, run, attempt, call }) => {
+                    root::Request::Now(core::Now::Call { to, run, attempt, call }) => {
                         if let Some(peers) = &mut self.peers {
                             self.events.extend(peers.opaque_answer(to, run, attempt, &call));
                         } else {
-                            self.typed_calls.push((to.into_token(), run.raw(), attempt.raw(), call));
+                            self.host_calls.push((to.into_token(), run.raw(), attempt.raw(), call));
                         }
                     }
                     root::Request::Now(core::Now::EffectAnswer { to, key, part }) => {
@@ -416,7 +416,7 @@ impl World {
         }
         match delivery {
             root::Delivery::Restart(step) => self.restart_step(step),
-            root::Delivery::TypedAnswer { name, call, .. } => self.typed_answers.push((name, call)),
+            root::Delivery::CallAnswer { name, call, .. } => self.host_answers.push((name, call)),
             root::Delivery::Message { word, .. } => self.inbound.push(word),
             root::Delivery::Assigned { assignment, .. } => {
                 self.assignments.push((assignment.task, assignment.attempt));
@@ -522,9 +522,9 @@ impl World {
             root::Delivery::Core(core::Held::PeopleReply { reply, .. }) => self.people_answers.push(reply),
             root::Delivery::Core(
                 core::Held::SettledCall { .. }
-                | core::Held::AssignTyped { .. }
-                | core::Held::InboundTyped { .. }
-                | core::Held::RelayedTyped { .. }
+                | core::Held::Assign { .. }
+                | core::Held::Inbound { .. }
+                | core::Held::Relayed { .. }
                 | core::Held::ViewStart { .. }
                 | core::Held::ViewFinished { .. }
                 | core::Held::ViewTaskPhase { .. }
@@ -889,13 +889,13 @@ impl World {
         });
     }
 
-    pub fn typed(&mut self, name: &[u8], tool: &[u8], input: &[u8], writes: bool) -> Token {
+    pub fn host_call(&mut self, name: &[u8], tool: &[u8], input: &[u8], writes: bool) -> Token {
         let assignment = self.assigned.as_ref().expect("assigned chat");
-        self.send(root::Event::Core(core::Event::Fleet(fleet::Event::RelayTyped {
+        self.send(root::Event::Core(core::Event::Fleet(fleet::Event::Relay {
             channel: Token::new(7),
             run: Token::new(assignment.task),
             attempt: Token::new(assignment.attempt),
-            call: fleet::TypedCall {
+            call: fleet::Call {
                 name: name.into(),
                 tool: tool.into(),
                 writes,
@@ -903,7 +903,7 @@ impl World {
                 deadline: Duration::from_secs(2),
             },
         })));
-        self.typed_calls.last().expect("fleet authenticated typed call").0
+        self.host_calls.last().expect("fleet authenticated typed call").0
     }
 }
 

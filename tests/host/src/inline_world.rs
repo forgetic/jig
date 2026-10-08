@@ -54,7 +54,7 @@ pub struct World {
     agent_client: Option<Token>,
     seen: Vec<Seen>,
     turns: BTreeMap<u32, hub::Turn>,
-    answer: Option<hub::AnswerV2>,
+    answer: Option<hub::Answer>,
     auto_ack: bool,
 }
 
@@ -112,7 +112,7 @@ fn failure(source: agent_host::RunFailure) -> hub::RunFailure {
 }
 
 fn charter_bytes(budget: charter::Budget, prices: charter::Prices, resumed: bool) -> Box<[u8]> {
-    let typed = charter::charter(
+    let charter = charter::charter(
         charter::Charter {
             instructions: Box::from(&b"@local Answer this task."[..]),
             tools: Box::new([]),
@@ -144,7 +144,7 @@ fn charter_bytes(budget: charter::Budget, prices: charter::Prices, resumed: bool
     )
     .expect("bounded charter");
     charter::encode(
-        typed,
+        charter,
         &[charter::EndpointName { number: 0, dialect: 0, account: 0, name: Box::from(&b"fake"[..]) }],
         &smith_charter::v1::CEILINGS,
     )
@@ -214,7 +214,7 @@ impl World {
 
     /// Commit and assign one run with a budget and optional saved turn bodies.
     pub fn assign(&mut self, budget: charter::Budget, prices: charter::Prices, transcript: Box<[Box<[u8]>]>) {
-        let assignment = hub::Assignment {
+        let assignment = hub::RunAssignment {
             run: RUN,
             attempt: ATTEMPT,
             workspace: None,
@@ -222,9 +222,9 @@ impl World {
             charter: charter_bytes(budget, prices, !transcript.is_empty()),
             grants: Box::new([hub::Grant { account: 0, generation: 1, valid: Duration::from_secs(3600) }]),
         };
-        self.hub_events.push_back(hub::Event::AssignTyped {
+        self.hub_events.push_back(hub::Event::Assign {
             reply_to: ReplyTo::new(RUN),
-            assignment: hub::AssignmentTyped { assignment, turns: transcript, answered: Box::new([]) },
+            assignment: hub::Assignment { assignment, turns: transcript, answered: Box::new([]) },
         });
     }
 
@@ -236,7 +236,7 @@ impl World {
 
     /// The hub's answer, once the root has committed it.
     #[must_use]
-    pub fn answer(&self) -> Option<&hub::AnswerV2> {
+    pub fn answer(&self) -> Option<&hub::Answer> {
         self.answer.as_ref()
     }
 
@@ -267,7 +267,7 @@ impl World {
 
     /// Send one named person message through the hub.
     pub fn message(&mut self, name: Token, words: &[u8]) {
-        self.hub_events.push_back(hub::Event::InboundTyped {
+        self.hub_events.push_back(hub::Event::Inbound {
             run: RUN,
             attempt: ATTEMPT,
             name,
@@ -365,7 +365,7 @@ impl World {
 
     fn route_hub(&mut self, request: hub::Request) {
         match request {
-            hub::Request::StartTyped { owner, workspace, charter, activation, turns, answered, grants } => {
+            hub::Request::Start { owner, workspace, charter, activation, turns, answered, grants } => {
                 assert_eq!(workspace, None, "engine slots have no workspace");
                 assert!(answered.is_empty(), "this world has no recovered host calls");
                 self.agent_client = Some(owner);
@@ -404,10 +404,10 @@ impl World {
                 self.inline_events.push_back(agent_host::Event::Acknowledge { agent, turn });
             }
             hub::Request::Hosting { .. } => {}
-            hub::Request::DeliverTyped { agent, name, sender, words } => {
+            hub::Request::Message { agent, name, sender, words } => {
                 self.inline_events.push_back(agent_host::Event::Message { agent, name, label: sender, text: words });
             }
-            hub::Request::ReplyTyped { agent, call, reply } => {
+            hub::Request::Reply { agent, call, reply } => {
                 let owner = *self.calls.get(call.as_ref()).expect("host returned a known call");
                 let reply = match reply {
                     hub::Reply::Relayed { answer } => agent_host::Reply::Host { error: false, body: answer },
@@ -418,7 +418,7 @@ impl World {
                 };
                 self.inline_events.push_back(agent_host::Event::Answer { agent, call: owner, reply });
             }
-            hub::Request::RelayTyped { run, attempt, delivery, .. } => {
+            hub::Request::Relay { run, attempt, delivery, .. } => {
                 self.hub_events.push_back(hub::Event::Relayed {
                     run,
                     attempt,
@@ -431,7 +431,7 @@ impl World {
                 agent,
                 grant: agent_host::Grant { account: grant.account, generation: grant.generation, valid: grant.valid },
             }),
-            hub::Request::AnswerV2 { answer, .. } => {
+            hub::Request::Answer { answer, .. } => {
                 assert!(self.answer.replace(answer).is_none(), "one core answer");
                 self.seen.push(Seen::Answer);
                 self.hub_events.push_back(hub::Event::Unacknowledged { answers: 0 });
@@ -439,7 +439,7 @@ impl World {
             hub::Request::Bounced { .. } => panic!("the scripted message fits"),
             hub::Request::Prepare { .. }
             | hub::Request::Abort { .. }
-            | hub::Request::DeliverV2 { .. }
+            | hub::Request::Deliver { .. }
             | hub::Request::Save { .. }
             | hub::Request::Release { .. }
             | hub::Request::CancelRelay { .. } => panic!("unscripted hub request: {request:?}"),
@@ -464,7 +464,7 @@ impl World {
                     let name = name(operation);
                     assert!(self.calls.insert(name.clone(), call).is_none(), "durable operation name is unique");
                     let ask = match ask {
-                        agent_host::Ask::Host { tool, effect, body } => hub::Ask::RelayTyped {
+                        agent_host::Ask::Host { tool, effect, body } => hub::Ask::Relay {
                             tool,
                             writes: effect == agent_host::Effect::Write,
                             input: body,
@@ -472,11 +472,7 @@ impl World {
                         },
                         agent_host::Ask::Deliver { .. } => panic!("no inline workspace delivery"),
                     };
-                    self.hub_events.push_back(hub::Event::CalledTyped {
-                        owner: client,
-                        call: name.into_boxed_slice(),
-                        ask,
-                    });
+                    self.hub_events.push_back(hub::Event::Called { owner: client, call: name.into_boxed_slice(), ask });
                 }
                 agent_host::Request::Withdrawn { client, call } => {
                     let name = self
@@ -485,8 +481,7 @@ impl World {
                         .find(|(_, owner)| **owner == call)
                         .map(|(name, _)| name.clone())
                         .expect("known call");
-                    self.hub_events
-                        .push_back(hub::Event::WithdrawnTyped { owner: client, call: name.into_boxed_slice() });
+                    self.hub_events.push_back(hub::Event::Withdrawn { owner: client, call: name.into_boxed_slice() });
                 }
                 agent_host::Request::Waiting { client, .. } => {
                     self.seen.push(Seen::Waiting);
@@ -494,14 +489,12 @@ impl World {
                 }
                 agent_host::Request::Answered { client, answer } => {
                     let finish = match answer.result {
-                        agent_host::RunResult::Accepted { outcome } => hub::FinishV2::Ended { outcome },
-                        agent_host::RunResult::Parked => hub::FinishV2::Parked,
-                        agent_host::RunResult::Failed { failure: why } => {
-                            hub::FinishV2::Failed { failure: failure(why) }
-                        }
+                        agent_host::RunResult::Accepted { outcome } => hub::Finish::Ended { outcome },
+                        agent_host::RunResult::Parked => hub::Finish::Parked,
+                        agent_host::RunResult::Failed { failure: why } => hub::Finish::Failed { failure: failure(why) },
                         agent_host::RunResult::Refused { refusal } => panic!("valid start was refused: {refusal:?}"),
                     };
-                    self.hub_events.push_back(hub::Event::FinishedV2 {
+                    self.hub_events.push_back(hub::Event::Finished {
                         owner: client,
                         turns: answer.turns,
                         spent: answer.spent,

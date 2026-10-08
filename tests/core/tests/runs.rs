@@ -58,15 +58,15 @@ fn a_turn_admits_its_read_fence_and_spend_together_and_duplicates_change_nothing
 }
 
 #[test]
-fn typed_settled_delivery_evidence_survives_restart_and_resume_until_a_turn_carries_it() {
+fn settled_delivery_evidence_survives_restart_and_resume_until_a_turn_carries_it() {
     let mut world = World::new(103, false);
     world.turn(1, 1, None, b"turn");
-    let right = world.typed(b"call-name", b"deliver", b"opaque-input", true);
+    let right = world.host_call(b"call-name", b"deliver", b"opaque-input", true);
     let key = world.call_key(2);
-    assert_eq!(world.typed_calls[0].3.name.as_ref(), b"call-name");
-    assert_eq!(world.typed_calls[0].3.tool.as_ref(), b"deliver");
-    assert_eq!(world.typed_calls[0].3.input.as_ref(), b"opaque-input");
-    assert!(world.typed_calls[0].3.writes);
+    assert_eq!(world.host_calls[0].3.name.as_ref(), b"call-name");
+    assert_eq!(world.host_calls[0].3.tool.as_ref(), b"deliver");
+    assert_eq!(world.host_calls[0].3.input.as_ref(), b"opaque-input");
+    assert!(world.host_calls[0].3.writes);
     world.send(root::Event::Core(core::Event::NamedAnswer {
         to: ReplyTo::new(right),
         key,
@@ -80,8 +80,8 @@ fn typed_settled_delivery_evidence_survives_restart_and_resume_until_a_turn_carr
         answer: core::SettledAnswer::Delivery { outcome: core::DeliveryOutcome::Delivered, evidence: evidence.clone() },
     };
     world.send(root::Event::Core(core::Event::SettledCall { to: ReplyTo::new(right), key, call: settled }));
-    assert_eq!(world.typed_answers.len(), 1);
-    let saved = world.typed_answers[0].1.clone();
+    assert_eq!(world.host_answers.len(), 1);
+    let saved = world.host_answers[0].1.clone();
     assert_ne!(saved.serial, 0);
     world.end(tasks::End::Parked, 1);
     world.restart(103, false);
@@ -176,7 +176,7 @@ fn an_unusable_transcript_fails_transient_and_the_next_conversation_starts_fresh
 fn settled_answers_resume_in_commit_order_and_a_replay_preserves_exact_bytes() {
     let mut world = World::new(107, false);
     for (completion, name) in [(4, &b"first"[..]), (2, &b"second"[..])] {
-        let right = world.typed(name, b"read", b"{}", false);
+        let right = world.host_call(name, b"read", b"{}", false);
         let key = world.call_key(completion);
         world.send(root::Event::Core(core::Event::NamedAnswer {
             to: ReplyTo::new(right),
@@ -194,9 +194,9 @@ fn settled_answers_resume_in_commit_order_and_a_replay_preserves_exact_bytes() {
             },
         }));
     }
-    let first = world.typed_answers[0].1.clone();
+    let first = world.host_answers[0].1.clone();
     let key = world.call_key(4);
-    let right = world.typed(b"first", b"read", b"{}", false);
+    let right = world.host_call(b"first", b"read", b"{}", false);
     let before = world.store.applied;
     world.send(root::Event::Core(core::Event::SettledCall {
         to: ReplyTo::new(right),
@@ -208,7 +208,7 @@ fn settled_answers_resume_in_commit_order_and_a_replay_preserves_exact_bytes() {
             answer: core::SettledAnswer::Host { error: false, body: b"different rendering".as_slice().into() },
         },
     }));
-    assert_eq!(world.typed_answers.last().expect("replayed answer").1, first);
+    assert_eq!(world.host_answers.last().expect("replayed answer").1, first);
     assert_eq!(world.store.applied, before);
     world.end(tasks::End::Parked, 0);
     world.say(79);

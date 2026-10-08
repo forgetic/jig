@@ -4,7 +4,7 @@ use skein_lib::{Deadlines, Env, Id, Map, Queue, Slab, Time, Token};
 
 use crate::attempt::{self, Attempt, Run};
 use crate::boundary::{Event, HostKind, Request};
-use crate::call::{self, Call};
+use crate::call::{self, PendingCall};
 use crate::channel::{self, Channel};
 use crate::facts::{Fact, Facts};
 use crate::limits::{self, Limits};
@@ -42,7 +42,7 @@ pub struct Domain {
     /// An alarm per attempt, as its state says.
     pub(crate) alarms: Deadlines<Id<Attempt>>,
     /// Relayed calls the parent has yet to answer.
-    pub(crate) calls: Slab<Call>,
+    pub(crate) calls: Slab<PendingCall>,
     pub(crate) turns: Map<(Id<Attempt>, u32), Pending>,
     pub(crate) turning: bool,
     /// Something changed that may let a waiting attempt be placed: the ready
@@ -175,12 +175,12 @@ impl Domain {
 /// Handles one event, emitting at most [`max_out`] requests.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
-        Event::StartTyped { reply_to, run, attempt, workstream, kinds, assignment } => {
+        Event::Start { reply_to, run, attempt, workstream, kinds, assignment } => {
             attempt::start(domain, env, reply_to, run, attempt, workstream, kinds, assignment, out);
         }
-        Event::InboundTyped { run, attempt, message } => call::inbound_typed(domain, run, attempt, message, out),
-        Event::RelayTyped { channel, run, attempt, call } => {
-            call::relay_typed(domain, env, channel, run, attempt, call, out);
+        Event::Inbound { run, attempt, message } => call::inbound(domain, run, attempt, message, out),
+        Event::Relay { channel, run, attempt, call } => {
+            call::relay(domain, env, channel, run, attempt, call, out);
         }
         Event::Adopt { reply_to, run, attempt, kept, kind, worked } => match kind {
             HostKind::Engine => {

@@ -401,7 +401,7 @@ fn a_watch_key_is_volatile_and_replays_only_while_open() {
 }
 
 #[test]
-fn a_note_edit_checks_membership_then_retains_the_typed_refusal() {
+fn a_note_edit_checks_membership_then_retains_the_refusal() {
     let ask = Ask::EditNote {
         project: 1,
         name: 9,

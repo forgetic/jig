@@ -1,7 +1,7 @@
 use skein_lib::{Deadlines, Duration, Id, Map, Queue, Set, Slab, Token};
 
 use crate::attempt::{Attempt, Run};
-use crate::call::Call;
+use crate::call::PendingCall;
 use crate::channel::Channel;
 use crate::facts::Fact;
 use crate::turn::Pending;
@@ -77,7 +77,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(Map::<Token, Run>::worst_case(tracked)?)?
         .checked_add(Map::<u64, Id<Attempt>>::worst_case(tracked)?)?
         .checked_add(Deadlines::<Id<Attempt>>::worst_case(tracked)?)?;
-    let calls = Slab::<Call>::worst_case(limits.calls)?
+    let calls = Slab::<PendingCall>::worst_case(limits.calls)?
         .checked_add(u64::from(limits.calls).checked_mul(limits.call_name_bytes)?)?;
     let turns = Map::<(Id<Attempt>, u32), Pending>::worst_case(limits.turns)?;
     let facts = Queue::<Fact>::worst_case(limits.facts)?;

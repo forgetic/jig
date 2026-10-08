@@ -113,13 +113,13 @@ impl Measured {
     fn start(&mut self) -> (Token, Token) {
         let (run, attempt) = (self.name(), self.name());
         let workstream = run.raw();
-        let asked = self.step(Event::StartTyped {
+        let asked = self.step(Event::Start {
             reply_to: ReplyTo::new(attempt),
             run,
             attempt,
             workstream,
             kinds: jig_core_fleet::Kinds::Workers,
-            assignment: jig_core_fleet::TypedAssignment { turns: Token::new(0), answered: Token::new(0) },
+            assignment: jig_core_fleet::Assignment { turns: Token::new(0), answered: Token::new(0) },
         });
         assert!(asked.is_empty(), "a start waits for placement: {asked:?}");
         (run, attempt)
@@ -135,7 +135,7 @@ fn channel(nth: u32) -> Token {
 fn placed(requests: &[Request]) -> Vec<(Token, Token, Token)> {
     let mut placed = Vec::new();
     for request in requests {
-        if let Request::AssignTyped { channel, run, attempt, .. } = request {
+        if let Request::Assign { channel, run, attempt, .. } = request {
             placed.push((*channel, *run, *attempt));
         }
     }
@@ -157,11 +157,11 @@ fn fill(limits: Limits) -> (Measured, Vec<(Token, Token, Token)>, Vec<ReplyTo>) 
     let mut calls = Vec::new();
     for (nth, &(channel, run, attempt)) in placed.iter().enumerate().take(limits.calls as usize) {
         let call = Token::new(nth as u64);
-        let up = fleet.step(Event::RelayTyped {
+        let up = fleet.step(Event::Relay {
             channel,
             run,
             attempt,
-            call: jig_core_fleet::TypedCall {
+            call: jig_core_fleet::Call {
                 name: vec![7; usize::try_from(limits.call_name_bytes).expect("fits")].into_boxed_slice(),
                 tool: Box::new([]),
                 writes: false,
@@ -169,7 +169,7 @@ fn fill(limits: Limits) -> (Measured, Vec<(Token, Token, Token)>, Vec<ReplyTo>) 
                 deadline: Duration::ZERO,
             },
         });
-        let Some(Request::RelayTyped { reply_to, .. }) = up.into_iter().next() else {
+        let Some(Request::Relay { reply_to, .. }) = up.into_iter().next() else {
             panic!("a call relayed up");
         };
         calls.push(reply_to);
@@ -190,20 +190,20 @@ fn a_fleet_full_to_its_limits_stays_within_its_worst_case() {
     // One more is refused, at the entrance.
     let (run, attempt) = (fleet.name(), fleet.name());
     let workstream = run.raw();
-    let refused = fleet.step(Event::StartTyped {
+    let refused = fleet.step(Event::Start {
         reply_to: ReplyTo::new(attempt),
         run,
         attempt,
         workstream,
         kinds: jig_core_fleet::Kinds::Workers,
-        assignment: jig_core_fleet::TypedAssignment { turns: Token::new(0), answered: Token::new(0) },
+        assignment: jig_core_fleet::Assignment { turns: Token::new(0), answered: Token::new(0) },
     });
     assert!(matches!(refused[..], [Request::Refused { .. }]), "{refused:?}");
-    let up = fleet.step(Event::RelayTyped {
+    let up = fleet.step(Event::Relay {
         channel: placed[5].0,
         run: placed[5].1,
         attempt: placed[5].2,
-        call: jig_core_fleet::TypedCall {
+        call: jig_core_fleet::Call {
             name: Box::from(Token::new(9).raw().to_be_bytes()),
             tool: Box::new([]),
             writes: false,
@@ -211,11 +211,11 @@ fn a_fleet_full_to_its_limits_stays_within_its_worst_case() {
             deadline: Duration::ZERO,
         },
     });
-    assert!(matches!(up[..], [Request::DropTyped { .. }]), "a call beyond the room is dropped: {up:?}");
+    assert!(matches!(up[..], [Request::DropCall { .. }]), "a call beyond the room is dropped: {up:?}");
     // Drained: every call answered, every attempt answered or lost.
     for (nth, to) in calls.into_iter().enumerate() {
         let down = fleet.step(Event::Relayed { to, answer: Token::new(100 + nth as u64) });
-        assert!(matches!(down[..], [Request::RelayedTyped { .. }]), "{down:?}");
+        assert!(matches!(down[..], [Request::Relayed { .. }]), "{down:?}");
     }
     // Each attempt answered, and its answer made durable, frees a slot for
     // one waiting.
@@ -268,11 +268,11 @@ fn every_entry_point_stays_within_the_worst_case() {
     let placed = placed(&fleet.settle());
     assert_eq!(placed.len(), 1);
     // Calls, answers, inbound events, bounces and facts.
-    let up = fleet.step(Event::RelayTyped {
+    let up = fleet.step(Event::Relay {
         channel: placed[0].0,
         run: r3,
         attempt: a3,
-        call: jig_core_fleet::TypedCall {
+        call: jig_core_fleet::Call {
             name: Box::from(Token::new(1).raw().to_be_bytes()),
             tool: Box::new([]),
             writes: false,
@@ -280,14 +280,14 @@ fn every_entry_point_stays_within_the_worst_case() {
             deadline: Duration::ZERO,
         },
     });
-    let Some(Request::RelayTyped { reply_to, .. }) = up.into_iter().next() else {
+    let Some(Request::Relay { reply_to, .. }) = up.into_iter().next() else {
         panic!("a call relayed up");
     };
     fleet.step(Event::Relayed { to: reply_to, answer: Token::new(3) });
-    fleet.step(Event::InboundTyped {
+    fleet.step(Event::Inbound {
         run: r3,
         attempt: a3,
-        message: jig_core_fleet::TypedMessage { name: Token::new(4), sender: Token::new(4), words: Token::new(4) },
+        message: jig_core_fleet::Message { name: Token::new(4), sender: Token::new(4), words: Token::new(4) },
     });
     fleet.step(Event::Bounced {
         channel: placed[0].0,

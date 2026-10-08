@@ -31,7 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jig_host::{
-    AgentFailure, Ask, Delivery, DeliveryOutcome, Event, FinishV2, Limits, Preparation, Request, RunFailure, Workspace,
+    AgentFailure, Ask, Delivery, DeliveryOutcome, Event, Finish, Limits, Preparation, Request, RunFailure, Workspace,
 };
 use skein_lib::{Duration, Rng, Token};
 use skein_world::domain::Span;
@@ -269,20 +269,20 @@ impl Parent {
                 self.tally.aborts += 1;
                 Vec::new()
             }
-            Request::StartTyped { owner, workspace, .. } => {
+            Request::Start { owner, workspace, .. } => {
                 self.start(owner, workspace.expect("the scripted assignments have workspace items"))
             }
-            Request::DeliverTyped { agent, .. } => self.deliver(agent),
-            Request::ReplyTyped { agent, call: _, reply: _ } => self.reply(agent),
+            Request::Message { agent, .. } => self.deliver(agent),
+            Request::Reply { agent, call: _, reply: _ } => self.reply(agent),
             Request::Stop { agent } => self.stop(agent),
-            Request::DeliverV2 { owner, workspace, .. } => self.delivery(owner, workspace),
+            Request::Deliver { owner, workspace, .. } => self.delivery(owner, workspace),
             Request::Save { owner, workspace } => self.save(owner, workspace),
             Request::Release { workspace } => self.release(workspace),
             Request::Grant { .. } => Vec::new(),
             Request::Turn { .. }
             | Request::AcknowledgeAgentTurn { .. }
-            | Request::AnswerV2 { .. }
-            | Request::RelayTyped { .. }
+            | Request::Answer { .. }
+            | Request::Relay { .. }
             | Request::CancelRelay { .. }
             | Request::Bounced { .. }
             | Request::Hosting { .. } => {
@@ -302,7 +302,7 @@ impl Parent {
             Phase::Working { steps: 0 } => self.fate(agent),
             Phase::Working { steps } => self.act(agent, steps - 1),
             // Idle past its time: it parks, as a session does.
-            Phase::Waiting { .. } => self.say(agent, FinishV2::Parked),
+            Phase::Waiting { .. } => self.say(agent, Finish::Parked),
             Phase::Stuck { fault } => {
                 let after = self.script.kill.draw(&mut self.rng);
                 let mut out = vec![host(Duration::ZERO, Event::Faulted { owner: self.owner(agent), fault })];
@@ -312,9 +312,9 @@ impl Parent {
             Phase::Stopping { word: true } => {
                 self.tally.words += 1;
                 let finish = match self.rng.below(3) {
-                    0 => FinishV2::Ended { outcome: bytes(self.rng.between(1, self.limits.outcome_bytes)) },
-                    1 => FinishV2::Parked,
-                    _ => FinishV2::Failed { failure: RunFailure::Cancelled },
+                    0 => Finish::Ended { outcome: bytes(self.rng.between(1, self.limits.outcome_bytes)) },
+                    1 => Finish::Parked,
+                    _ => Finish::Failed { failure: RunFailure::Cancelled },
                 };
                 let mut out = vec![host(Duration::ZERO, crate::fixtures::finished(self.owner(agent), finish))];
                 out.extend(self.goes(agent, b"cancelled"));
@@ -400,12 +400,12 @@ impl Parent {
         match fate {
             Fate::Ended => {
                 let len = self.rng.between(1, self.limits.outcome_bytes);
-                self.say(agent, FinishV2::Ended { outcome: bytes(len) })
+                self.say(agent, Finish::Ended { outcome: bytes(len) })
             }
-            Fate::Parked => self.say(agent, FinishV2::Parked),
-            Fate::Failed(failure) => self.say(agent, FinishV2::Failed { failure }),
+            Fate::Parked => self.say(agent, Finish::Parked),
+            Fate::Failed(failure) => self.say(agent, Finish::Failed { failure }),
             Fate::Oversized => {
-                let finish = FinishV2::Ended { outcome: bytes(self.limits.outcome_bytes + 1) };
+                let finish = Finish::Ended { outcome: bytes(self.limits.outcome_bytes + 1) };
                 self.say(agent, finish)
             }
             Fate::Exited => self.goes(agent, b"panicked at 'index out of bounds'"),
@@ -426,7 +426,7 @@ impl Parent {
     }
 
     /// The run says how it finishes, and its agent exits after a while.
-    fn say(&mut self, agent: Token, finish: FinishV2) -> Vec<Out> {
+    fn say(&mut self, agent: Token, finish: Finish) -> Vec<Out> {
         let after = self.script.exit.draw(&mut self.rng);
         vec![host(Duration::ZERO, crate::fixtures::finished(self.owner(agent), finish)), self.exit(agent, after)]
     }
@@ -444,8 +444,8 @@ impl Parent {
 
     fn call(&mut self, agent: Token, ask: Ask) -> Out {
         match ask {
-            Ask::RelayTyped { .. } => self.tally.relays += 1,
-            Ask::DeliverV2 { .. } => self.tally.deliveries += 1,
+            Ask::Relay { .. } => self.tally.relays += 1,
+            Ask::Deliver { .. } => self.tally.deliveries += 1,
         }
         let entry = self.agents.get_mut(&agent).expect("an agent is kept once made");
         entry.calls += 1;

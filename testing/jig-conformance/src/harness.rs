@@ -69,6 +69,10 @@ pub trait Application {
     fn recovery(config: &Self::Config, connector: u16, kind: u16) -> Recovery;
     /// Prepare the initial durable fixture and begin the cold-load script.
     fn start(config: &Self::Config, store: &mut Store<Self::Key, Self::Record>) -> Vec<Self::Event>;
+    /// Reconnect retained peers and observe the last durable store on a crash.
+    fn cold(peers: &mut Self::Peers, store: &Store<Self::Key, Self::Record>, clock: Clock);
+    /// Translate the application’s fleet, task and connector timers.
+    fn timers(config: &Self::Config) -> Vec<Self::Event>;
     /// Feed one event or store row to the concrete engine.
     fn step(domain: &mut Self::Domain, config: &Self::Config, clock: Clock, input: Input<Self::Event, Self::Record>);
     /// Drain the journal in release order without changing its payloads.
@@ -120,6 +124,18 @@ pub struct Outcome {
     pub commits: u64,
     pub iterations: u64,
     pub stopped: bool,
+    pub crashes: Vec<u64>,
+}
+
+/// A chosen crash just after durable application and before its acknowledgement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cut {
+    /// Run without a selected crash.
+    None,
+    /// Crash after this numbered transaction becomes durable.
+    AfterCommit(u64),
+    /// Draw one cut from commit arrivals, replayable from its seed.
+    Random { seed: u64 },
 }
 
 /// The application engine, its independent peers, and durable store.
@@ -139,6 +155,8 @@ pub struct Harness<A: Application> {
     clock: Clock,
     iterations: u64,
     stopped: bool,
+    cut: Cut,
+    crashes: Vec<u64>,
 }
 
 impl<A: Application> Harness<A> {
@@ -169,6 +187,50 @@ impl<A: Application> Harness<A> {
             clock: Clock { now: 0 },
             iterations: 0,
             stopped: false,
+            cut: Cut::None,
+            crashes: Vec::new(),
+        }
+    }
+
+    /// Arm one cold restart before its selected durable completion is released.
+    pub fn cut(&mut self, cut: Cut) {
+        self.cut = cut;
+    }
+
+    /// Advance simulated time and fire every application timer through its root.
+    pub fn advance(&mut self, nanos: u64) {
+        self.clock.now = self.clock.now.checked_add(nanos).expect("scenario time fits");
+        self.events.extend(A::timers(&self.config).into_iter().map(Input::Event));
+    }
+
+    /// Current time for independently scripted peer faults.
+    #[must_use]
+    pub fn clock(&self) -> Clock {
+        self.clock
+    }
+
+    /// Restart cold from durable rows, preserving peer and system evidence.
+    ///
+    /// # Errors
+    /// Returns a receipt missing after restart or another broken promise.
+    pub fn crash(&mut self) -> Result<(), Violation> {
+        self.crashes.push(self.store.applied);
+        self.referee.observe(self.clock.now, Observed::Restart)?;
+        self.store.crash();
+        self.events.clear();
+        self.outputs.clear();
+        A::cold(&mut self.peers, &self.store, self.clock);
+        self.inspect()?;
+        self.domain = A::build(&self.config);
+        self.events.extend(A::start(&self.config, &mut self.store).into_iter().map(Input::Event));
+        self.stopped = false;
+        Ok(())
+    }
+
+    /// Release held durable acknowledgements in the order the store applied them.
+    pub fn release_commits(&mut self) {
+        while let Some(number) = self.store.release_held() {
+            self.events.push_back(Input::Committed(number));
         }
     }
 
@@ -217,12 +279,28 @@ impl<A: Application> Harness<A> {
             }
         }
         if !self.stopped {
+            let previous = self.store.applied;
             match self.store.tick(false) {
                 Ok(Some(number)) => self.events.push_front(Input::Committed(number)),
                 Ok(None) => {}
                 Err(number) => self.events.push_front(Input::Failed(number)),
             }
             self.inspect()?;
+            if self.store.applied != previous {
+                let should_cut = match self.cut {
+                    Cut::None => false,
+                    Cut::AfterCommit(number) => number == self.store.applied,
+                    Cut::Random { seed } => {
+                        let mut random = skein_lib::Rng::new(seed ^ self.store.applied);
+                        random.below(4) == 0
+                    }
+                };
+                if should_cut {
+                    self.cut = Cut::None;
+                    self.crash()?;
+                    return Ok(true);
+                }
+            }
             self.events.extend(A::poll(
                 &mut self.peers,
                 &mut self.systems,
@@ -276,6 +354,11 @@ impl<A: Application> Harness<A> {
     /// Counts from the outside store and loop.
     #[must_use]
     pub fn outcome(&self) -> Outcome {
-        Outcome { commits: self.store.applied, iterations: self.iterations, stopped: self.stopped }
+        Outcome {
+            commits: self.store.applied,
+            iterations: self.iterations,
+            stopped: self.stopped,
+            crashes: self.crashes.clone(),
+        }
     }
 }

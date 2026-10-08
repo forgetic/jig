@@ -221,6 +221,23 @@ impl Application for Testing {
         vec![root::Event::RestartBegin]
     }
 
+    fn cold(peers: &mut Neighbours, store: &Store, clock: Clock) {
+        peers.observer.cold(clock.now, store);
+        peers.peers.restart();
+        peers.restoring = None;
+        peers.restart_reads.clear();
+        peers.account_ready = false;
+    }
+
+    fn timers(_: &Config) -> Vec<root::Event> {
+        vec![
+            root::Event::Timer(core::Timer::Fleet),
+            root::Event::Timer(core::Timer::Tasks),
+            root::Event::ConnectorTimer { number: 1 },
+            root::Event::ConnectorTimer { number: 2 },
+        ]
+    }
+
     fn step(domain: &mut root::Domain, config: &Config, clock: Clock, input: Input<root::Event, root::Record>) {
         let env = env(config, clock);
         match input {
@@ -429,3 +446,5 @@ impl Application for Testing {
             + connector::worst_case(&limits.connector).expect("connector bound fits") * 2
     }
 }
+
+pub mod actions;

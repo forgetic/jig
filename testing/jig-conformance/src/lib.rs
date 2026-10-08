@@ -3,4 +3,4 @@
 #![forbid(unsafe_code)]
 pub mod harness;
 pub mod referee;
-pub use harness::{Application, Clock, Harness, Input, Outcome, Output};
+pub use harness::{Application, Clock, Cut, Harness, Input, Outcome, Output};

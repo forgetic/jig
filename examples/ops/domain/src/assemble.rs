@@ -170,6 +170,42 @@ const fn delivery(value: core::DeliveryOutcome) -> host::DeliveryOutcome {
         core::DeliveryOutcome::Failed => host::DeliveryOutcome::Failed,
     }
 }
+/// Preserve the task-owned message kind when translating its opaque words.
+pub(crate) fn inbox_words(word: &tasks::Word) -> Box<[u8]> {
+    let (label, number) = match word.kind {
+        tasks::MessageKind::Result(_) => (
+            b"Result from task ".as_slice(),
+            match word.from {
+                tasks::Party::Task(task) => task,
+                tasks::Party::Person(person) => person,
+                tasks::Party::Deployment { .. } => 0,
+            },
+        ),
+        tasks::MessageKind::ProposalDecision { proposal, accepted } => {
+            (if accepted { b"Proposal accepted ".as_slice() } else { b"Proposal rejected ".as_slice() }, proposal)
+        }
+        tasks::MessageKind::Words
+        | tasks::MessageKind::Question
+        | tasks::MessageKind::Answer { .. }
+        | tasks::MessageKind::Notice { .. }
+        | tasks::MessageKind::News { .. }
+        | tasks::MessageKind::Timer { .. }
+        | tasks::MessageKind::Amendment { .. }
+        | tasks::MessageKind::Proposal { .. }
+        | tasks::MessageKind::Escalation { .. } => return word.words.clone(),
+    };
+    let number = Decimal::of(number);
+    let bytes = label.len().checked_add(number.as_bytes().len()).expect("bounded message label");
+    let bytes = bytes.checked_add(2).expect("bounded message separator");
+    let bytes = bytes.checked_add(word.words.len()).expect("bounded message envelope");
+    let mut writer = Writer::new(bytes);
+    writer.put(label).expect("measured label");
+    writer.put(number.as_bytes()).expect("measured source");
+    writer.put(b":\n").expect("measured separator");
+    writer.put(&word.words).expect("measured words");
+    writer.finish()
+}
+
 pub(crate) fn sender(value: tasks::Party) -> Box<[u8]> {
     match value {
         tasks::Party::Task(number) | tasks::Party::Person(number) => Box::from(Decimal::of(number).as_bytes()),
@@ -418,7 +454,9 @@ pub(crate) fn call(
         match crate::translate::decode(&call.tool, &call.input) {
             Ok(crate::translate::Decoded::Read(read)) => {
                 let description = crate::translate::read_description(domain.numbers.observability, &read);
-                let mut findings = Queue::with_capacity(env.limits.core.authority.facts);
+                let mut findings = Queue::with_capacity(
+                    jig_core_authority::max_out(&env.limits.core.authority).expect("authority findings"),
+                );
                 if domain.core.connector_read_admit(run.raw(), description, &mut findings)
                     != jig_core_authority::Answer::Allow
                     || domain.read_calls.len() == domain.read_calls.capacity()

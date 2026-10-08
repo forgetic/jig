@@ -336,7 +336,7 @@ impl InfrastructureWorld {
         for record in records {
             match record {
                 infra::Record::Rely { resources, .. } => {
-                    live.extend(resources.iter().cloned());
+                    live.extend(resources.into_iter().map(|named| named.resource));
                 }
                 infra::Record::Procedure(state) => match state.procedure {
                     infra::Procedure::Remediate { service, .. } | infra::Procedure::Scale { service, .. } => {

@@ -334,6 +334,7 @@ fn start_watch(
     let watch = Watch { task, services, template, last_batch: None, pending: Box::new([]) };
     domain.watches.insert(task, watch.clone()).expect("watch fits");
     out.push(Request::Save { record: Record::Watch(watch) });
+    out.push(Request::WatchInterest { task, subscription: task, topic: task });
 }
 
 fn stop_watch(domain: &mut Domain, task: u64, out: &mut Queue<Request>) {

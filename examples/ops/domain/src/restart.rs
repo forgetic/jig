@@ -3,7 +3,6 @@
 use crate::domain::{Work, held};
 use crate::{Domain, Limits, Output, Range, Record, Store, Write};
 use jig_core as core;
-use jig_core_fleet as fleet;
 use jig_core_notes as notes;
 use jig_core_people as people;
 use jig_core_tasks as tasks;
@@ -35,15 +34,7 @@ pub(crate) fn route(
             }
             core::RestartStep::AdoptRuns => {
                 work.push(Work::Core(core::Event::Tasks(tasks::Event::Restored)));
-                if domain.core.restart_admit_claims() {
-                    for _ in 0..domain.core.adopted.len() {
-                        work.push(Work::Core(core::Event::Fleet(
-                            domain.core.adopted.pop().expect("loaded claim count"),
-                        )));
-                    }
-                    work.push(Work::Core(core::Event::Fleet(fleet::Event::Loaded)));
-                    work.push(Work::AdoptDone);
-                }
+                work.push(Work::AdoptClaims);
             }
             core::RestartStep::ReadAfresh { connector } => {
                 if connector == domain.numbers.infrastructure {
@@ -81,10 +72,20 @@ pub(crate) fn store(
         Store::Committed { .. } | Store::Failed { .. } => unreachable!("store terminals belong to the journal"),
         Store::Loaded(event) => work.push(Work::Core(event)),
         Store::Restored(step) => {
+            if step == core::RestartStep::LoadCore {
+                // The completed core range is also the people's restoration
+                // terminal. Retain it when copying this cold-load adapter.
+                work.push(Work::Core(core::Event::People(people::Event::Restored)));
+            }
             let request = domain.core.restart_done(step);
             work.push(Work::Restart(request));
         }
         Store::Transcript { task, rows, done } => {
+            // A message can invalidate preparation while this store read is
+            // in flight. Its old answer belongs to no current preparation.
+            if !domain.core.transcripts.contains_key(&task) {
+                return;
+            }
             for row in rows {
                 if !domain.core.append_transcript(task, row) {
                     work.push(Work::Core(core::Event::PreparationFailed { task }));
@@ -138,8 +139,11 @@ pub(crate) fn store(
                     true
                 }
                 Record::Infrastructure(record) => {
-                    work.push(Work::Infrastructure(infrastructure::Event::Restore { record }));
-                    true
+                    let valid = restore_roles(domain, env, &record);
+                    if valid {
+                        work.push(Work::Infrastructure(infrastructure::Event::Restore { record }));
+                    }
+                    valid
                 }
                 Record::Observability(record) => {
                     work.push(Work::Observability(observability::Event::Restore { record }));
@@ -151,4 +155,26 @@ pub(crate) fn store(
             }
         }
     }
+}
+
+/// Preserve connector-owned project adoption before the core admits live claims.
+fn restore_roles(domain: &mut Domain, env: &Env<Limits>, record: &infrastructure::Record) -> bool {
+    let mut valid = true;
+    match record {
+        infrastructure::Record::Rely { project, resources, .. } => {
+            for named in resources {
+                valid &= domain.core.restore_resource_role(
+                    &Env { now: env.now, wall: env.wall, limits: env.limits.core },
+                    *project,
+                    tasks::Name { connector: domain.numbers.infrastructure, path: named.resource.segments() },
+                    crate::translate::resource_role(named.role),
+                );
+            }
+        }
+        infrastructure::Record::Procedure(_)
+        | infrastructure::Record::Proposal { .. }
+        | infrastructure::Record::Outbox(_)
+        | infrastructure::Record::Made { .. } => {}
+    }
+    valid
 }

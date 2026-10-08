@@ -1,7 +1,9 @@
 use alloc::boxed::Box;
 use skein_lib::{List, Map};
 
-use crate::{Effect, Entry, Environment, EnvironmentFact, Key, Pool, ProcedureState, Resource, Service, ServiceFact};
+use crate::{
+    Effect, Entry, Environment, EnvironmentFact, Key, Named, Pool, ProcedureState, Resource, Service, ServiceFact,
+};
 
 /// Bounds for infrastructure's live records and system values.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -50,7 +52,8 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(u64::from(refresh).checked_mul(u64::from(limits.name_bytes).checked_mul(2)?)?)?
         .checked_add(Map::<Environment, Option<EnvironmentFact>>::worst_case(limits.environments)?)?
         .checked_add(Map::<Pool, (u32, u32)>::worst_case(limits.pools)?)?
-        .checked_add(Map::<u64, Box<[Resource]>>::worst_case(limits.tasks)?)?
+        .checked_add(Map::<u64, (u32, Box<[Named]>)>::worst_case(limits.tasks)?)?
+        .checked_add(u64::from(limits.tasks).checked_mul(List::<Named>::worst_case(limits.resources_per_task)?)?)?
         .checked_add(Map::<u64, ProcedureState>::worst_case(limits.procedures)?)?
         .checked_add(List::<u64>::worst_case(limits.procedures)?)?
         .checked_add(Map::<skein_lib::Token, Effect>::worst_case(limits.staged)?)?

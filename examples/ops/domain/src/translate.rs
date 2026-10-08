@@ -124,10 +124,14 @@ pub(crate) const fn verdict(value: observability::Verdict, wall: Wall) -> (autho
 }
 pub(crate) fn service(names: &[authority::Name]) -> Option<observability::Service> {
     let segments = &names.first()?.segments;
-    if segments.len() != 3 || segments.first()?.as_ref() != b"services" {
-        return None;
+    if segments.len() == 4 && segments.first()?.as_ref() == b"env" && segments.get(2)?.as_ref() == b"service" {
+        return Some(observability::Service::new(segments.get(1)?.clone(), segments.get(3)?.clone()));
     }
-    Some(observability::Service::new(segments.get(1)?.clone(), segments.get(2)?.clone()))
+    if segments.len() == 3 && segments.first()?.as_ref() == b"services" {
+        Some(observability::Service::new(segments.get(1)?.clone(), segments.get(2)?.clone()))
+    } else {
+        None
+    }
 }
 
 /// Ops names its two requirements in its connector vocabulary.
@@ -181,9 +185,20 @@ pub(crate) fn procedure(code: u32, spec: &tasks::Spec) -> Option<infrastructure:
         _ => None,
     }
 }
-pub(crate) fn holdings(number: u16, infrastructure: u16, spec: &tasks::Spec) -> Option<Box<[tasks::Holding]>> {
+pub(crate) fn holdings(
+    number: u16,
+    infrastructure: u16,
+    executor: tasks::Executor,
+    spec: &tasks::Spec,
+) -> Option<Box<[tasks::Holding]>> {
     if number != infrastructure {
         return Some(Box::new([]));
+    }
+    match executor {
+        tasks::Executor::Procedure { connector, .. } if connector == infrastructure => {}
+        tasks::Executor::Procedure { .. } | tasks::Executor::Agent { .. } | tasks::Executor::Person(_) => {
+            return Some(Box::new([]));
+        }
     }
     match spec_service(spec) {
         Some(service) => Some(Box::new([tasks::Holding::Write {
@@ -1120,4 +1135,23 @@ pub(crate) fn read_description(number: u16, read: &observability::Read) -> autho
         additional: Box::new([]),
         guards: Box::new([]),
     }
+}
+
+/// The connector owns adoption roles; the root carries them into core admission.
+pub(crate) const fn resource_role(role: infrastructure::ResourceRole) -> core::connector::ResourceRole {
+    match role {
+        infrastructure::ResourceRole::Owned => core::connector::ResourceRole::Owned,
+        infrastructure::ResourceRole::Participant => core::connector::ResourceRole::Participant,
+        infrastructure::ResourceRole::Context => core::connector::ResourceRole::Context,
+        infrastructure::ResourceRole::Unavailable => core::connector::ResourceRole::Unavailable,
+    }
+}
+
+/// The same configured service-write kind is used by holdings translation and cold restore.
+pub(crate) fn hold_kinds(number: u16) -> Box<[tasks::Kind]> {
+    Box::new([tasks::Kind {
+        connector: number,
+        kind: 1,
+        hold: tasks::HoldKind::Exclusive { taken: tasks::Taken::Waits },
+    }])
 }

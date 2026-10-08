@@ -91,6 +91,17 @@ pub(crate) fn work(
             agent_out(domain, env, decision, &mut out, work);
         }
         Work::Restart(request) => crate::restart::route(domain, env, decision, request, work),
+        Work::AdoptClaims => {
+            // Tasks's restoration terminal produces the claims. Feed it first,
+            // then carry the complete range to the fleet as the core asks.
+            if domain.core.restart_admit_claims() {
+                for _ in 0..domain.core.adopted.len() {
+                    work.push(Work::Core(core::Event::Fleet(domain.core.adopted.pop().expect("loaded claim count"))));
+                }
+                work.push(Work::Core(core::Event::Fleet(fleet::Event::Loaded)));
+                work.push(Work::AdoptDone);
+            }
+        }
         Work::AdoptDone => {
             let request = domain.core.restart_done(core::RestartStep::AdoptRuns);
             work.push(Work::Restart(request));
@@ -222,6 +233,7 @@ fn core_held(domain: &mut Domain, decision: &mut Decision<Write, Output>, value:
                 decision,
                 Released::Host(host::Event::Assign { reply_to: ReplyTo::new(run), assignment: assignment.value }),
             );
+            offered_inbox(decision, run, attempt, assignment.inbox);
         }
         core::Held::SettledCall { to, key, call } => {
             domain.calls.remove(&key);
@@ -248,7 +260,7 @@ fn core_held(domain: &mut Domain, decision: &mut Decision<Write, Output>, value:
                     attempt,
                     name: message.name,
                     sender: crate::assemble::sender(message_word.from),
-                    words: message_word.words,
+                    words: crate::assemble::inbox_words(&message_word),
                 }),
             );
         }
@@ -304,6 +316,23 @@ fn core_held(domain: &mut Domain, decision: &mut Decision<Write, Output>, value:
     }
 }
 
+fn offered_inbox(decision: &mut Decision<Write, Output>, run: Token, attempt: Token, inbox: Box<[tasks::Word]>) {
+    // Carry the core's offered inbox to the newly assigned attempt.
+    // The hub's opaque message names become the run's read fence.
+    for word in inbox {
+        child(
+            decision,
+            Released::Host(host::Event::Inbound {
+                run,
+                attempt,
+                name: Token::new(word.number),
+                sender: crate::assemble::sender(word.from),
+                words: crate::assemble::inbox_words(&word),
+            }),
+        );
+    }
+}
+
 #[expect(clippy::too_many_lines, reason = "one exhaustive dispatcher translates this child boundary")]
 fn core_ask(
     domain: &mut Domain,
@@ -315,16 +344,16 @@ fn core_ask(
 ) {
     match ask {
         core::Ask::Effect(ask) => effect_ask(domain, env, number, ask, work),
-        core::Ask::TaskHoldings { request, spec, .. } => work.push(Work::Core(core::Event::Holdings {
+        core::Ask::TaskHoldings { request, executor, spec, .. } => work.push(Work::Core(core::Event::Holdings {
             request,
             connector: number,
-            holdings: translate::holdings(number, domain.numbers.infrastructure, &spec),
+            holdings: translate::holdings(number, domain.numbers.infrastructure, executor, &spec),
         })),
         core::Ask::DelegateHoldings { request, members, .. } => {
             let mut holdings = List::with_capacity(u32::try_from(members.len()).expect("bounded batch"));
             let mut valid = true;
             for member in members {
-                match translate::holdings(number, domain.numbers.infrastructure, &member.spec) {
+                match translate::holdings(number, domain.numbers.infrastructure, member.executor, &member.spec) {
                     Some(value) => holdings.push(value).expect("one holdings row"),
                     None => valid = false,
                 }
@@ -339,7 +368,7 @@ fn core_ask(
             let mut holdings = List::with_capacity(u32::try_from(members.len()).expect("bounded batch"));
             let mut valid = true;
             for member in members {
-                match translate::holdings(number, domain.numbers.infrastructure, &member.spec) {
+                match translate::holdings(number, domain.numbers.infrastructure, member.executor, &member.spec) {
                     Some(value) => holdings.push(value).expect("one holdings row"),
                     None => valid = false,
                 }
@@ -752,8 +781,8 @@ fn infrastructure_out(
                 })));
             }
             infrastructure::Request::Slots { pool, quota, used: _ } => {
-                work.push(Work::Core(core::Event::Tasks(tasks::Event::Slots {
-                    pool: tasks::Name {
+                work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::PoolSlots {
+                    name: tasks::Name {
                         connector: domain.numbers.infrastructure,
                         path: infrastructure::Resource::Pool(pool).segments(),
                     },
@@ -765,7 +794,21 @@ fn infrastructure_out(
                     work.push(Work::Core(core::Event::Tasks(tasks::Event::WakeProcedure { task })));
                 }
             }
-            infrastructure::Request::Named { .. } => {}
+            infrastructure::Request::Named { project, resources, .. } => {
+                for named in resources {
+                    let hold = match named.hold {
+                        infrastructure::Hold::None => core::connector::HoldKind::Shared,
+                        infrastructure::Hold::ExclusiveWait => core::connector::HoldKind::Exclusive { wait: true },
+                        infrastructure::Hold::PooledWait => core::connector::HoldKind::Pooled { slots: 0, wait: true },
+                    };
+                    work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Resource {
+                        project,
+                        role: translate::resource_role(named.role),
+                        name: tasks::Name { connector: domain.numbers.infrastructure, path: named.resource.segments() },
+                        hold,
+                    })));
+                }
+            }
             infrastructure::Request::Restarted { stage } => {
                 let step = match stage {
                     infrastructure::RestartStage::ReadAfresh => {
@@ -884,6 +927,16 @@ fn observability_out(
                     }
                 }
             }
+            observability::Request::WatchInterest { task, subscription, topic } => {
+                work.push(Work::Core(core::Event::Tasks(tasks::Event::SubscribeTopic {
+                    reply_to: ReplyTo::new(Token::new(subscription)),
+                    task,
+                    subscription: tasks::Subscription {
+                        number: subscription,
+                        kind: tasks::SubscriptionKind::Topic { connector: domain.numbers.observability, topic },
+                    },
+                })));
+            }
             observability::Request::Triage { watch, delegate, alerts, .. } => {
                 let Some((step, connector, code)) = domain.procedures.remove(&watch) else { continue };
                 let action = match translate::triage(&delegate, &alerts) {
@@ -970,14 +1023,14 @@ fn core_now(domain: &mut Domain, env: &Env<Limits>, value: core::Now, work: &mut
         core::Now::WorkspaceRequest { task, attempt, .. } => {
             work.push(Work::Core(core::Event::WorkspacePrepared { task, attempt, writes: Some(Box::new([])) }));
         }
-        core::Now::RunPrepared { task, attempt, run, transcript, grant, .. } => {
+        core::Now::RunPrepared { task, attempt, run, inbox, transcript, grant, .. } => {
             let budget = run.budget;
             let sections = domain.briefs.remove(&task).expect("completed brief parts");
             match crate::assemble::assignment(domain, env, task, attempt, *run, sections, transcript, grant) {
                 Some(value) => {
                     domain
                         .assignments
-                        .insert(task, crate::domain::Assignment { attempt, value })
+                        .insert(task, crate::domain::Assignment { attempt, value, inbox })
                         .expect("core-selected assignment");
                     work.push(Work::Core(core::Event::ClaimPrepared { task, attempt, budget, writes: Box::new([]) }));
                 }

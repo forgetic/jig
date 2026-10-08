@@ -114,6 +114,7 @@ impl World {
                 | obs::Request::Answer { .. }
                 | obs::Request::News { .. }
                 | obs::Request::Health { .. }
+                | obs::Request::WatchInterest { .. }
                 | obs::Request::Triage { .. }
                 | obs::Request::Described { .. }
                 | obs::Request::Refused { .. }
@@ -153,6 +154,7 @@ impl World {
                 | obs::Request::Answer { .. }
                 | obs::Request::News { .. }
                 | obs::Request::Health { .. }
+                | obs::Request::WatchInterest { .. }
                 | obs::Request::Triage { .. }
                 | obs::Request::Described { .. }
                 | obs::Request::Refused { .. }

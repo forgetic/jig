@@ -92,6 +92,7 @@ fn a_service_is_exclusive_and_a_pool_slot_waits() {
         &mut domain,
         1,
         Event::Names {
+            project: 1,
             task: 7,
             resources: Box::from([Resource::Service(service()), Resource::Pool(Pool(Box::from(*b"staging")))]),
         },
@@ -100,18 +101,35 @@ fn a_service_is_exclusive_and_a_pool_slot_waits() {
         named.pop(),
         Some(Request::Save {
             record: Record::Rely {
+                project: 1,
                 task: 7,
-                resources: Box::from([Resource::Service(service()), Resource::Pool(Pool(Box::from(*b"staging"))),])
+                resources: Box::from([
+                    Named {
+                        role: ResourceRole::Owned,
+                        resource: Resource::Service(service()),
+                        hold: Hold::ExclusiveWait
+                    },
+                    Named {
+                        role: ResourceRole::Owned,
+                        resource: Resource::Pool(Pool(Box::from(*b"staging"))),
+                        hold: Hold::PooledWait
+                    },
+                ])
             }
         })
     );
     assert_eq!(
         named.pop(),
         Some(Request::Named {
+            project: 1,
             task: 7,
             resources: Box::from([
-                Named { resource: Resource::Service(service()), hold: Hold::ExclusiveWait },
-                Named { resource: Resource::Pool(Pool(Box::from(*b"staging"))), hold: Hold::PooledWait },
+                Named { role: ResourceRole::Owned, resource: Resource::Service(service()), hold: Hold::ExclusiveWait },
+                Named {
+                    role: ResourceRole::Owned,
+                    resource: Resource::Pool(Pool(Box::from(*b"staging"))),
+                    hold: Hold::PooledWait
+                },
             ])
         })
     );

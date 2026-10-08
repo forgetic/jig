@@ -102,6 +102,11 @@ fn a_watch_emits_one_triage_per_committed_batch() {
             })
         })
     );
+    assert_eq!(started.pop(), Some(Request::WatchInterest { task: 7, subscription: 7, topic: 7 }));
+    assert!(started.is_empty());
+    assert!(
+        event(&mut domain, 2, Event::StartWatch { task: 7, services: Box::from([service()]), template: 3 }).is_empty()
+    );
     let wake = Event::WakeWatch { task: 7, batch: 99, alerts: Box::from([1, 2]) };
     let mut first = event(&mut domain, 2, wake.clone());
     assert_eq!(

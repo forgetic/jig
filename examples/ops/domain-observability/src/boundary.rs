@@ -361,6 +361,8 @@ pub enum SystemRequest {
 /// What the connector asks its root to route or commit.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Request {
+    /// A watch's task-scoped topic interest, chosen by its procedure owner.
+    WatchInterest { task: u64, subscription: u64, topic: u64 },
     /// This task has no unsettled entries.
     Closed { task: u64 },
     /// This task's live state was released.

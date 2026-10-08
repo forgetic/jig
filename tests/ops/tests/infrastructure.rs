@@ -62,7 +62,11 @@ fn creation_survives_a_lost_answer_and_pool_shrink_retains_its_holder() {
 fn a_hand_change_reports_drift_to_a_reliant_task() {
     let mut world = InfrastructureWorld::new(0, infra::Backend::OperationIds);
     let service = infra_service();
-    world.event(infra::Event::Names { task: 7, resources: Box::from([infra::Resource::Service(service.clone())]) });
+    world.event(infra::Event::Names {
+        project: 1,
+        task: 7,
+        resources: Box::from([infra::Resource::Service(service.clone())]),
+    });
     let initial = world.event(infra::Event::System(infra::SystemEvent::Service {
         service: service.clone(),
         fact: infra::ServiceFact { version: Box::from(*b"v2"), replicas: 3, healthy: true, revision: 1, observed: 0 },

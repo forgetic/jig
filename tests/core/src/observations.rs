@@ -30,7 +30,9 @@ fn task_pattern(value: &tasks::Pattern) -> r::Pattern {
     }
 }
 
-fn scope(value: &authority::Authority) -> r::Scope {
+/// Translate configured authority for an application's independent referee.
+#[must_use]
+pub fn scope(value: &authority::Authority) -> r::Scope {
     r::Scope {
         budget: value.budget.spend,
         deadline: value.budget.deadline.map(skein_lib::Wall::as_nanos),
@@ -130,7 +132,9 @@ fn phase(value: &tasks::Phase) -> r::Phase {
     }
 }
 
-fn task(value: &tasks::TaskRecord) -> r::Task {
+/// Translate a durable task row without consulting live engine state.
+#[must_use]
+pub fn task(value: &tasks::TaskRecord) -> r::Task {
     r::Task {
         tracked: value.tracked.is_some(),
         number: value.number,

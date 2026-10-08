@@ -6,3 +6,5 @@ mod world;
 
 pub use infrastructure_world::{InfrastructureWorld, infra_environment, infra_service, infrastructure_limits};
 pub use world::{World, limits, service};
+
+pub mod conformance;

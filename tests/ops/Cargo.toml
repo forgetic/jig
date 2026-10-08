@@ -7,6 +7,29 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+jig-ops-domain.workspace = true
+jig-conformance.workspace = true
+jig-core-world = { path = "../core" }
+jig-core.workspace = true
+jig-core-authority.workspace = true
+jig-core-tasks.workspace = true
+jig-core-people.workspace = true
+jig-core-accounts.workspace = true
+jig-core-fleet.workspace = true
+jig-core-notes.workspace = true
+jig-host.workspace = true
+jig-inline-agent.workspace = true
+jig-charter.workspace = true
+jig-fake-store.workspace = true
+jig-test-system.workspace = true
+smith-agent-world.workspace = true
+smith-domain.workspace = true
+smith-domain-run.workspace = true
+smith-protocol-channel.workspace = true
+smith-charter.workspace = true
+smith-transcript.workspace = true
+skein-fake-llm-domain.workspace = true
+skein-world.workspace = true
 jig-ops-domain-observability.workspace = true
 jig-ops-domain-infrastructure.workspace = true
 jig-ops-fake-production.workspace = true

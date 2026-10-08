@@ -17,6 +17,7 @@ use skein_lib::{Decision, Env, Journal, Map, Queue, Token};
 pub(crate) struct Assignment {
     pub(crate) attempt: u64,
     pub(crate) value: host::Assignment,
+    pub(crate) inbox: Box<[jig_core_tasks::Word]>,
 }
 
 /// A connector read keeps only its caller continuation and opaque envelope.
@@ -124,8 +125,22 @@ impl Domain {
         }
         let agent_calls = limits.host.slots.checked_mul(limits.agent.smith.run.calls).expect("agent callbacks");
         let host_calls = limits.host.slots.checked_mul(limits.host.run_calls).expect("hub relays");
+        let mut core = core::Core::new(config.core, &limits.core);
+        // Connector hold rules are configuration, so a cold root installs
+        // the same translated vocabulary before restoring live task rows.
+        let mut configured = Queue::with_capacity(jig_core_tasks::max_out(&limits.core.tasks));
+        jig_core_tasks::step(
+            &mut core.tasks,
+            &Env { now: skein_lib::Time::ZERO, wall: skein_lib::Wall::EPOCH, limits: limits.core.tasks },
+            jig_core_tasks::Event::Kinds {
+                connector: config.numbers.infrastructure,
+                kinds: crate::translate::hold_kinds(config.numbers.infrastructure),
+            },
+            &mut configured,
+        );
+        assert!(configured.is_empty(), "configured hold rules decide nothing");
         Self {
-            core: core::Core::new(config.core, &limits.core),
+            core,
             observability: observability::Domain::with_templates(&limits.observability, config.triage_templates),
             infrastructure: infrastructure::Domain::new(config.backend, &limits.infrastructure),
             host: host::Domain::new(&limits.host),
@@ -203,6 +218,7 @@ pub(crate) enum Work {
     Host(host::Event),
     Agent(smith_host_domain::Event),
     Restart(core::RestartRequest),
+    AdoptClaims,
     AdoptDone,
 }
 
@@ -247,6 +263,7 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
         | Work::Host(_)
         | Work::Agent(_)
         | Work::Restart(_)
+        | Work::AdoptClaims
         | Work::AdoptDone => crate::limits::room(&env.limits).expect("validated route room"),
     };
     let Some(mut decision) = domain.journal.decision(&room) else {
@@ -273,7 +290,10 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
         crate::route::work(domain, env, &mut decision, next, &mut work);
     }
     assert!(work.is_empty(), "complete synchronous route fits its admission");
-    if domain.wrote || domain.core.counters.dirty() {
+    // The cold load must read the durable header before numbering another
+    // commit. Copy this guard with the core's restart script.
+    if domain.wrote || (domain.core.counters.dirty() && domain.core.restart_step() != Some(core::RestartStep::LoadCore))
+    {
         let header = domain.core.counters.next_commit();
         write(
             domain,

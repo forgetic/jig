@@ -20,7 +20,7 @@ pub struct Domain {
     services: Map<Service, ServiceFact>,
     environments: Map<Environment, Option<EnvironmentFact>>,
     pools: Map<Pool, (u32, u32)>,
-    reliance: Map<u64, Box<[Resource]>>,
+    reliance: Map<u64, (u32, Box<[Named]>)>,
     procedures: Map<u64, ProcedureState>,
     staged: Map<Token, Effect>,
     proposals: Map<u64, (u64, Effect)>,
@@ -164,7 +164,14 @@ fn describe(effect: &Effect, backend: Backend) -> Description {
     }
 }
 
-fn names(domain: &mut Domain, env: &Env<Limits>, task: u64, resources: Box<[Resource]>, out: &mut Queue<Request>) {
+fn names(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    task: u64,
+    project: u32,
+    resources: Box<[Resource]>,
+    out: &mut Queue<Request>,
+) {
     if u32::try_from(resources.len()).unwrap_or(u32::MAX) > env.limits.resources_per_task
         || domain.reliance.len() >= env.limits.tasks && !domain.reliance.contains_key(&task)
     {
@@ -177,16 +184,23 @@ fn names(domain: &mut Domain, env: &Env<Limits>, task: u64, resources: Box<[Reso
     }
     let mut named = List::with_capacity(env.limits.resources_per_task);
     for resource in &resources {
-        named.push(Named { resource: resource.clone(), hold: hold(resource) }).expect("resource count checked");
+        named
+            .push(Named { resource: resource.clone(), role: crate::ResourceRole::Owned, hold: hold(resource) })
+            .expect("resource count checked");
     }
-    domain.reliance.insert(task, resources.clone()).expect("task capacity checked");
-    out.push(Request::Save { record: Record::Rely { task, resources } });
-    out.push(Request::Named { task, resources: named.into_boxed() });
+    let resources = named.into_boxed();
+    domain.reliance.insert(task, (project, resources.clone())).expect("task capacity checked");
+    out.push(Request::Save { record: Record::Rely { task, project, resources: resources.clone() } });
+    out.push(Request::Named { task, project, resources });
 }
 
 fn drift(domain: &Domain, resource: Resource, out: &mut Queue<Request>) {
-    for (task, resources) in &domain.reliance {
-        if resources.contains(&resource) {
+    for (task, (_, resources)) in &domain.reliance {
+        let mut found = false;
+        for named in resources {
+            found |= named.resource == resource;
+        }
+        if found {
             out.push(Request::Drift { task: *task, resource: resource.clone() });
         }
     }
@@ -275,8 +289,8 @@ fn fresh_pool(domain: &mut Domain, env: &Env<Limits>, pool: Pool, quota: u32, us
 
 fn restore(domain: &mut Domain, record: Record) {
     match record {
-        Record::Rely { task, resources } => {
-            domain.reliance.insert(task, resources).expect("restored task fits");
+        Record::Rely { task, project, resources } => {
+            domain.reliance.insert(task, (project, resources)).expect("restored task fits");
         }
         Record::Procedure(state) => {
             domain.procedures.insert(state.task, state).expect("restored procedure fits");
@@ -436,6 +450,34 @@ fn procedure(domain: &mut Domain, env: &Env<Limits>, task: u64, signal: Procedur
                 state.phase = ProcedurePhase::Done;
             }
         },
+    }
+    match signal {
+        ProcedureSignal::EffectMade | ProcedureSignal::EffectWaiting => {
+            // An outcome updates this owner's state and refreshes facts. A
+            // decision belongs to the next step offered by the task hub.
+            let read = match &state.procedure {
+                Procedure::Scale { service, .. } => {
+                    state.phase = ProcedurePhase::ReadingFacts;
+                    SystemRequest::Service { service: service.clone() }
+                }
+                Procedure::Remediate { service, .. } => SystemRequest::Service { service: service.clone() },
+                Procedure::Provision { environment, .. } | Procedure::TearDown { environment, .. } => {
+                    SystemRequest::Environment { environment: environment.clone() }
+                }
+            };
+            if state != before {
+                domain.procedures.insert(task, state.clone()).expect("live procedure");
+                out.push(Request::Save { record: Record::Procedure(state) });
+            }
+            out.push(Request::System(read));
+            return;
+        }
+        ProcedureSignal::EffectFailed => {
+            domain.procedures.insert(task, state.clone()).expect("live procedure");
+            out.push(Request::Save { record: Record::Procedure(state) });
+            return;
+        }
+        ProcedureSignal::Step | ProcedureSignal::Release => {}
     }
     let (phase, decision, read) = decide(domain, now, &state);
     state.phase = phase;
@@ -649,7 +691,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             out.push(Request::Released { task });
         }
 
-        Event::Names { task, resources } => names(domain, env, task, resources, out),
+        Event::Names { task, project, resources } => names(domain, env, task, project, resources, out),
         Event::Unnamed { task } => {
             if domain.reliance.remove(&task).is_some() {
                 out.push(Request::Erase { key: RecordKey::Rely(task) });
@@ -773,9 +815,9 @@ pub fn next_deadline(domain: &Domain) -> Option<Time> {
 
 fn read_afresh(domain: &mut Domain) {
     domain.restart = Some(crate::RestartStage::ReadAfresh);
-    for (_, resources) in &domain.reliance {
-        for resource in resources {
-            domain.refresh.insert(resource.clone(), false).expect("restored live resources fit");
+    for (_, (_, resources)) in &domain.reliance {
+        for named in resources {
+            domain.refresh.insert(named.resource.clone(), false).expect("restored live resources fit");
         }
     }
     for (_, state) in &domain.procedures {

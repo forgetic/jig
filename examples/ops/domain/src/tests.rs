@@ -86,6 +86,7 @@ fn take(domain: &mut Domain, env: &Env<Limits>) -> Box<[Output]> {
 
 fn name(task: u64) -> Event {
     Event::Infrastructure(infrastructure::Event::Names {
+        project: 1,
         task,
         resources: Box::new([infrastructure::Resource::Service(jig_ops_world::infra_service())]),
     })

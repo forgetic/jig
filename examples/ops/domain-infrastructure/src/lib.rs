@@ -35,8 +35,8 @@ mod limits;
 pub use boundary::{
     ApplyResult, Backend, Description, Effect, Entry, Environment, EnvironmentFact, Event, Form, Hold, Key, Looked,
     Named, Outcome, Phase, Pool, Procedure, ProcedurePhase, ProcedureSignal, ProcedureState, Purpose, Record,
-    RecordKey, Recovery, Request, Resource, RestartStage, Service, ServiceFact, StepDecision, SystemEvent,
-    SystemRequest,
+    RecordKey, Recovery, Request, Resource, ResourceRole, RestartStage, Service, ServiceFact, StepDecision,
+    SystemEvent, SystemRequest,
 };
 pub use domain::{Domain, MAX_OUT, fire, next_deadline, step};
 pub use limits::{Limits, worst_case};

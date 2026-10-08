@@ -79,7 +79,9 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .charter_bytes
         .checked_add(limits.host.transcript_bytes)?
         .checked_add(u64::from(limits.core.call_records).checked_mul(u64::from(limits.core.call_answer_bytes))?)?
-        .checked_add(u64::from(limits.host.accounts).checked_mul(64)?)?;
+        .checked_add(u64::from(limits.host.accounts).checked_mul(64)?)?
+        .checked_add(skein_lib::List::<jig_core_tasks::Word>::worst_case(limits.core.tasks.inbox_messages)?)?
+        .checked_add(u64::from(limits.core.tasks.inbox_bytes))?;
     let value = assignment
         .checked_add(limits.core.policy_bytes)?
         .checked_add(u64::from(limits.core.tasks.batch).checked_mul(u64::from(limits.core.run_bytes))?)?

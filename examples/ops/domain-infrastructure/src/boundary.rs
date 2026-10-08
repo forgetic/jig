@@ -86,11 +86,26 @@ pub enum Hold {
     None,
 }
 
-/// A resource and its hold.
+/// The deployment's role on a resource adopted by a project.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ResourceRole {
+    /// The deployment owns it.
+    Owned,
+    /// It writes as a participant.
+    Participant,
+    /// It may read it.
+    Context,
+    /// It is known but unavailable.
+    Unavailable,
+}
+
+/// A named resource with its adoption role and hold.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Named {
     /// Resource named by the task.
     pub resource: Resource,
+    /// Project-scoped role reported by this connector.
+    pub role: ResourceRole,
     /// Hold the core takes.
     pub hold: Hold,
 }
@@ -381,7 +396,7 @@ pub enum RecordKey {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Record {
     /// Resources a task relies on.
-    Rely { task: u64, resources: Box<[Resource]> },
+    Rely { task: u64, project: u32, resources: Box<[Named]> },
     /// One procedure's state.
     Procedure(ProcedureState),
     /// Proposed payload, retained without permission to make it.
@@ -414,7 +429,7 @@ pub enum Event {
     /// Release this task's connector-owned live state.
     Release { task: u64 },
     /// A live task names resources and needs their holds.
-    Names { task: u64, resources: Box<[Resource]> },
+    Names { task: u64, project: u32, resources: Box<[Resource]> },
     /// A task no longer relies on its named resources.
     Unnamed { task: u64 },
     /// Start a procedure with parameters.
@@ -487,7 +502,7 @@ pub enum Request {
     /// The connector finished its selected restart stage.
     Restarted { stage: RestartStage },
     /// Resources and holds a task must take atomically.
-    Named { task: u64, resources: Box<[Named]> },
+    Named { task: u64, project: u32, resources: Box<[Named]> },
     /// Updated pool capacity; existing holders are retained.
     Slots { pool: Pool, quota: u32, used: u32 },
     /// Another hand changed an owned resource a task relies on.

@@ -201,8 +201,16 @@ fn idle_calls_depend_on_live_resources_and_changes_not_old_history() {
     let mut long = InfrastructureWorld::new(0, infra::Backend::OperationIds);
     short.production.preload_history(10);
     long.production.preload_history(100);
-    short.event(infra::Event::Names { task: 1, resources: Box::from([infra::Resource::Service(infra_service())]) });
-    long.event(infra::Event::Names { task: 1, resources: Box::from([infra::Resource::Service(infra_service())]) });
+    short.event(infra::Event::Names {
+        project: 1,
+        task: 1,
+        resources: Box::from([infra::Resource::Service(infra_service())]),
+    });
+    long.event(infra::Event::Names {
+        project: 1,
+        task: 1,
+        resources: Box::from([infra::Resource::Service(infra_service())]),
+    });
     short.restart();
     long.restart();
     for _ in 0..20 {
@@ -243,6 +251,7 @@ fn a_hand_deleting_an_owned_environment_reports_drift() {
     let mut world = InfrastructureWorld::new(0, infra::Backend::OperationIds);
     let environment = infra_environment();
     world.event(infra::Event::Names {
+        project: 1,
         task: 7,
         resources: Box::from([infra::Resource::Environment(environment.clone())]),
     });
@@ -319,11 +328,16 @@ fn dropping_a_staged_silence_discards_its_value() {
 fn a_pool_shrink_keeps_holders_and_new_claims_wait() {
     let mut world = InfrastructureWorld::new(0, infra::Backend::OperationIds);
     let pool = infra::Pool(Box::from(*b"staging"));
-    let held =
-        world.event(infra::Event::Names { task: 1, resources: Box::from([infra::Resource::Pool(pool.clone())]) });
+    let held = world.event(infra::Event::Names {
+        project: 1,
+        task: 1,
+        resources: Box::from([infra::Resource::Pool(pool.clone())]),
+    });
     assert!(held.contains(&infra::Request::Named {
+        project: 1,
         task: 1,
         resources: Box::from([infra::Named {
+            role: infra::ResourceRole::Owned,
             resource: infra::Resource::Pool(pool.clone()),
             hold: infra::Hold::PooledWait,
         }]),
@@ -331,11 +345,19 @@ fn a_pool_shrink_keeps_holders_and_new_claims_wait() {
     world.event(infra::Event::System(infra::SystemEvent::Pool { pool: pool.clone(), quota: 1, used: 1 }));
     let shrunk = world.event(infra::Event::System(infra::SystemEvent::Pool { pool: pool.clone(), quota: 0, used: 1 }));
     assert!(shrunk.contains(&infra::Request::Slots { pool: pool.clone(), quota: 0, used: 1 }));
-    let waiting =
-        world.event(infra::Event::Names { task: 2, resources: Box::from([infra::Resource::Pool(pool.clone())]) });
-    assert!(waiting.contains(&infra::Request::Named {
+    let waiting = world.event(infra::Event::Names {
+        project: 1,
         task: 2,
-        resources: Box::from([infra::Named { resource: infra::Resource::Pool(pool), hold: infra::Hold::PooledWait }]),
+        resources: Box::from([infra::Resource::Pool(pool.clone())]),
+    });
+    assert!(waiting.contains(&infra::Request::Named {
+        project: 1,
+        task: 2,
+        resources: Box::from([infra::Named {
+            role: infra::ResourceRole::Owned,
+            resource: infra::Resource::Pool(pool),
+            hold: infra::Hold::PooledWait
+        }]),
     }));
     assert!(!shrunk.iter().any(|row| matches!(row, infra::Request::Erase { key: infra::RecordKey::Rely(1) })));
 }

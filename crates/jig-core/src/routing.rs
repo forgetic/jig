@@ -55,6 +55,8 @@ pub enum Request {
 /// A question or retained-section command for a numbered connector.
 #[derive(Debug)]
 pub enum Ask {
+    /// A core-selected effect handoff completed inside this decision.
+    Effect(crate::connector::Ask),
     /// Tell the owning connector that this task took a write hold.
     Hold { task: u64, resource: tasks::Name },
     /// Tell the owning connector to end a task's topic interest.
@@ -109,6 +111,8 @@ pub enum Write {
 /// Core output that must follow the decision's commit.
 #[derive(Debug)]
 pub enum Held {
+    /// A connector may make this entry only after its keeping decision commits.
+    MakeEffect { connector: u16, entry: u64 },
     /// A saved word relayed to its fenced live attempt after commit.
     Relay { task: u64, attempt: u64, previous: Option<u64>, word: tasks::Word },
     /// A party's keyed terminal, released after its decision is durable.
@@ -158,6 +162,8 @@ pub enum Held {
 /// Core output that follows no mutation.
 #[derive(Debug)]
 pub enum Now {
+    /// An effect wait or capacity refusal changed no durable state.
+    EffectAnswer { to: ReplyTo, key: CallKey, part: CallPart },
     /// A sign-in whose core-owned person or session counter is exhausted.
     SignInRefused { to: ReplyTo },
     /// A volatile watch refused before any durable decision.
@@ -283,6 +289,12 @@ pub struct CoreBriefBudgets {
 /// One event routed to a child of the core.
 #[derive(Debug)]
 pub enum Event {
+    /// A connector owns the decoded effect under this transient owner.
+    EffectStart { owner: Token, connector: u16, origin: crate::EffectOrigin },
+    /// Connector handoffs and outbox outcomes in the core vocabulary.
+    EffectConnector(crate::connector::Event),
+    /// Release effect answers whose absolute answer deadline has passed.
+    EffectDeadline,
     /// Allocate the person and session named by a new party sign-in.
     SignIn { reply_to: ReplyTo, identity: people::Identity },
     /// Admit and open a volatile watch across the people and views children.
@@ -1193,7 +1205,19 @@ fn tag_tasks(
                 }
                 if let Some(route) = core.routing_calls.get(&token).copied() {
                     let answer = match route {
-                        RoutedCall::Propose { key, proposal } => Some((key, CallPart::Proposed { proposal })),
+                        RoutedCall::Propose { key, proposal } => {
+                            if let Some((connector, owner)) = core.proposing_effects.remove(&token) {
+                                out.push(Request::Ask {
+                                    connector,
+                                    ask: Ask::Effect(crate::connector::Ask::KeepProposal {
+                                        owner,
+                                        proposal,
+                                        task: key.task,
+                                    }),
+                                });
+                            }
+                            Some((key, CallPart::Proposed { proposal }))
+                        }
                         RoutedCall::Introduce(key) => Some((key, CallPart::Introduced)),
                         RoutedCall::Control(key) => Some((key, CallPart::Controlled)),
                         RoutedCall::Accepting { key, proposer, proposal, message } => {
@@ -1274,7 +1298,8 @@ fn tag_tasks(
                                 | Ask::DropSubscription { .. }
                                 | Ask::RepairRefused { .. }
                                 | Ask::DelegateRefused { .. }
-                                | Ask::StartProcedure { .. } => unreachable!("subscription handoff"),
+                                | Ask::StartProcedure { .. }
+                                | Ask::Effect(_) => unreachable!("subscription handoff"),
                             },
                         });
                     }
@@ -1311,11 +1336,35 @@ fn tag_tasks(
                         }
                         tasks::Stored::Ended(task)
                     }
+                    tasks::Stored::History(ref row) => {
+                        if let Some(proposal) = &row.proposal {
+                            let terminal = match proposal.state {
+                                tasks::ProposalState::Pending { .. } => false,
+                                tasks::ProposalState::Accepted { .. }
+                                | tasks::ProposalState::Rejected { .. }
+                                | tasks::ProposalState::Withdrawn => true,
+                            };
+                            if terminal {
+                                match proposal.action {
+                                    tasks::ProposalAction::Effect { connector, .. } => out.push(Request::Ask {
+                                        connector,
+                                        ask: Ask::Effect(crate::connector::Ask::DropProposal {
+                                            proposal: proposal.number,
+                                        }),
+                                    }),
+                                    tasks::ProposalAction::Batch(_)
+                                    | tasks::ProposalAction::Amend { .. }
+                                    | tasks::ProposalAction::Widen { .. }
+                                    | tasks::ProposalAction::Release { .. } => {}
+                                }
+                            }
+                        }
+                        record
+                    }
                     tasks::Stored::Live(_)
                     | tasks::Stored::Writer(_)
                     | tasks::Stored::Pool(_)
                     | tasks::Stored::Ledger(_)
-                    | tasks::Stored::History(_)
                     | tasks::Stored::Stub(_)
                     | tasks::Stored::PersonProposal(_) => record,
                 };
@@ -1471,6 +1520,12 @@ fn tag_tasks(
             }
             tasks::Request::Refused { reply_to, problem } => {
                 let token = reply_to.into_token();
+                if let Some((connector, owner)) = core.proposing_effects.remove(&token) {
+                    out.push(Request::Ask {
+                        connector,
+                        ask: Ask::Effect(crate::connector::Ask::Drop { owner, answer: authority::Answer::Refuse }),
+                    });
+                }
                 if let Some(event) = core.goal_refused(token, problem.why) {
                     append_people(core, env, event, &mut out);
                     continue;
@@ -2219,6 +2274,7 @@ fn person_proposal_decide(
     }));
 }
 
+#[expect(clippy::too_many_lines, reason = "one exhaustive authenticated person proposal dispatcher")]
 fn person_proposal_accept(
     core: &mut Core,
     work: &mut Queue<Event>,
@@ -2227,7 +2283,27 @@ fn person_proposal_accept(
     proposal: tasks::Proposal,
 ) {
     let result_followups = core.tasks.result_proposal(proposal.proposer, proposal.number);
+    match proposal.action {
+        tasks::ProposalAction::Effect { connector, .. } => {
+            work.push(Event::EffectStart {
+                owner: request,
+                connector,
+                origin: crate::EffectOrigin::Accept {
+                    to: ReplyTo::new(request),
+                    key: None,
+                    proposal: Box::new(proposal),
+                    by: tasks::Party::Person(person),
+                },
+            });
+            return;
+        }
+        tasks::ProposalAction::Batch(_)
+        | tasks::ProposalAction::Amend { .. }
+        | tasks::ProposalAction::Widen { .. }
+        | tasks::ProposalAction::Release { .. } => {}
+    }
     let event = match proposal.action {
+        tasks::ProposalAction::Effect { .. } => unreachable!("effect accepted through its connector"),
         tasks::ProposalAction::Batch(mut batch) => {
             let creator =
                 if proposal.as_holder { tasks::Party::Person(person) } else { tasks::Party::Task(proposal.proposer) };
@@ -3616,6 +3692,7 @@ fn start_recurring(
     work.push(Event::Tasks(tasks::Event::TickRecurring { task: number, period }));
 }
 
+#[expect(clippy::too_many_lines, reason = "one exhaustive authenticated task proposal dispatcher")]
 fn named_proposal_accept(
     core: &mut Core,
     env: &Env<Limits>,
@@ -3630,11 +3707,34 @@ fn named_proposal_accept(
     {
         return proposal_refused(core, to, key, why);
     }
+    match proposal.action {
+        tasks::ProposalAction::Effect { connector, .. } => {
+            assert!(core.pending_calls.insert(key, true).is_ok(), "effect acceptance call room");
+            let owner = to.into_token();
+            return crate::effects::start(
+                core,
+                env,
+                owner,
+                connector,
+                crate::EffectOrigin::Accept {
+                    to: ReplyTo::new(owner),
+                    key: Some(key),
+                    proposal: Box::new(proposal),
+                    by: tasks::Party::Task(key.task),
+                },
+            );
+        }
+        tasks::ProposalAction::Batch(_)
+        | tasks::ProposalAction::Amend { .. }
+        | tasks::ProposalAction::Widen { .. }
+        | tasks::ProposalAction::Release { .. } => {}
+    }
     let Some(message) = crate::fresh(&mut core.counters, crate::Family::Message) else {
         return proposal_refused(core, to, key, tasks::Refusal::Busy);
     };
     let token = to.into_token();
     let event = match proposal.action {
+        tasks::ProposalAction::Effect { .. } => unreachable!("effect accepted through its connector"),
         tasks::ProposalAction::Batch(mut batch) => {
             let creator =
                 if proposal.as_holder { tasks::Party::Task(key.task) } else { tasks::Party::Task(proposal.proposer) };
@@ -3772,7 +3872,7 @@ fn named_proposal_decide(
 }
 
 #[expect(clippy::too_many_arguments, reason = "one named proposal retains its action and call correlation")]
-fn named_propose(
+pub(crate) fn named_propose(
     core: &mut Core,
     env: &Env<Limits>,
     work: &mut Queue<Event>,
@@ -5095,7 +5195,10 @@ pub fn room_max(limits: &Limits) -> Option<JournalRoom> {
 pub fn room(limits: &Limits, event: &Event) -> Option<JournalRoom> {
     let room = room_max(limits)?;
     match event {
-        Event::SignIn { .. }
+        Event::EffectStart { .. }
+        | Event::EffectConnector(_)
+        | Event::EffectDeadline
+        | Event::SignIn { .. }
         | Event::Watch { .. }
         | Event::Tasks(_)
         | Event::StartRecurring { .. }
@@ -5170,6 +5273,9 @@ pub fn resume_fleet(core: &mut Core, env: &Env<Limits>) -> Requests {
 #[expect(clippy::too_many_lines, reason = "each bounded child event has one exhaustive route")]
 fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<Event>) -> Requests {
     match event {
+        Event::EffectStart { owner, connector, origin } => crate::effects::start(core, env, owner, connector, origin),
+        Event::EffectConnector(event) => crate::effects::connector(core, env, work, event),
+        Event::EffectDeadline => crate::effects::deadline(core, env),
         Event::SignIn { reply_to, identity } => {
             let mut out = Queue::with_capacity(2);
             if core.counters.deployment().people == u64::MAX || core.counters.deployment().sign_ins == u64::MAX {
@@ -5521,6 +5627,7 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
                             project,
                             match row.kind {
                                 tasks::ProposalKind::Batch => authority::ProposalKind::Batch,
+                                tasks::ProposalKind::Effect => authority::ProposalKind::Effect,
                                 tasks::ProposalKind::Amend => authority::ProposalKind::Amend,
                                 tasks::ProposalKind::Widen => authority::ProposalKind::Widen,
                                 tasks::ProposalKind::Release => authority::ProposalKind::Escalation,

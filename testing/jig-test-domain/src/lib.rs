@@ -18,7 +18,7 @@ use jig_core as core;
 use jig_core_fleet as fleet;
 use jig_core_tasks as tasks;
 use jig_test_connector as connector;
-use skein_lib::{Decision, Env, Journal, JournalLimits, JournalRoom, Map, Queue, Token};
+use skein_lib::{Decision, Env, Journal, JournalLimits, JournalRoom, Map, Queue, ReplyTo, Token, Wall};
 
 /// A store address owned by the core or one numbered connector.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -134,6 +134,15 @@ pub enum Event {
     Core(core::Event),
     /// One numbered connector's input from its system or a scripted peer.
     Connector { number: u16, event: connector::Event },
+    /// A decoded named effect call, whose payload stays with its connector.
+    EffectCall {
+        to: ReplyTo,
+        key: core::CallKey,
+        number: u16,
+        effect: connector::Effect,
+        deadline: Wall,
+        proposal: Option<Box<[u8]>>,
+    },
     /// A scripted worker's retained turn, including its opaque body.
     Turn { channel: Token, task: u64, attempt: u64, turn: u32, cumulative: u64, transcript: Box<[u8]> },
     /// A scripted worker's retained terminal answer.
@@ -178,8 +187,14 @@ pub struct Domain {
     now: Queue<core::Now>,
     assignments: Map<u64, Assignment>,
     procedure_steps: Map<u64, (u64, u16)>,
+    effects: Map<Token, connector::Effect>,
+    effect_procedures: Map<Token, u64>,
+    outbox_procedures: Map<u64, u16>,
+    judges: Map<Token, (Token, jig_core_authority::Judge, [u8; 32])>,
+    outbox_tasks: Map<u64, u64>,
     payloads: Map<Token, Payload>,
     next_payload: u64,
+    decision_wrote: bool,
     stopped_reported: bool,
 }
 
@@ -204,10 +219,18 @@ impl Domain {
             now: Queue::with_capacity(limits.journal.now),
             assignments: Map::with_capacity(limits.core.tasks.tasks),
             procedure_steps: Map::with_capacity(limits.core.tasks.tasks),
+            effects: Map::with_capacity(
+                limits.core.call_records.checked_add(limits.core.tasks.tasks).expect("effect room"),
+            ),
+            effect_procedures: Map::with_capacity(limits.core.tasks.tasks),
+            outbox_procedures: Map::with_capacity(limits.connector.entries.checked_mul(2).expect("outbox procedures")),
+            judges: Map::with_capacity(limits.core.authority.facts),
+            outbox_tasks: Map::with_capacity(limits.connector.entries.checked_mul(2).expect("outboxes")),
             payloads: Map::with_capacity(
                 limits.core.fleet.turns.checked_add(limits.core.fleet.attempts).expect("payload room"),
             ),
             next_payload: 1,
+            decision_wrote: false,
             stopped_reported: false,
         }
     }
@@ -223,9 +246,33 @@ impl Domain {
 enum Work {
     Core(core::Event),
     ResumeFleet,
-    Connector { number: u16, event: connector::Event },
-    Turn { channel: Token, task: u64, attempt: u64, turn: u32, cumulative: u64, transcript: Box<[u8]> },
-    Answer { channel: Token, task: u64, attempt: u64, cumulative: u64, end: tasks::End },
+    Connector {
+        number: u16,
+        event: connector::Event,
+    },
+    EffectCall {
+        to: ReplyTo,
+        key: core::CallKey,
+        number: u16,
+        effect: connector::Effect,
+        deadline: Wall,
+        proposal: Option<Box<[u8]>>,
+    },
+    Turn {
+        channel: Token,
+        task: u64,
+        attempt: u64,
+        turn: u32,
+        cumulative: u64,
+        transcript: Box<[u8]>,
+    },
+    Answer {
+        channel: Token,
+        task: u64,
+        attempt: u64,
+        cumulative: u64,
+        end: tasks::End,
+    },
 }
 
 #[derive(Debug)]
@@ -239,6 +286,9 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
     match event {
         Event::Committed { number } => domain.journal.committed(number),
         Event::Failed { number } => domain.journal.failed(number),
+        Event::EffectCall { to, key, number, effect, deadline, proposal } => {
+            decide(domain, env, Work::EffectCall { to, key, number, effect, deadline, proposal });
+        }
         Event::Core(event) => decide(domain, env, Work::Core(event)),
         Event::Connector { number, event } => decide(domain, env, Work::Connector { number, event }),
         Event::Turn { channel, task, attempt, turn, cumulative, transcript } => {
@@ -253,9 +303,11 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
 fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
     let core_room = match &first {
         Work::Core(event) => core::room(&env.limits.core, event),
-        Work::ResumeFleet | Work::Connector { .. } | Work::Turn { .. } | Work::Answer { .. } => {
-            core::room_max(&env.limits.core)
-        }
+        Work::ResumeFleet
+        | Work::Connector { .. }
+        | Work::EffectCall { .. }
+        | Work::Turn { .. }
+        | Work::Answer { .. } => core::room_max(&env.limits.core),
     }
     .expect("validated core room");
     let connector_room = connector::MAX_OUT.checked_mul(2).expect("two connector outputs");
@@ -264,11 +316,20 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
         held: core_room.held.checked_add(connector_room).expect("combined route deliveries"),
     };
     let Some(mut decision) = domain.journal.decision(&room) else { return };
+    domain.decision_wrote = false;
     let mut work = Queue::with_capacity(env.limits.routes);
     work.push(first);
     for _ in 0..env.limits.routes {
         let Some(next) = work.pop() else { break };
         match next {
+            Work::EffectCall { to, key, number, effect, deadline, proposal } => {
+                let owner = effect_payload(domain, effect);
+                let origin = match proposal {
+                    Some(reason) => core::EffectOrigin::Propose { to, key, reason, as_holder: false },
+                    None => core::EffectOrigin::Call { to, key, deadline },
+                };
+                work.push(Work::Core(core::Event::EffectStart { owner, connector: number, origin }));
+            }
             Work::Core(event) => {
                 let requests =
                     core::step(&mut domain.core, &Env { now: env.now, wall: env.wall, limits: env.limits.core }, event);
@@ -315,7 +376,22 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
         }
     }
     assert!(work.is_empty(), "synchronous routes fit configured room");
+    if domain.decision_wrote || domain.core.counters.dirty() {
+        let header = domain.core.counters.next_commit();
+        write(
+            domain,
+            &mut decision,
+            Write::Save(Record::Core(core::Record::Core(core::CoreRecord::Deployment(header)))),
+        );
+    }
     domain.journal.accept(decision);
+}
+
+fn effect_payload(domain: &mut Domain, effect: connector::Effect) -> Token {
+    let token = Token::new(domain.next_payload);
+    domain.next_payload = domain.next_payload.checked_add(1).expect("bounded owner numbers");
+    assert!(domain.effects.insert(token, effect).is_ok(), "admitted effect room");
+    token
 }
 
 fn payload(domain: &mut Domain, value: Payload) -> Token {
@@ -350,6 +426,9 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
     for _ in 0..ready.len() {
         let delivery = ready.pop().expect("release count");
         match delivery {
+            Delivery::Core(core::Held::MakeEffect { connector, entry }) => {
+                step(domain, env, Event::Connector { number: connector, event: connector::Event::Make { entry } });
+            }
             Delivery::Core(core::Held::TaskTurnKept { task, attempt, turn }) => {
                 step(
                     domain,
@@ -419,7 +498,8 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
     }
 }
 
-fn write(decision: &mut Decision<Write, Delivery>, value: Write) {
+fn write(domain: &mut Domain, decision: &mut Decision<Write, Delivery>, value: Write) {
+    domain.decision_wrote = true;
     assert!(decision.write(value).is_ok(), "reserved write room");
 }
 
@@ -431,3 +511,69 @@ fn hold(decision: &mut Decision<Write, Delivery>, value: Delivery) {
 // must make the testing application say how it crosses its root.
 mod routes;
 use routes::{route_connector, route_core};
+
+/// Load one already durable row before the scripted restored markers. The
+/// caller supplies header, children, proofs, then calls; the core validates
+/// their links. The ordered restart driver is added in the restart increment.
+#[must_use]
+pub fn restore_record(domain: &mut Domain, env: &Env<Limits>, record: Record) -> bool {
+    match record {
+        Record::Core(core::Record::Core(row)) => match domain.core.restore_core(row, &env.limits.core) {
+            core::Restored::Deployment { commits } => {
+                domain.journal = Journal::from_durable(&env.limits.journal, commits);
+                true
+            }
+            core::Restored::Live | core::Restored::Archive => true,
+            core::Restored::Rejected => false,
+        },
+        Record::Core(core::Record::Tasks(row)) => {
+            if !domain.core.restore_task_row(&row) {
+                return false;
+            }
+            let mut out = Queue::with_capacity(tasks::max_out(&env.limits.core.tasks));
+            tasks::step(
+                &mut domain.core.tasks,
+                &Env { now: env.now, wall: env.wall, limits: env.limits.core.tasks },
+                tasks::Event::Restore { record: row },
+                &mut out,
+            );
+            true
+        }
+        Record::Core(core::Record::People(row)) => {
+            let mut out = Queue::with_capacity(jig_core_people::max_out(&env.limits.core.people));
+            jig_core_people::step(
+                &mut domain.core.people,
+                &Env { now: env.now, wall: env.wall, limits: env.limits.core.people },
+                jig_core_people::Event::Restore { record: row },
+                &mut out,
+            );
+            true
+        }
+        Record::Core(core::Record::Notes(_)) => true,
+        Record::Connector { number, record } => {
+            match &record {
+                connector::Record::Outbox(row) => {
+                    if domain.outbox_tasks.insert(row.number, row.task).is_err() {
+                        return false;
+                    }
+                }
+                connector::Record::Proposal { .. }
+                | connector::Record::Procedure(_)
+                | connector::Record::Result { .. }
+                | connector::Record::Task { .. }
+                | connector::Record::Adoption { .. }
+                | connector::Record::Subscription { .. }
+                | connector::Record::Pool { .. }
+                | connector::Record::Made { .. } => {}
+            }
+            let mut out = Queue::with_capacity(connector::MAX_OUT);
+            connector::step(
+                numbered(domain, number),
+                &Env { now: env.now, wall: env.wall, limits: env.limits.connector },
+                connector::Event::Restore { record },
+                &mut out,
+            );
+            true
+        }
+    }
+}

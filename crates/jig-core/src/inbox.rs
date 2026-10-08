@@ -24,6 +24,7 @@ fn add(
 fn proposal_kind(kind: tasks::ProposalKind) -> authority::ProposalKind {
     match kind {
         tasks::ProposalKind::Batch => authority::ProposalKind::Batch,
+        tasks::ProposalKind::Effect => authority::ProposalKind::Effect,
         tasks::ProposalKind::Amend => authority::ProposalKind::Amend,
         tasks::ProposalKind::Widen => authority::ProposalKind::Widen,
         tasks::ProposalKind::Release => authority::ProposalKind::Escalation,

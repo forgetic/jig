@@ -196,3 +196,18 @@ pub(crate) fn next_deadline(domain: &Domain) -> Option<Wall> {
     }
     first
 }
+
+/// Settle a checked effect without starting another step inside this one.
+pub(crate) fn effect_decided(domain: &mut Domain, task: u64, made: bool, out: &mut Queue<Request>) {
+    match domain.procedures.get(&task) {
+        Some(state) if state.awaiting => {
+            let mut state = state.clone();
+            state.awaiting = false;
+            if made {
+                state.index = state.index.checked_add(1).expect("bounded procedure actions");
+            }
+            save(domain, state, out);
+        }
+        Some(_) | None => {}
+    }
+}

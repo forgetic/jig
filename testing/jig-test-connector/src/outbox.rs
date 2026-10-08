@@ -31,6 +31,7 @@ pub(crate) struct Runtime {
 #[derive(Debug)]
 pub(crate) struct Outbox {
     staged: Map<Token, Effect>,
+    pub(crate) proposals: Map<u64, (u64, Effect)>,
     entries: Map<u64, OutboxEntry>,
     runtime: Map<u64, Runtime>,
     made: Map<Key, Made>,
@@ -40,6 +41,7 @@ impl Outbox {
     pub(crate) fn new(limits: &Limits) -> Outbox {
         Outbox {
             staged: Map::with_capacity(limits.staged),
+            proposals: Map::with_capacity(limits.tasks),
             entries: Map::with_capacity(limits.entries),
             runtime: Map::with_capacity(limits.entries),
             made: Map::with_capacity(limits.made),
@@ -83,8 +85,18 @@ pub(crate) fn describe(domain: &mut Domain, env: &Env<Limits>, token: Token, eff
         out.push(Request::EffectRefused { token });
         return;
     };
-    if domain.outbox.staged.contains_key(&token) || domain.outbox.staged.len() >= env.limits.staged {
-        out.push(Request::EffectRefused { token });
+    if domain.outbox.staged.contains_key(&token)
+        || domain.outbox.staged.len() >= env.limits.staged
+        || domain.outbox.entries.len().saturating_add(domain.outbox.staged.len()) >= env.limits.entries
+        || domain
+            .outbox
+            .made
+            .len()
+            .saturating_add(domain.outbox.entries.len())
+            .saturating_add(domain.outbox.staged.len())
+            >= env.limits.made
+    {
+        out.push(Request::EffectBusy { token });
         return;
     }
     let description = Description {
@@ -99,6 +111,38 @@ pub(crate) fn describe(domain: &mut Domain, env: &Env<Limits>, token: Token, eff
     };
     domain.outbox.staged.insert(token, effect).expect("stage capacity checked");
     out.push(Request::Described { token, description });
+}
+
+pub(crate) fn describe_proposal(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    token: Token,
+    number: u64,
+    out: &mut Queue<Request>,
+) {
+    let effect = match domain.outbox.proposals.get(&number) {
+        Some((_, effect)) => effect.clone(),
+        None => {
+            out.push(Request::EffectRefused { token });
+            return;
+        }
+    };
+    describe(domain, env, token, effect, out);
+}
+
+pub(crate) fn keep_proposal(domain: &mut Domain, token: Token, number: u64, task: u64, out: &mut Queue<Request>) {
+    let effect = domain.outbox.staged.remove(&token).expect("described proposal payload");
+    assert!(
+        domain.outbox.proposals.insert(number, (task, effect.clone())).is_ok(),
+        "one bounded proposal per live task"
+    );
+    out.push(Request::Save { record: Record::Proposal { number, task, effect } });
+}
+
+pub(crate) fn drop_proposal(domain: &mut Domain, number: u64, out: &mut Queue<Request>) {
+    if domain.outbox.proposals.remove(&number).is_some() {
+        out.push(Request::Erase { key: RecordKey::Proposal(number) });
+    }
 }
 
 pub(crate) fn drop_staged(domain: &mut Domain, token: Token) {

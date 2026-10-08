@@ -216,7 +216,9 @@ fn proposal_bytes(proposal: &Proposal) -> Option<u64> {
                 total = total.checked_add(bytes(size_of_val(&**dependencies))?)?;
             }
         }
-        ProposalAction::Widen { authority, .. } => total = total.checked_add(authority_bytes(authority)?)?,
+        ProposalAction::Effect { authority, .. } | ProposalAction::Widen { authority, .. } => {
+            total = total.checked_add(authority_bytes(authority)?)?;
+        }
         ProposalAction::Release { .. } => {}
     }
     Some(total)

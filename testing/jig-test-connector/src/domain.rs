@@ -134,6 +134,7 @@ impl Domain {
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     assert!(out.room() >= MAX_OUT, "parent reserved the connector's maximum output");
     match event {
+        Event::EffectDecision { task, made } => crate::procedures::effect_decided(domain, task, made, out),
         Event::Judge { token, requirement, resources, state } => {
             crate::requirements::judge(domain, env, token, requirement, &resources, state, out);
         }
@@ -163,6 +164,9 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         }
         Event::Unsubscribe { task, topic } => unsubscribe(domain, task, topic, out),
         Event::Describe { token, effect } => crate::outbox::describe(domain, env, token, effect, out),
+        Event::DescribeProposal { token, number } => crate::outbox::describe_proposal(domain, env, token, number, out),
+        Event::KeepProposal { token, number, task } => crate::outbox::keep_proposal(domain, token, number, task, out),
+        Event::DropProposal { number } => crate::outbox::drop_proposal(domain, number, out),
         Event::Keep { token, entry, task, key } => crate::outbox::keep(domain, env, token, entry, task, key, out),
         Event::Drop { token } => {
             crate::outbox::drop_staged(domain, token);
@@ -373,6 +377,9 @@ fn restore(domain: &mut Domain, record: Record) {
         }
         Record::Pool { path, slots } => {
             domain.pools.insert(path, slots).expect("restored pool fits");
+        }
+        Record::Proposal { number, task, effect } => {
+            assert!(domain.outbox.proposals.insert(number, (task, effect)).is_ok(), "restored proposal capacity");
         }
         Record::Outbox(entry) => crate::outbox::restore_entry(domain, entry),
         Record::Made { key, resources, state } => crate::outbox::restore_made(domain, key, resources, state),

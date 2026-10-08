@@ -4,6 +4,7 @@
 
 use alloc::boxed::Box;
 use jig_core as core;
+use jig_core_authority as authority;
 use jig_core_fleet as fleet;
 use jig_core_people as people;
 use jig_core_tasks as tasks;
@@ -22,13 +23,18 @@ pub(super) fn route_core(
     let core::Requests::Out(mut requests) = requests;
     for _ in 0..requests.len() {
         match requests.pop().expect("core request count") {
-            core::Request::Write(core::Write::Save(record)) => write(decision, Write::Save(Record::Core(record))),
-            core::Request::Write(core::Write::Erase(key)) => write(decision, Write::Erase(Key::Core(key))),
+            core::Request::Write(core::Write::Save(record)) => {
+                write(domain, decision, Write::Save(Record::Core(record)));
+            }
+            core::Request::Write(core::Write::Erase(key)) => write(domain, decision, Write::Erase(Key::Core(key))),
             core::Request::Held(held) => match *held {
                 core::Held::Assign { channel, run, attempt } => {
                     let assignment = domain.assignments.remove(&run.raw()).expect("prepared claim has assignment");
                     assert!(assignment.attempt == attempt.raw(), "current assignment fence");
                     hold(decision, Delivery::Assigned { channel, assignment });
+                }
+                core::Held::MakeEffect { connector, entry } => {
+                    hold(decision, Delivery::Core(core::Held::MakeEffect { connector, entry }));
                 }
                 other @ (core::Held::Relay { .. }
                 | core::Held::PeopleReply { .. }
@@ -68,6 +74,7 @@ fn route_ask(
     work: &mut Queue<Work>,
 ) {
     match ask {
+        core::Ask::Effect(ask) => route_effect_ask(domain, number, ask, work),
         core::Ask::TaskHoldings { request, .. } => {
             work.push(Work::Core(core::Event::Holdings { request, connector: number, holdings: Some(Box::new([])) }));
         }
@@ -279,7 +286,8 @@ fn route_now(
         | core::Now::RestoreRefused => {
             unreachable!("this route awaits the testing application's scripted peer");
         }
-        other @ (core::Now::SignInRefused { .. }
+        other @ (core::Now::EffectAnswer { .. }
+        | core::Now::SignInRefused { .. }
         | core::Now::WatchRefused { .. }
         | core::Now::Account(_)
         | core::Now::View(_)
@@ -292,9 +300,10 @@ fn route_now(
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one exhaustive connector boundary dispatcher")]
 pub(super) fn route_connector(
     domain: &mut Domain,
-    _env: &Env<Limits>,
+    env: &Env<Limits>,
     decision: &mut Decision<Write, Delivery>,
     number: u16,
     requests: &mut Queue<connector::Request>,
@@ -303,10 +312,23 @@ pub(super) fn route_connector(
     for _ in 0..requests.len() {
         match requests.pop().expect("connector request count") {
             connector::Request::Save { record } => {
-                write(decision, Write::Save(Record::Connector { number, record }));
+                match &record {
+                    connector::Record::Outbox(row) => {
+                        assert!(domain.outbox_tasks.insert(row.number, row.task).is_ok(), "bounded outbox task routes");
+                    }
+                    connector::Record::Proposal { .. }
+                    | connector::Record::Task { .. }
+                    | connector::Record::Adoption { .. }
+                    | connector::Record::Subscription { .. }
+                    | connector::Record::Pool { .. }
+                    | connector::Record::Procedure(_)
+                    | connector::Record::Result { .. }
+                    | connector::Record::Made { .. } => {}
+                }
+                write(domain, decision, Write::Save(Record::Connector { number, record }));
             }
             connector::Request::Erase { key } => {
-                write(decision, Write::Erase(Key::Connector { number, key }));
+                write(domain, decision, Write::Erase(Key::Connector { number, key }));
             }
             connector::Request::Step { task, decision: step } => {
                 let (numbered_step, code) = domain.procedure_steps.remove(&task).expect("procedure chose a step");
@@ -326,9 +348,17 @@ pub(super) fn route_connector(
                         core::ProcedureAction::Wait
                     }
                     connector::StepDecision::Hold { .. } => core::ProcedureAction::Hold(tasks::Hold::Effects),
-                    connector::StepDecision::Effect(_)
-                    | connector::StepDecision::Delegate { .. }
-                    | connector::StepDecision::Propose { .. } => {
+                    connector::StepDecision::Effect(effect) => {
+                        let owner = crate::effect_payload(domain, effect);
+                        assert!(domain.effect_procedures.insert(owner, task).is_ok(), "one procedure effect flight");
+                        work.push(Work::Core(core::Event::EffectStart {
+                            owner,
+                            connector: number,
+                            origin: core::EffectOrigin::Procedure { task, step: numbered_step, entry: None },
+                        }));
+                        continue;
+                    }
+                    connector::StepDecision::Delegate { .. } | connector::StepDecision::Propose { .. } => {
                         unreachable!("effect and delegation scripts enter in the next session")
                     }
                 };
@@ -341,7 +371,72 @@ pub(super) fn route_connector(
                 }));
             }
             connector::Request::System(call) => hold(decision, Delivery::System { connector: number, call }),
-            connector::Request::Adopted { project: _, resource: _, result: _ }
+            connector::Request::Described { token, description } => {
+                work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Described {
+                    owner: token,
+                    description: Box::new(describe(number, description)),
+                })));
+            }
+            connector::Request::EffectBusy { token } => work
+                .push(Work::Core(core::Event::EffectConnector(core::connector::Event::DescribeBusy { owner: token }))),
+            connector::Request::EffectRefused { token } => {
+                work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::DescribeRefused {
+                    owner: token,
+                })));
+            }
+            connector::Request::Verdict { token, verdict } => {
+                let Some((owner, judge, asked_state)) = domain.judges.remove(&token) else { continue };
+                let (verdict, at, guarded, state) = match verdict {
+                    connector::Verdict::Met { state, observed, guarded } => {
+                        let pin = state_pin(state);
+                        (authority::Verdict::Met, observed, guarded, pin)
+                    }
+                    connector::Verdict::Wait => (authority::Verdict::Wait, env.wall, false, asked_state),
+                    connector::Verdict::Refuse { .. } => (authority::Verdict::Refuse, env.wall, false, asked_state),
+                };
+                work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Verdict {
+                    owner,
+                    judge,
+                    verdict,
+                    at,
+                    guarded,
+                    state,
+                })));
+            }
+            connector::Request::Outcome { entry, outcome } => {
+                let task = match domain.outbox_tasks.get(&entry) {
+                    Some(task) => *task,
+                    None => continue,
+                };
+                let made = match outcome {
+                    connector::Outcome::Made { .. } => true,
+                    connector::Outcome::Failed | connector::Outcome::Uncertain | connector::Outcome::Withdrawn => false,
+                };
+                match domain.outbox_procedures.get(&entry) {
+                    Some(number) if outcome != connector::Outcome::Uncertain => work.push(Work::Connector {
+                        number: *number,
+                        event: connector::Event::EffectDecision { task, made },
+                    }),
+                    Some(_) | None => {}
+                }
+                if outcome != connector::Outcome::Uncertain {
+                    domain.outbox_tasks.remove(&entry);
+                    domain.outbox_procedures.remove(&entry);
+                }
+                let outcome = match outcome {
+                    connector::Outcome::Made { .. } => core::connector::OutboxOutcome::Made,
+                    connector::Outcome::Failed => core::connector::OutboxOutcome::Failed,
+                    connector::Outcome::Uncertain => core::connector::OutboxOutcome::Uncertain,
+                    connector::Outcome::Withdrawn => core::connector::OutboxOutcome::Withdrawn,
+                };
+                work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Outbox {
+                    entry,
+                    task,
+                    outcome,
+                })));
+            }
+            connector::Request::Make { entry: _ }
+            | connector::Request::Adopted { project: _, resource: _, result: _ }
             | connector::Request::Named { task: _, resources: _ }
             | connector::Request::Unknown { task: _, resource: _ }
             | connector::Request::Refused { task: _ }
@@ -351,15 +446,157 @@ pub(super) fn route_connector(
             | connector::Request::DriftResource { tasks: _, resource: _ }
             | connector::Request::Changed { resource: _ }
             | connector::Request::RestartDone
-            | connector::Request::Verdict { token: _, verdict: _ }
             | connector::Request::Answer { token: _, bytes: _ }
             | connector::Request::Ready { token: _, size: _ }
             | connector::Request::Section { token: _, bytes: _ }
-            | connector::Request::Workspace { token: _, items: _ }
-            | connector::Request::Described { token: _, description: _ }
-            | connector::Request::EffectRefused { token: _ }
-            | connector::Request::Make { entry: _ }
-            | connector::Request::Outcome { entry: _, outcome: _ } => {}
+            | connector::Request::Workspace { token: _, items: _ } => {}
         }
     }
+}
+
+/// Translate the core's choice without choosing a judge or admitting a write.
+fn route_effect_ask(domain: &mut Domain, number: u16, ask: core::connector::Ask, work: &mut Queue<Work>) {
+    let event = match ask {
+        core::connector::Ask::Describe { owner } => connector::Event::Describe {
+            token: owner,
+            effect: domain.effects.remove(&owner).expect("connector-owned decoded effect"),
+        },
+        core::connector::Ask::DescribeProposal { owner, proposal } => {
+            connector::Event::DescribeProposal { token: owner, number: proposal }
+        }
+        core::connector::Ask::KeepProposal { owner, proposal, task } => {
+            connector::Event::KeepProposal { token: owner, number: proposal, task }
+        }
+        core::connector::Ask::DropProposal { proposal } => connector::Event::DropProposal { number: proposal },
+        core::connector::Ask::Keep { owner, entry, task, key } => {
+            if domain.effect_procedures.remove(&owner).is_some() {
+                assert!(domain.outbox_procedures.insert(entry, number).is_ok(), "procedure effect route");
+            }
+            let (attempt, completion, position) = match key.origin {
+                core::EffectPurpose::Call { attempt, completion, position } => (attempt, completion, position),
+                core::EffectPurpose::Procedure { .. } => (0, 0, 0),
+            };
+            connector::Event::Keep {
+                token: owner,
+                entry,
+                task,
+                key: connector::Key {
+                    deployment: key.deployment,
+                    task: key.task,
+                    purpose: key.purpose,
+                    attempt,
+                    completion,
+                    position,
+                },
+            }
+        }
+        core::connector::Ask::Drop { owner, .. } => {
+            if let Some(task) = domain.effect_procedures.remove(&owner) {
+                work.push(Work::Connector { number, event: connector::Event::EffectDecision { task, made: false } });
+            }
+            drop(domain.effects.remove(&owner));
+            connector::Event::Drop { token: owner }
+        }
+        core::connector::Ask::Judge { owner, judge, state, resources } => {
+            let token = Token::new(domain.next_payload);
+            domain.next_payload = domain.next_payload.checked_add(1).expect("bounded judge owner numbers");
+            assert!(domain.judges.insert(token, (owner, judge, state)).is_ok(), "one route per core-selected judge");
+            let mut names = List::with_capacity(u32::try_from(resources.len()).expect("bounded resource names"));
+            for name in resources {
+                names.push(path(name.segments)).expect("one path per name");
+            }
+            let bytes = [state[24], state[25], state[26], state[27], state[28], state[29], state[30], state[31]];
+            connector::Event::Judge {
+                token,
+                requirement: judge.requirement,
+                resources: names.into_boxed(),
+                state: u64::from_be_bytes(bytes),
+            }
+        }
+        core::connector::Ask::Names { .. }
+        | core::connector::Ask::Unname { .. }
+        | core::connector::Ask::Hold { .. }
+        | core::connector::Ask::ReleaseHold { .. }
+        | core::connector::Ask::Writer { .. }
+        | core::connector::Ask::Make { .. }
+        | core::connector::Ask::ProcedureMade { .. }
+        | core::connector::Ask::ProcedureActivate { .. }
+        | core::connector::Ask::ProcedureMessage { .. }
+        | core::connector::Ask::ProcedureClose { .. }
+        | core::connector::Ask::Project { .. }
+        | core::connector::Ask::Release { .. }
+        | core::connector::Ask::Subscribe { .. }
+        | core::connector::Ask::Unsubscribe { .. }
+        | core::connector::Ask::Read { .. }
+        | core::connector::Ask::Gather { .. }
+        | core::connector::Ask::CutTo { .. }
+        | core::connector::Ask::Take { .. }
+        | core::connector::Ask::Prepare { .. }
+        | core::connector::Ask::Left { .. }
+        | core::connector::Ask::Adopt { .. }
+        | core::connector::Ask::Restore { .. }
+        | core::connector::Ask::ReadAfresh
+        | core::connector::Ask::SettleOutbox => unreachable!("effect handoff vocabulary"),
+    };
+    work.push(Work::Connector { number, event });
+}
+
+fn name(path: connector::Path) -> authority::Name {
+    let mut segments = List::with_capacity(u32::try_from(path.segments().len()).expect("bounded segments"));
+    for segment in path.segments() {
+        segments.push(segment.clone()).expect("one segment per path");
+    }
+    authority::Name { segments: segments.into_boxed() }
+}
+
+fn describe(number: u16, description: connector::Description) -> core::connector::EffectDescription {
+    let form = match description.form {
+        connector::Form::Creation => core::connector::EffectForm::Creation,
+        connector::Form::Transition => core::connector::EffectForm::Transition,
+        connector::Form::Set => core::connector::EffectForm::Set,
+    };
+    let recovery = match description.recovery {
+        connector::Recovery::Keyed => core::connector::Recovery::Keyed,
+        connector::Recovery::Conditional => core::connector::Recovery::Conditional,
+        connector::Recovery::Idempotent => core::connector::Recovery::Idempotent,
+        connector::Recovery::Unrecoverable => core::connector::Recovery::Unrecoverable,
+    };
+    let mut resources = List::with_capacity(u32::try_from(description.resources.len()).expect("bounded resources"));
+    for resource in description.resources {
+        resources.push(name(resource)).expect("one name per resource");
+    }
+    let mut additional = List::with_capacity(resources.len().saturating_sub(1));
+    let first = resources.as_slice().first().expect("connector described at least one resource").clone();
+    for resource in resources.as_slice().get(1..).expect("at least one resource") {
+        additional
+            .push(authority::EffectResource { name: resource.clone(), access: authority::EffectAccess::Owned })
+            .expect("additional resources");
+    }
+    let state = state_pin(description.state);
+    core::connector::EffectDescription {
+        connector: number,
+        purpose: description.purpose,
+        form,
+        recovery,
+        effect: authority::Effect {
+            connector: number,
+            kind: description.kind,
+            name: first,
+            state,
+            price: description.price,
+            access: authority::EffectAccess::Owned,
+            additional: additional.into_boxed(),
+            guards: Box::new([]),
+        },
+    }
+}
+
+fn state_pin(state: u64) -> [u8; 32] {
+    let bytes = state.to_be_bytes();
+    let mut pin = [0; 32];
+    for offset in 0..8 {
+        *pin.get_mut(24usize.checked_add(offset).expect("pin offset")).expect("eight bytes fit the pin") =
+            *bytes.get(offset).expect("eight-byte integer");
+    }
+    pin
 }

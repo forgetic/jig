@@ -11,6 +11,7 @@ use skein_lib::{Env, Queue, ReplyTo, Time, Wall};
 fn kind(action: &ProposalAction) -> ProposalKind {
     match action {
         ProposalAction::Batch(_) => ProposalKind::Batch,
+        ProposalAction::Effect { .. } => ProposalKind::Effect,
         ProposalAction::Amend { .. } => ProposalKind::Amend,
         ProposalAction::Widen { .. } => ProposalKind::Widen,
         ProposalAction::Release { .. } => ProposalKind::Release,
@@ -78,6 +79,9 @@ fn wake_holder(domain: &mut Domain, env: &Env<Limits>, proposal: &Proposal, out:
 pub enum ProposalAction {
     /// Whole batch with IDs allocated on proposal admission, before reservation.
     Batch(Box<[New]>),
+    /// Connector-owned payload retained under this proposal's number. Only
+    /// the needed authority and original call purpose cross the child boundary.
+    Effect { connector: u16, authority: Authority, attempt: u64, completion: u32, position: u32, purpose: u64 },
     /// Change an existing live task after its holder accepts the needed authority.
     Amend { task: u64, amendment: Amendment },
     /// Widen a task's current authority.
@@ -101,6 +105,7 @@ pub enum ProposalHolder {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ProposalKind {
     Batch,
+    Effect,
     Amend,
     Widen,
     Release,
@@ -575,7 +580,10 @@ pub(crate) fn check_result(domain: &Domain, env: &Env<Limits>, task: u64, propos
         (Phase::Waiting | Phase::Closing(_) | Phase::Held { .. } | Phase::Ended(_), _, _)
         | (
             Phase::Active(_),
-            ProposalAction::Amend { .. } | ProposalAction::Widen { .. } | ProposalAction::Release { .. },
+            ProposalAction::Effect { .. }
+            | ProposalAction::Amend { .. }
+            | ProposalAction::Widen { .. }
+            | ProposalAction::Release { .. },
             _,
         )
         | (

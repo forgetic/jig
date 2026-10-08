@@ -218,6 +218,9 @@ pub fn config(seed: u64) -> root::Config {
     chat_authority.delegation.tasks = 1;
     chat_authority.delegation.depth = 1;
     let mut first = jig_test_connector_world::config(1);
+    first.deployment = [31; 16];
+    let mut second = jig_test_connector_world::config(2);
+    second.deployment = [31; 16];
     first.procedures = Box::new([jig_test_connector::ProcedureSpec {
         number: 1,
         actions: Box::new([jig_test_connector::ProcedureAction::Finish {
@@ -228,7 +231,7 @@ pub fn config(seed: u64) -> root::Config {
     }]);
     root::Config {
         first,
-        second: jig_test_connector_world::config(2),
+        second,
         core: core::Config {
             deployment: [31; 16],
             seed,

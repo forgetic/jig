@@ -59,7 +59,7 @@ pub const fn kind(seed: u8, local: u16) -> u16 {
 #[must_use]
 pub fn config(seed: u8) -> Config {
     Config {
-        deployment: u64::from(seed) + 1,
+        deployment: (u128::from(seed) + 1).to_be_bytes(),
         prefix: path(seed, 0),
         resources: Box::from([
             ResourceSpec { path: path(seed, 1), hold: Hold::Exclusive { mode: HoldMode::Wait }, writable: true },
@@ -155,6 +155,7 @@ impl World {
                 | Request::Changed { .. }
                 | Request::RestartDone
                 | Request::Described { .. }
+                | Request::EffectBusy { .. }
                 | Request::EffectRefused { .. }
                 | Request::Make { .. }
                 | Request::Outcome { .. }
@@ -229,6 +230,7 @@ impl World {
                 | Request::Changed { .. }
                 | Request::RestartDone
                 | Request::Described { .. }
+                | Request::EffectBusy { .. }
                 | Request::EffectRefused { .. }
                 | Request::Outcome { .. }
                 | Request::Named { .. }
@@ -265,7 +267,7 @@ impl World {
                 Record::Procedure(state) => {
                     live.insert(state.resource.clone());
                 }
-                Record::Subscription { .. } | Record::Result { .. } => {}
+                Record::Proposal { .. } | Record::Subscription { .. } | Record::Result { .. } => {}
             }
         }
         self.domain = Domain::new(config(self.seed), &LIMITS);
@@ -296,6 +298,13 @@ impl World {
     /// A key valid in this deployment for the given task and purpose.
     #[must_use]
     pub fn key(&self, task: u64, purpose: u64) -> Key {
-        Key { deployment: u64::from(self.seed) + 1, task, purpose }
+        Key {
+            deployment: (u128::from(self.seed) + 1).to_be_bytes(),
+            task,
+            purpose,
+            attempt: 0,
+            completion: 0,
+            position: 0,
+        }
     }
 }

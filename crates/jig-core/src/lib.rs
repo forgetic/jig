@@ -17,7 +17,9 @@ pub mod connector;
 mod delegation;
 pub use amendments::TaskAmendDenied;
 pub use delegation::{Delegate, Dependency, ProcedureAction, resolved_delegate_authority, symbolic_grants};
+mod effects;
 mod escalation;
+pub use effects::{EffectKey, EffectOrigin, EffectPurpose, effect_worst_case};
 mod goals;
 mod historical;
 mod inbox;
@@ -230,6 +232,12 @@ pub struct Core {
     pub call_parts: Map<CallKey, CallPart>,
     /// Calls routed among the core children.
     pub routing_calls: Map<Token, RoutedCall>,
+    /// Synchronous connector descriptions and verdicts in this decision.
+    pub(crate) effect_flights: Map<Token, Box<effects::Flight>>,
+    /// Live reply rights waiting for a committed effect or its answer deadline.
+    pub(crate) effect_replies: Map<u64, effects::Waiting>,
+    /// Connector payloads awaiting the task hub's proposal admission.
+    pub(crate) proposing_effects: Map<Token, (u16, Token)>,
     /// Correlations while the notes child loads a page for a caller.
     pub(crate) note_routes: Map<Token, routing::NoteRoute>,
     /// Preparations waiting for the notes child's current load or write.
@@ -330,7 +338,38 @@ impl Core {
             }
         }
         for &key in &retired {
-            let _part = self.call_parts.remove(&key);
+            match self.call_parts.remove(&key) {
+                Some(CallPart::Effect { entry, .. }) => {
+                    self.effect_replies.remove(&entry);
+                }
+                Some(
+                    CallPart::Connector { .. }
+                    | CallPart::EffectDenied { .. }
+                    | CallPart::ToolDenied { .. }
+                    | CallPart::EscalationDecided { .. }
+                    | CallPart::EscalationRefused(_)
+                    | CallPart::Proposed { .. }
+                    | CallPart::ProposalDecided { .. }
+                    | CallPart::ProposalRefused(_)
+                    | CallPart::Controlled
+                    | CallPart::ControlRefused(_)
+                    | CallPart::ControlDenied { .. }
+                    | CallPart::Sent { .. }
+                    | CallPart::Introduced
+                    | CallPart::MessageRefused(_)
+                    | CallPart::Subscribed { .. }
+                    | CallPart::Unsubscribed
+                    | CallPart::SubscriptionRefused(_)
+                    | CallPart::Delegated(_)
+                    | CallPart::DelegationDenied { .. }
+                    | CallPart::DelegationRefused(_)
+                    | CallPart::NoteWritten { .. }
+                    | CallPart::NoteRecalled { .. }
+                    | CallPart::NoteRefused(_)
+                    | CallPart::Unavailable,
+                )
+                | None => {}
+            }
         }
         retired.into_boxed()
     }
@@ -395,6 +434,16 @@ impl Core {
             pending_calls: Map::with_capacity(limits.call_records),
             call_parts: Map::with_capacity(limits.call_records),
             routing_calls: Map::with_capacity(limits.fleet.calls),
+            effect_flights: Map::with_capacity(
+                limits
+                    .call_records
+                    .checked_add(limits.tasks.tasks)
+                    .expect("call and procedure flights")
+                    .checked_add(limits.people.pending)
+                    .expect("effect flights"),
+            ),
+            effect_replies: Map::with_capacity(limits.call_records),
+            proposing_effects: Map::with_capacity(limits.call_records),
             note_routes: Map::with_capacity(2),
             pending_note_briefs: Map::with_capacity(limits.brief.briefs),
             next_note_owner: 1,
@@ -453,6 +502,8 @@ impl Core {
             && self.reading_results.is_empty()
             && self.dependency_results.is_empty()
             && self.pending_calls.is_empty()
+            && self.effect_flights.is_empty()
+            && self.proposing_effects.is_empty()
             && self.routing_calls.is_empty()
             && self.note_routes.is_empty()
             && self.pending_note_briefs.is_empty()

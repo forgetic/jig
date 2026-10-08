@@ -12,6 +12,7 @@ use crate::{Core, Limits, ProposalDecisionRecord, translate};
 fn kind(action: &tasks::ProposalAction) -> (tasks::ProposalKind, authority::ProposalKind) {
     match action {
         tasks::ProposalAction::Batch(_) => (tasks::ProposalKind::Batch, authority::ProposalKind::Batch),
+        tasks::ProposalAction::Effect { .. } => (tasks::ProposalKind::Effect, authority::ProposalKind::Effect),
         tasks::ProposalAction::Amend { .. } => (tasks::ProposalKind::Amend, authority::ProposalKind::Amend),
         tasks::ProposalAction::Widen { .. } => (tasks::ProposalKind::Widen, authority::ProposalKind::Widen),
         tasks::ProposalAction::Release { .. } => (tasks::ProposalKind::Release, authority::ProposalKind::Escalation),
@@ -38,12 +39,14 @@ fn action_for_check(action: &tasks::ProposalAction) -> Option<authority::Action>
             }
             Some(authority::Action::Batch(members.into_boxed()))
         }
+        // Tasks keeps a generic authority carrier; the connector supplies the
+        // fresh pinned effect again when the holder accepts it.
+        tasks::ProposalAction::Effect { authority, .. } | tasks::ProposalAction::Widen { authority, .. } => {
+            Some(authority::Action::Widen(translate::authority_value(authority)))
+        }
         tasks::ProposalAction::Amend { amendment, .. } => Some(authority::Action::Amend(translate::authority_value(
             amendment.authority.as_ref().expect("proposal amendment widens"),
         ))),
-        tasks::ProposalAction::Widen { authority, .. } => {
-            Some(authority::Action::Widen(translate::authority_value(authority)))
-        }
         tasks::ProposalAction::Release { .. } => Some(authority::Action::Escalate { release: None }),
     }
 }

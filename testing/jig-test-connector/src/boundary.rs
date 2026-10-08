@@ -79,8 +79,12 @@ pub struct Description {
 /// A deployment-scoped key derived from an effect's task and purpose.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Key {
+    /// Original call identity; zero for a procedure's stable purpose.
+    pub attempt: u64,
+    pub completion: u32,
+    pub position: u32,
     /// Deployment identifier, never shared with another deployment.
-    pub deployment: u64,
+    pub deployment: [u8; 16],
     /// Task that asked for this effect.
     pub task: u64,
     /// Stable purpose within that task.
@@ -413,7 +417,7 @@ pub enum RestartStep {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Config {
     /// Identifier included in every effect key.
-    pub deployment: u64,
+    pub deployment: [u8; 16],
     /// Deployment-owned path prefix.
     pub prefix: Path,
     /// Resources the fake system exposes.
@@ -475,6 +479,8 @@ pub enum SystemEvent {
 /// What the root tells the connector for this part of its contract.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Event {
+    /// The core refused this step's effect, or its outbox settled.
+    EffectDecision { task: u64, made: bool },
     /// Ask the connector to judge the named state on its facts.
     Judge { token: Token, requirement: u16, resources: Box<[Path]>, state: u64 },
     /// Create, wake or answer a connector-owned procedure task.
@@ -505,6 +511,12 @@ pub enum Event {
     Describe { token: Token, effect: Effect },
     /// Keep a checked effect under a deployment-scoped key.
     Keep { token: Token, entry: u64, task: u64, key: Key },
+    /// Stage a previously committed proposed effect for a fresh decision.
+    DescribeProposal { token: Token, number: u64 },
+    /// Keep a proposal payload, with no permission to make it.
+    KeepProposal { token: Token, number: u64, task: u64 },
+    /// Erase a terminal proposal's payload.
+    DropProposal { number: u64 },
     /// Drop a staged effect after a refusal.
     Drop { token: Token },
     /// The journal released an entry after its first save committed.
@@ -556,6 +568,8 @@ pub enum RecordKey {
     Subscription { topic: u16, task: u64 },
     /// A pool's last known slots.
     Pool(Path),
+    /// One explicit proposal's connector payload.
+    Proposal(u64),
     /// One unsettled outbox entry.
     Outbox(Key),
     /// An object made by this deployment.
@@ -565,6 +579,8 @@ pub enum RecordKey {
 /// Data owned by this connector and committed by its root.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Record {
+    /// A proposed payload is durable, and cannot be made before acceptance.
+    Proposal { number: u64, task: u64, effect: Effect },
     /// Parameters and state of one procedure task.
     Procedure(ProcedureState),
     /// A completed connector-owned result.
@@ -594,6 +610,7 @@ impl Record {
             Record::Adoption { project, path, .. } => RecordKey::Adoption { project: *project, path: path.clone() },
             Record::Subscription { topic, task, .. } => RecordKey::Subscription { topic: *topic, task: *task },
             Record::Pool { path, .. } => RecordKey::Pool(path.clone()),
+            Record::Proposal { number, .. } => RecordKey::Proposal(*number),
             Record::Outbox(entry) => RecordKey::Outbox(entry.key),
             Record::Made { key, .. } => RecordKey::Made(*key),
         }
@@ -625,6 +642,8 @@ pub enum Request {
     Described { token: Token, description: Description },
     /// A staged effect was refused by this connector.
     EffectRefused { token: Token },
+    /// No stage or outbox room was reserved; the caller may retry its name.
+    EffectBusy { token: Token },
     /// The root journals this release after saving the outbox entry.
     Make { entry: u64 },
     /// An effect's settled or uncertain outcome.

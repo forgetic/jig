@@ -163,7 +163,7 @@ pub struct Effect {
     /// Full literal resource name, bounded by segment and byte limits.
     pub name: Name,
     pub state: [u8; 32],
-    /// Maximum deployment-unit charge, settled after the connector reports actual cost.
+    /// Maximum deployment-unit charge, posted in the effect's deciding commit.
     pub price: Option<u64>,
     /// Connector-verified current access to the resource and object being written.
     pub access: EffectAccess,

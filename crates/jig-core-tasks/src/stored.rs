@@ -112,7 +112,8 @@ fn valid_proposal(task: &TaskRecord, limits: &Limits) -> bool {
     let Some(proposal) = &task.proposal else { return !task.result_proposal };
     let result_batch = match proposal.action {
         crate::ProposalAction::Batch(_) => true,
-        crate::ProposalAction::Amend { .. }
+        crate::ProposalAction::Effect { .. }
+        | crate::ProposalAction::Amend { .. }
         | crate::ProposalAction::Widen { .. }
         | crate::ProposalAction::Release { .. } => false,
     };
@@ -141,6 +142,7 @@ fn valid_proposal(task: &TaskRecord, limits: &Limits) -> bool {
                 && kind
                     == match proposal.action {
                         crate::ProposalAction::Batch(_) => crate::ProposalKind::Batch,
+                        crate::ProposalAction::Effect { .. } => crate::ProposalKind::Effect,
                         crate::ProposalAction::Amend { .. } => crate::ProposalKind::Amend,
                         crate::ProposalAction::Widen { .. } => crate::ProposalKind::Widen,
                         crate::ProposalAction::Release { .. } => crate::ProposalKind::Release,
@@ -175,6 +177,9 @@ fn valid_proposal(task: &TaskRecord, limits: &Limits) -> bool {
                 }
             }
             true
+        }
+        crate::ProposalAction::Effect { authority, attempt, completion, .. } => {
+            *attempt != 0 && *completion != 0 && crate::batch::valid_authority(limits, authority)
         }
         crate::ProposalAction::Amend { task: target, amendment } => {
             *target != 0

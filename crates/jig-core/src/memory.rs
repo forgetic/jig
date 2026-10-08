@@ -99,7 +99,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         notes::worst_case(&limits.notes)?,
         views::worst_case(&limits.views)?,
     ];
-    let mut total = 0_u64;
+    let mut total = crate::effect_worst_case(limits)?;
     for child in children {
         total = total.checked_add(child)?;
     }

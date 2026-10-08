@@ -65,7 +65,7 @@ fn domain() -> Domain {
             ]),
             pools: Box::from([PoolSpec { path: pool(), slots: 2 }]),
             topics: Box::from([TopicSpec { topic: 7 }]),
-            deployment: 1,
+            deployment: [1; 16],
             kinds: Box::from([]),
             requirements: Box::from([crate::RequirementSpec {
                 number: 4,
@@ -333,7 +333,7 @@ fn context_resources_cannot_be_upgraded_to_a_write_role() {
         resources: Box::from([ResourceSpec { path: service(), hold: Hold::None, writable: false }]),
         pools: Box::from([]),
         topics: Box::from([]),
-        deployment: 1,
+        deployment: [1; 16],
         kinds: Box::from([]),
         requirements: Box::from([]),
         procedures: Box::from([]),
@@ -409,6 +409,7 @@ fn restored_records_rebuild_adoptions_names_topics_and_pool_slots() {
                 Request::Save { record } => records.push(record).expect("four changes made four records"),
                 Request::Named { .. }
                 | Request::Described { .. }
+                | Request::EffectBusy { .. }
                 | Request::EffectRefused { .. }
                 | Request::Make { .. }
                 | Request::Outcome { .. }

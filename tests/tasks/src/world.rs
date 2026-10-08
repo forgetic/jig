@@ -351,6 +351,7 @@ impl World {
             | Event::Slots { .. }
             | Event::AllocationGone { .. }
             | Event::ReadAfresh { .. }
+            | Event::ChargeEffect { .. }
             | Event::EffectInFlight { .. }
             | Event::EffectSettled { .. }
             | Event::OpenPeriod { .. }
@@ -412,6 +413,7 @@ impl World {
             | Event::Slots { .. }
             | Event::AllocationGone { .. }
             | Event::ReadAfresh { .. }
+            | Event::ChargeEffect { .. }
             | Event::EffectInFlight { .. }
             | Event::EffectSettled { .. }
             | Event::OpenPeriod { .. }

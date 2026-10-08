@@ -18,6 +18,8 @@ use skein_lib::Wall;
 /// answers for calls routed among its children (domain/engine.md, 7.3).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CallPart {
+    /// An effect kept in the same decision; its settled connector answer may follow.
+    Effect { connector: u16, entry: u64, deadline: Wall, outcome: Option<crate::connector::OutboxOutcome> },
     /// The application connector owns the typed answer.
     Connector { connector: u16 },
     /// The core denied a connector effect after checking its authority.
@@ -79,6 +81,7 @@ impl CallPart {
         authority_limits: &jig_core_authority::Limits,
     ) -> bool {
         match self {
+            CallPart::Effect { entry, .. } => *entry != 0 && *entry <= deployment.connector_rows,
             CallPart::Connector { .. }
             | CallPart::Unavailable
             | CallPart::Introduced
@@ -377,6 +380,9 @@ fn supported_proposal(task: &jig_core_tasks::TaskRecord, deployment: &Deployment
         return false;
     }
     match &proposal.action {
+        tasks::ProposalAction::Effect { attempt, completion, .. } => {
+            *attempt != 0 && *attempt <= deployment.runs && *completion != 0
+        }
         tasks::ProposalAction::Batch(batch) => {
             for member in batch {
                 if member.number == 0 || member.number > deployment.tasks {

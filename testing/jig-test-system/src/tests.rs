@@ -52,7 +52,7 @@ fn prefix() -> Path {
 
 fn config() -> Config {
     Config {
-        deployment: 9,
+        deployment: [9; 16],
         prefix: prefix(),
         resources: Box::from([
             ResourceSpec { path: path(b"one"), hold: Hold::None, writable: true },
@@ -108,7 +108,16 @@ fn keep(domain: &mut Domain, kind: u16, entry: u64, purpose: u64, target: u64) -
     let token = Token::new(entry);
     let described = run(domain, 0, Event::Describe { token, effect: effect(kind, purpose, target) });
     assert!(matches!(described.as_slice(), [Request::Described { .. }]));
-    run(domain, 0, Event::Keep { token, entry, task: 4, key: Key { deployment: 9, task: 4, purpose } })
+    run(
+        domain,
+        0,
+        Event::Keep {
+            token,
+            entry,
+            task: 4,
+            key: Key { deployment: [9; 16], task: 4, purpose, attempt: 0, completion: 0, position: 0 },
+        },
+    )
 }
 
 fn system_call(requests: &[Request]) -> SystemRequest {

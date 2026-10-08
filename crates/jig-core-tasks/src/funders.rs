@@ -19,6 +19,42 @@ pub(crate) fn available(numbers: Numbers) -> Option<u64> {
     remaining(numbers)?.checked_sub(numbers.reserved)
 }
 
+/// Debit a root-authorized effect at its described maximum, exactly once in
+/// the decision that creates its outbox entry (domain/authority.md, 7).
+pub(crate) fn charge_effect(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    funder: Funder,
+    maximum: u64,
+    out: &mut Queue<Request>,
+) {
+    if maximum == 0 {
+        return;
+    }
+    match funder {
+        Funder::Task(number) => {
+            let row = record(domain, number).expect("checked effect task");
+            assert!(
+                available(row.numbers).expect("valid effect balance") >= maximum
+                    && representable(domain, number, maximum),
+                "root admitted the effect price"
+            );
+            let row = &mut task_mut(domain, number).expect("priced effect task").record;
+            row.numbers.spent = row.numbers.spent.checked_add(maximum).expect("checked effect price");
+            publish(domain, env, number, out);
+        }
+        Funder::Pool { .. } | Funder::Period { .. } | Funder::Recurring { .. } => {
+            let ledger = domain.funding.get_mut(&funder).expect("effect source opened in this decision");
+            assert!(
+                !ledger.closed && available(ledger.numbers).expect("valid effect source") >= maximum,
+                "root admitted the holder's effect price"
+            );
+            ledger.numbers.spent = ledger.numbers.spent.checked_add(maximum).expect("effect maximum fits source");
+            save_funding(domain, funder, out);
+        }
+    }
+}
+
 /// Actual task sources cannot end while any incoming allocation remains live.
 pub(crate) fn funded_live(domain: &Domain, funder: u64) -> bool {
     for (number, _) in &domain.names {

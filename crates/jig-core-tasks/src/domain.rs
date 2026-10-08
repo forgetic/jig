@@ -472,6 +472,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             crate::run::claim(domain, env, reply_to, task, attempt, budget, &writes, out);
         }
         Event::ReadAfresh { resource } => crate::writers::read_afresh(domain, &resource, out),
+        Event::ChargeEffect { funder, maximum } => crate::funders::charge_effect(domain, env, funder, maximum, out),
         Event::EffectInFlight { reply_to, task, resource, entry } => {
             crate::writers::effect_in_flight(domain, &env.limits, reply_to, task, resource, entry, out);
         }

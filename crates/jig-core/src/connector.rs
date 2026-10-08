@@ -89,22 +89,74 @@ pub struct EffectDescription {
 /// A connector's answer in jig's vocabulary, after root translation.
 #[derive(Debug)]
 pub enum Event {
-    Resource { name: tasks::Name, role: ResourceRole, hold: HoldKind },
-    PoolSlots { name: tasks::Name, slots: u32 },
-    Described { owner: Token, description: Box<EffectDescription> },
-    Verdict { owner: Token, judge: authority::Judge, verdict: authority::Verdict, at: Wall },
-    Procedure { task: u64, step: u64, decision: Box<tasks::ProcedureDecision> },
-    Outbox { entry: u64, task: u64, outcome: OutboxOutcome },
-    News { task: u64, subscription: u64, topic: u64, class: tasks::NewsClass, words: Box<[u8]> },
-    SectionReady { section: Token, size: Option<u32> },
-    WorkspaceReady { task: u64, size: u32 },
-    Adopted { owner: Token, project: u32, role: people::ResourceRole },
-    Drift { task: u64, resource: tasks::Name },
-    RestartDone { stage: RestartStage },
+    Resource {
+        name: tasks::Name,
+        role: ResourceRole,
+        hold: HoldKind,
+    },
+    PoolSlots {
+        name: tasks::Name,
+        slots: u32,
+    },
+    Described {
+        owner: Token,
+        description: Box<EffectDescription>,
+    },
+    DescribeRefused {
+        owner: Token,
+    },
+    DescribeBusy {
+        owner: Token,
+    },
+    Verdict {
+        owner: Token,
+        judge: authority::Judge,
+        verdict: authority::Verdict,
+        at: Wall,
+        guarded: bool,
+        state: [u8; 32],
+    },
+    Procedure {
+        task: u64,
+        step: u64,
+        decision: Box<tasks::ProcedureDecision>,
+    },
+    Outbox {
+        entry: u64,
+        task: u64,
+        outcome: OutboxOutcome,
+    },
+    News {
+        task: u64,
+        subscription: u64,
+        topic: u64,
+        class: tasks::NewsClass,
+        words: Box<[u8]>,
+    },
+    SectionReady {
+        section: Token,
+        size: Option<u32>,
+    },
+    WorkspaceReady {
+        task: u64,
+        size: u32,
+    },
+    Adopted {
+        owner: Token,
+        project: u32,
+        role: people::ResourceRole,
+    },
+    Drift {
+        task: u64,
+        resource: tasks::Name,
+    },
+    RestartDone {
+        stage: RestartStage,
+    },
 }
 
 /// An outbox terminal or uncertain write.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum OutboxOutcome {
     Made,
     Failed,
@@ -134,32 +186,121 @@ pub struct AdoptedParty {
 /// What the core asks a numbered connector to do.
 #[derive(Debug)]
 pub enum Ask {
-    Names { task: u64, resources: Box<[tasks::Name]> },
-    Unname { task: u64 },
-    Hold { task: u64, resource: tasks::Name, from: Option<u64> },
-    ReleaseHold { task: u64, resource: tasks::Name },
-    Writer { task: u64, attempt: u64, resources: Box<[tasks::Name]> },
-    Describe { owner: Token },
-    Keep { owner: Token, key: u64 },
-    Drop { owner: Token },
-    Make { entry: u64 },
-    Judge { owner: Token, judge: authority::Judge, state: [u8; 32] },
-    ProcedureMade { task: u64 },
-    ProcedureActivate { task: u64 },
-    ProcedureMessage { task: u64, words: Box<[u8]> },
-    ProcedureClose { task: u64 },
-    Project { goal: u64 },
-    Release { task: u64 },
-    Subscribe { task: u64, topic: u64 },
-    Unsubscribe { task: u64, topic: u64 },
-    Read { owner: Token },
-    Gather { section: Token, budget: u32 },
-    CutTo { section: Token, size: u32 },
-    Take { section: Token },
-    Prepare { task: u64, attempt: u64 },
-    Left { task: u64, attempt: u64 },
-    Adopt { owner: Token, project: u32, resource: tasks::Name },
-    Restore { owner: Token },
+    Names {
+        task: u64,
+        resources: Box<[tasks::Name]>,
+    },
+    Unname {
+        task: u64,
+    },
+    Hold {
+        task: u64,
+        resource: tasks::Name,
+        from: Option<u64>,
+    },
+    ReleaseHold {
+        task: u64,
+        resource: tasks::Name,
+    },
+    Writer {
+        task: u64,
+        attempt: u64,
+        resources: Box<[tasks::Name]>,
+    },
+    Describe {
+        owner: Token,
+    },
+    /// Stage the payload durably retained under this proposal's number.
+    DescribeProposal {
+        owner: Token,
+        proposal: u64,
+    },
+    /// Retain an explicitly proposed payload without making an outbox entry.
+    KeepProposal {
+        owner: Token,
+        proposal: u64,
+        task: u64,
+    },
+    /// Remove the connector payload of a terminal proposal.
+    DropProposal {
+        proposal: u64,
+    },
+    Keep {
+        owner: Token,
+        entry: u64,
+        task: u64,
+        key: crate::EffectKey,
+    },
+    Drop {
+        owner: Token,
+        answer: authority::Answer,
+    },
+    Make {
+        entry: u64,
+    },
+    Judge {
+        owner: Token,
+        judge: authority::Judge,
+        state: [u8; 32],
+        resources: Box<[authority::Name]>,
+    },
+    ProcedureMade {
+        task: u64,
+    },
+    ProcedureActivate {
+        task: u64,
+    },
+    ProcedureMessage {
+        task: u64,
+        words: Box<[u8]>,
+    },
+    ProcedureClose {
+        task: u64,
+    },
+    Project {
+        goal: u64,
+    },
+    Release {
+        task: u64,
+    },
+    Subscribe {
+        task: u64,
+        topic: u64,
+    },
+    Unsubscribe {
+        task: u64,
+        topic: u64,
+    },
+    Read {
+        owner: Token,
+    },
+    Gather {
+        section: Token,
+        budget: u32,
+    },
+    CutTo {
+        section: Token,
+        size: u32,
+    },
+    Take {
+        section: Token,
+    },
+    Prepare {
+        task: u64,
+        attempt: u64,
+    },
+    Left {
+        task: u64,
+        attempt: u64,
+    },
+    Adopt {
+        owner: Token,
+        project: u32,
+        resource: tasks::Name,
+    },
+    Restore {
+        owner: Token,
+    },
     ReadAfresh,
     SettleOutbox,
 }
@@ -458,7 +599,7 @@ impl Core {
             &authority::CallAsk {
                 project: context.project,
                 authority: translate::authority_value(&context.authority),
-                family: authority::Tools(1),
+                family: self.settings.tools.read,
                 call: authority::Call::Read(effect),
             },
             findings,

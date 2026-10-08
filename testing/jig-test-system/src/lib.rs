@@ -31,8 +31,11 @@ impl Name {
 /// A key as this system observes it, without a connector's types.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct SystemKey {
+    pub attempt: u64,
+    pub completion: u32,
+    pub position: u32,
     /// Deployment that made the request.
-    pub deployment: u64,
+    pub deployment: [u8; 16],
     /// Asking task.
     pub task: u64,
     /// Purpose in that task.
@@ -41,7 +44,14 @@ pub struct SystemKey {
 
 impl From<Key> for SystemKey {
     fn from(key: Key) -> SystemKey {
-        SystemKey { deployment: key.deployment, task: key.task, purpose: key.purpose }
+        SystemKey {
+            deployment: key.deployment,
+            task: key.task,
+            purpose: key.purpose,
+            attempt: key.attempt,
+            completion: key.completion,
+            position: key.position,
+        }
     }
 }
 
@@ -253,7 +263,14 @@ impl System {
 }
 
 fn to_connector_key(key: SystemKey) -> Key {
-    Key { deployment: key.deployment, task: key.task, purpose: key.purpose }
+    Key {
+        deployment: key.deployment,
+        task: key.task,
+        purpose: key.purpose,
+        attempt: key.attempt,
+        completion: key.completion,
+        position: key.position,
+    }
 }
 
 #[cfg(test)]

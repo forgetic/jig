@@ -216,7 +216,8 @@ pub(crate) fn invalid_followups(
         crate::ResultFollowups::Delegates(batch) => batch.len(),
         crate::ResultFollowups::Proposal(proposal) => match &proposal.action {
             crate::ProposalAction::Batch(batch) => batch.len(),
-            crate::ProposalAction::Amend { .. }
+            crate::ProposalAction::Effect { .. }
+            | crate::ProposalAction::Amend { .. }
             | crate::ProposalAction::Widen { .. }
             | crate::ProposalAction::Release { .. } => {
                 return Some(InvalidResult::Form);

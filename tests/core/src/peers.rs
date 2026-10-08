@@ -40,6 +40,17 @@ impl Peers {
         }
     }
 
+    /// Reconnect the independently retained peers to a cold engine.
+    pub fn restart(&mut self) {
+        self.party_flights.clear();
+        for worker in &mut self.workers {
+            worker.restart_engine();
+        }
+        for party in &mut self.parties {
+            party.restart_engine();
+        }
+    }
+
     /// Translate one host report without reading a domain's state.
     pub fn worker_event(&mut self, up: workers::Up) -> root::Event {
         self.upstream.push(up.clone());
@@ -242,7 +253,8 @@ impl Peers {
                     );
                 }
             }
-            root::Delivery::Restart(_)
+            root::Delivery::LostRead { .. }
+            | root::Delivery::Restart(_)
             | root::Delivery::Core(_)
             | root::Delivery::Fleet(_)
             | root::Delivery::System { .. }

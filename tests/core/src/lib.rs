@@ -26,3 +26,5 @@ pub fn store_writes(
 
 pub mod observations;
 pub mod referee;
+
+pub mod faults;

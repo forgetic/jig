@@ -2,14 +2,18 @@
 //! The hub knows only opaque names and fences; connectors own fresh reads.
 use crate::domain::{Domain, record, refused};
 use crate::{Limits, Name, Party, Refusal, Request, Stored, Writer, WriterSlot};
-use skein_lib::{Queue, ReplyTo};
+use skein_lib::{Env, Queue, ReplyTo};
 
 fn covers(domain: &Domain, task: u64, resource: &Name, limit: u32) -> bool {
     let Some(holder) = crate::holds::writer_holder(domain, resource) else { return false };
+    below(domain, task, holder, limit)
+}
+
+fn below(domain: &Domain, task: u64, ancestor: u64, limit: u32) -> bool {
     let mut current = Some(task);
     for _ in 0..limit {
         let Some(at) = current else { break };
-        if at == holder {
+        if at == ancestor {
             return true;
         }
         current = match record(domain, at) {
@@ -31,9 +35,22 @@ fn take(domain: &mut Domain, resource: Name, writer: Writer, out: &mut Queue<Req
     out.push(Request::Save { record: Stored::Writer(slot) });
 }
 
-fn free(domain: &mut Domain, resource: &Name, out: &mut Queue<Request>) {
+fn free(domain: &mut Domain, env: &Env<Limits>, resource: &Name, out: &mut Queue<Request>) {
     if let Some(slot) = domain.writers.remove(resource) {
         out.push(Request::Erase { key: crate::Key::Writer(slot.number) });
+        // A hold handed downward can wait for its ancestor's run writer.
+        // Ordinary delegate results and effect settlements have their own wake
+        // routes, after the connector has received their outcome.
+        if let Some(holder) = crate::holds::writer_holder(domain, resource) {
+            match slot.writer {
+                Writer::Run { task, .. } => {
+                    if holder != task && below(domain, holder, task, env.limits.depth.saturating_add(1)) {
+                        crate::domain::wake_procedure(domain, env, holder, out);
+                    }
+                }
+                Writer::Effect { .. } => {}
+            }
+        }
     }
 }
 
@@ -76,7 +93,14 @@ pub(crate) fn claim(
     Ok(())
 }
 
-pub(crate) fn answered(domain: &mut Domain, task: u64, attempt: u64, lost: bool, out: &mut Queue<Request>) {
+pub(crate) fn answered(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    task: u64,
+    attempt: u64,
+    lost: bool,
+    out: &mut Queue<Request>,
+) {
     let mut resources = skein_lib::List::with_capacity(domain.writers.capacity());
     for (resource, slot) in &domain.writers {
         if slot.writer == (Writer::Run { task, attempt }) {
@@ -89,17 +113,31 @@ pub(crate) fn answered(domain: &mut Domain, task: u64, attempt: u64, lost: bool,
             slot.lost = true;
             out.push(Request::Save { record: Stored::Writer(slot.clone()) });
         } else {
-            free(domain, resource, out);
+            free(domain, env, resource, out);
         }
     }
 }
 
-pub(crate) fn read_afresh(domain: &mut Domain, resource: &Name, out: &mut Queue<Request>) {
+pub(crate) fn read_afresh(domain: &mut Domain, env: &Env<Limits>, resource: &Name, out: &mut Queue<Request>) {
     if match domain.writers.get(resource) {
         Some(slot) => slot.lost,
         None => false,
     } {
-        free(domain, resource, out);
+        free(domain, env, resource, out);
+    }
+}
+
+/// Pure whole-set preflight; a repeated procedure entry keeps its own slot.
+pub(crate) fn effect_ready(domain: &Domain, limits: &Limits, task: u64, resource: &Name, entry: Option<u64>) -> bool {
+    if !crate::holds::valid_name(limits, resource) || !covers(domain, task, resource, limits.depth.saturating_add(1)) {
+        return false;
+    }
+    match domain.writers.get(resource) {
+        Some(slot) => match slot.writer {
+            Writer::Effect { entry: current } => entry == Some(current),
+            Writer::Run { .. } => false,
+        },
+        None => domain.writers.len() < domain.writers.capacity(),
     }
 }
 
@@ -131,12 +169,18 @@ pub(crate) fn effect_in_flight(
     }
 }
 
-pub(crate) fn effect_settled(domain: &mut Domain, resource: &Name, entry: u64, out: &mut Queue<Request>) {
+pub(crate) fn effect_settled(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    resource: &Name,
+    entry: u64,
+    out: &mut Queue<Request>,
+) {
     if match domain.writers.get(resource) {
         Some(slot) => slot.writer == Writer::Effect { entry },
         None => false,
     } {
-        free(domain, resource, out);
+        free(domain, env, resource, out);
     }
 }
 

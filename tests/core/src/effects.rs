@@ -12,12 +12,18 @@ use jig_test_system::{Fault, System};
 use skein_lib::{Duration, Env, List, Queue, ReplyTo, Time, Token, Wall};
 use std::collections::VecDeque;
 
+/// A scenario's cut around one store transaction, before application or reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Cut {
+    /// Submission has left the root but is not durable.
+    Submitted(u64),
+    /// The rows are durable but the root has not received the completion.
+    Durable(u64),
+}
+
 /// Root, store and separate systems, with an answer channel that may disappear.
 #[derive(Debug)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "the script independently holds writes, lookups, fresh reads and answers"
-)]
+#[expect(clippy::struct_excessive_bools, reason = "independently held peer traffic and crash cuts")]
 pub struct World {
     pub domain: root::Domain,
     pub store: Store,
@@ -57,6 +63,11 @@ pub struct World {
     restart_reads: std::collections::BTreeMap<u16, core::RestartStep>,
     events: VecDeque<root::Event>,
     limits: root::Limits,
+    /// Pause at a selected transaction boundary, with its traffic retained.
+    pub cut: Option<Cut>,
+    /// The boundary at which the last drain paused.
+    pub reached_cut: Option<Cut>,
+    hold_kinds: Vec<(u16, Box<[tasks::Kind]>)>,
     wall: u64,
 }
 
@@ -217,6 +228,9 @@ impl World {
             restart_reads: std::collections::BTreeMap::new(),
             events: VecDeque::new(),
             limits: *limits,
+            cut: None,
+            reached_cut: None,
+            hold_kinds: Vec::new(),
             wall: 0,
         }
     }
@@ -224,7 +238,19 @@ impl World {
     /// Compose the testing root with independently scripted workers and parties.
     #[must_use]
     pub fn scripted(configuration: root::Config, limits: root::Limits, peers: crate::peers::Peers) -> World {
+        Self::scripted_at(configuration, limits, peers, None)
+    }
+
+    /// Select a cut before even the first sign-in and assignment have committed.
+    #[must_use]
+    pub fn scripted_at(
+        configuration: root::Config,
+        limits: root::Limits,
+        peers: crate::peers::Peers,
+        cut: Option<Cut>,
+    ) -> World {
         let mut world = Self::empty(configuration, &limits);
+        world.cut = cut;
         world.peers = Some(peers);
         let row =
             root::Record::Core(core::Record::People(people::Stored::Roles { project: 1, holdings: Box::new([]) }));
@@ -244,6 +270,8 @@ impl World {
         self.wall = self.wall.checked_add(by.as_nanos()).expect("world time fits");
         self.events.push_back(root::Event::Timer(core::Timer::Fleet));
         self.events.push_back(root::Event::Timer(core::Timer::Tasks));
+        self.events.push_back(root::Event::ConnectorTimer { number: 1 });
+        self.events.push_back(root::Event::ConnectorTimer { number: 2 });
         self.drain();
     }
 
@@ -289,6 +317,10 @@ impl World {
                         }
                         self.commits.push(rows.clone());
                         self.store.submit(number, crate::store_writes(rows), self.store_delay);
+                        if self.cut == Some(Cut::Submitted(number)) {
+                            self.reached_cut = self.cut.take();
+                            return;
+                        }
                     }
                     root::Request::Deliver(delivery) => self.delivered(delivery),
                     root::Request::Now(core::Now::StartPreparation { task, .. }) => {
@@ -342,6 +374,10 @@ impl World {
                     Err(number) => self.events.push_front(root::Event::Failed { number }),
                 }
                 self.observer.durable(self.wall, &self.store);
+                if self.cut == Some(Cut::Durable(self.store.applied)) {
+                    self.reached_cut = self.cut.take();
+                    return;
+                }
                 self.observer.systems(self.wall, &self.systems);
                 self.restore_pages();
                 if self.domain.ready()
@@ -400,6 +436,10 @@ impl World {
                         signal: connector::ProcedureSignal::Activate,
                     },
                 });
+            }
+            root::Delivery::LostRead { connector, resource, call, .. } => {
+                let event = self.systems[usize::from(connector - 1)].answer(call, Fault::None);
+                self.events.push_back(root::Event::WriterRead { connector, resource, event });
             }
             root::Delivery::System {
                 connector: number,
@@ -742,6 +782,12 @@ impl World {
         self.events.push_back(root::Event::RestartDone(step));
     }
 
+    /// Install the connector's fixed hold vocabulary, retained across cold starts.
+    pub fn configure_holds(&mut self, connector: u16, kinds: Box<[tasks::Kind]>) {
+        self.hold_kinds.push((connector, kinds.clone()));
+        self.send(root::Event::Core(core::Event::Tasks(tasks::Event::Kinds { connector, kinds })));
+    }
+
     /// Let every previously durable completion through its ordered barrier.
     pub fn release_commits(&mut self) {
         while let Some(number) = self.store.release_held() {
@@ -770,18 +816,30 @@ impl World {
                 kind.recovery = self.recovery;
             }
         }
+        self.restart_with(config);
+    }
+
+    /// Cold start with the same scenario configuration, including its host slots.
+    pub fn restart_with(&mut self, config: root::Config) {
         self.observer.observe(self.wall, crate::referee::Observed::Restart);
         self.store.crash();
         self.observer.cold(self.wall, &self.store);
         self.stopped = false;
         self.restoring = None;
         self.domain = root::Domain::new(config, &self.limits);
+        for (connector, kinds) in self.hold_kinds.clone() {
+            self.domain.configure_holds(&self.env(), connector, kinds);
+        }
         self.events.clear();
         self.pending_reads.clear();
         self.pending_writes.clear();
         self.pending_lookups.clear();
         self.restart_reads.clear();
         self.restart_steps.clear();
+        if let Some(peers) = &mut self.peers {
+            peers.restart();
+        }
+        self.cut = None;
         self.send(root::Event::RestartBegin);
         self.lose_answer = false;
     }

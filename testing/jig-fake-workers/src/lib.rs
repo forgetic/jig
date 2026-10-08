@@ -290,7 +290,7 @@ impl Worker {
     /// Apply a worker fault, reporting link loss independently of the core.
     #[must_use]
     pub fn fault(&mut self, fault: Fault, now: Time) -> Vec<Up> {
-        assert_ne!(self.channel, 0, "the engine link is permanent");
+        assert!(self.channel != 0 || matches!(fault, Fault::Slow { .. }), "the engine link is permanent");
         match fault {
             Fault::DropChannel { for_ } => {
                 self.connected = false;
@@ -314,6 +314,23 @@ impl Worker {
                 self.slow_until = Some(now.saturating_add(by));
                 Vec::new()
             }
+        }
+    }
+
+    /// A new engine process loses its own activations; remote hosts send hello
+    /// and all retained traffic again. A vanished host stays absent.
+    pub fn restart_engine(&mut self) {
+        if self.channel == 0 {
+            for (key, run) in &self.runs {
+                let expense = self.expenses.get_mut(key).expect("assigned expense");
+                expense.lost = run.spent - run.kept_spent;
+                expense.lost_turns = u32::try_from(run.turns.len()).expect("bounded retained turns");
+                self.lost_spent += expense.lost;
+            }
+            self.runs.clear();
+            self.notices.clear();
+        } else if !self.vanished {
+            self.hello_due = true;
         }
     }
 

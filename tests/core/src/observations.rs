@@ -150,7 +150,7 @@ fn task(value: &tasks::TaskRecord) -> r::Task {
         phase: phase(&value.phase),
         dependencies: value.dependencies.to_vec(),
         delegates: value.delegates.to_vec(),
-        pools: if value.holds_taken {
+        pools: if value.holds_taken && !matches!(value.phase, tasks::Phase::Ended(_)) {
             value
                 .holdings
                 .iter()
@@ -355,6 +355,8 @@ impl Observer {
             | root::Event::EffectCall { .. }
             | root::Event::TranscriptLoaded { .. }
             | root::Event::Committed { .. }
+            | root::Event::WriterRead { .. }
+            | root::Event::ConnectorTimer { .. }
             | root::Event::Failed { .. } => {}
         }
     }
@@ -494,6 +496,11 @@ impl Observer {
                 root::Record::Core(core::Record::Tasks(tasks::Stored::Live(value) | tasks::Stored::Ended(value))) => {
                     snapshot.tasks.insert(value.number, task(value));
                     snapshot.receipts.insert(r::Receipt::Task(value.number));
+                    if let tasks::Escalation::Waiting { holder: tasks::EscalationHolder::Task(holder), entry, .. } =
+                        value.escalation
+                    {
+                        snapshot.receipts.insert(r::Receipt::Word(holder, entry));
+                    }
                     if matches!(value.phase, tasks::Phase::Ended(_)) {
                         snapshot.receipts.insert(r::Receipt::Ended(value.number));
                     }
@@ -754,6 +761,9 @@ impl Observer {
             root::Delivery::Procedure { task, .. } => {
                 requires.push(r::Receipt::Task(*task));
             }
+            root::Delivery::LostRead { task, attempt, .. } => {
+                requires.push(r::Receipt::Terminal(*task, *attempt));
+            }
             root::Delivery::Restart(_)
             | root::Delivery::Core(_)
             | root::Delivery::Fleet(_)
@@ -833,6 +843,7 @@ pub fn root_bound(limits: &root::Limits) -> Option<u64> {
         .checked_add(Journal::<root::Write, root::Delivery>::worst_case(&limits.journal)?)?
         .checked_add(Queue::<core::Now>::worst_case(limits.journal.now)?)?
         .checked_add(Map::<u64, root::Assignment>::worst_case(limits.core.tasks.tasks)?)?
+        .checked_add(Map::<u64, Box<[tasks::Name]>>::worst_case(limits.core.tasks.tasks)?)?
         .checked_add(Map::<u64, (u64, u16)>::worst_case(limits.core.tasks.tasks)?)?
         .checked_add(Map::<Token, connector::Effect>::worst_case(
             limits.core.call_records.checked_add(limits.core.tasks.tasks)?,

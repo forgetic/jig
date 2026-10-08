@@ -220,6 +220,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(u64::from(limits.people.words))?
         .checked_add(u64::from(limits.notes.body_bytes))?
         .checked_add(u64::from(limits.views.snapshot_bytes))?;
+    total = total.checked_add(Queue::<fleet::Request>::worst_case(fleet::max_out(&limits.fleet).checked_mul(4)?)?)?;
     total = total.checked_add(Queue::<Event>::worst_case(route.writes)?)?;
     total = total.checked_add(Queue::<Request>::worst_case(route.writes.checked_add(1)?)?)?;
     total = total.checked_add(bytes(route.writes, payload)?)?;

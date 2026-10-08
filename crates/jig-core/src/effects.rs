@@ -460,6 +460,10 @@ fn described(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one effect decision checks authority and the whole writer set before allocating its entry"
+)]
 fn complete(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, out: &mut Queue<Request>, owner: Token) {
     let flight = core.effect_flights.remove(&owner).expect("completed effect flight");
     if !origin_current(core, flight.connector, &flight.origin) {
@@ -479,6 +483,9 @@ fn complete(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, out: &m
     let mut checked = check(core, env, &origin, &description, flight.given.as_slice(), &mut findings);
     if flight.connector != description.connector {
         checked = authority::Answer::Refuse;
+    }
+    if checked == authority::Answer::Allow && !writers_ready(core, env, &origin, &description) {
+        checked = authority::Answer::Wait;
     }
     if checked != authority::Answer::Allow {
         drop_effect(out, flight.connector, owner, checked);
@@ -529,6 +536,14 @@ fn complete(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, out: &m
         }
     };
     let task = origin.task();
+    for resource in held_resources(core, &description) {
+        work.push(Event::Tasks(tasks::Event::EffectInFlight {
+            reply_to: ReplyTo::new(Token::new(u64::MAX)),
+            task,
+            resource,
+            entry,
+        }));
+    }
     let purpose = match origin {
         EffectOrigin::Call { to, key, deadline } => {
             let part = CallPart::Effect { connector: flight.connector, entry, deadline, outcome: None };
@@ -581,6 +596,42 @@ fn discard_origin(core: &mut Core, origin: &EffectOrigin) {
         }
         EffectOrigin::Procedure { .. } => {}
     }
+}
+
+/// Slots apply only to resources the hub knows are held. Shared resources use
+/// their connector's declared recovery protocol instead (`domain/tasks.md`, 6.3).
+fn held_resources(core: &Core, description: &connector::EffectDescription) -> Box<[tasks::Name]> {
+    let count = u32::try_from(description.effect.additional.len()).expect("bounded effect resources");
+    let mut names = List::with_capacity(count.checked_add(1).expect("effect resources fit"));
+    let first = tasks::Name { connector: description.connector, path: description.effect.name.segments.clone() };
+    if core.tasks.holder(&first).is_some() {
+        names.push(first).expect("effect resource room");
+    }
+    for resource in &description.effect.additional {
+        let name = tasks::Name { connector: description.connector, path: resource.name.segments.clone() };
+        if core.tasks.holder(&name).is_some() {
+            names.push(name).expect("effect resource room");
+        }
+    }
+    names.into_boxed()
+}
+
+fn writers_ready(
+    core: &Core,
+    env: &Env<Limits>,
+    origin: &EffectOrigin,
+    description: &connector::EffectDescription,
+) -> bool {
+    let existing = match origin {
+        EffectOrigin::Procedure { entry, .. } => *entry,
+        EffectOrigin::Call { .. } | EffectOrigin::Accept { .. } | EffectOrigin::Propose { .. } => None,
+    };
+    for resource in held_resources(core, description) {
+        if !core.tasks.effect_writer_ready(&env.limits.tasks, origin.task(), &resource, existing) {
+            return false;
+        }
+    }
+    true
 }
 
 fn origin_current(core: &Core, connector: u16, origin: &EffectOrigin) -> bool {
@@ -1005,6 +1056,14 @@ fn settled(
             }
             connector::OutboxOutcome::Uncertain | connector::OutboxOutcome::Held { .. } => {}
         }
+    }
+    match outcome {
+        connector::OutboxOutcome::Made | connector::OutboxOutcome::Failed | connector::OutboxOutcome::Withdrawn => {
+            for resource in core.tasks.effect_writers(entry) {
+                work.push(Event::Tasks(tasks::Event::EffectSettled { resource, entry }));
+            }
+        }
+        connector::OutboxOutcome::Uncertain | connector::OutboxOutcome::Held { .. } => {}
     }
     let procedure = match core.tasks.task(task) {
         Some(row) => match row.executor {

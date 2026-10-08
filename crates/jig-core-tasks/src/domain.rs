@@ -185,6 +185,37 @@ impl Domain {
         self.writers.get(resource)
     }
 
+    /// Whether one held resource may admit this effect, without taking its slot.
+    /// The core checks the complete set before asking for any slot.
+    #[must_use]
+    pub fn effect_writer_ready(&self, limits: &Limits, task: u64, resource: &crate::Name, entry: Option<u64>) -> bool {
+        crate::writers::effect_ready(self, limits, task, resource, entry)
+    }
+
+    /// Lost resources of this fenced run, whose owning connector owes fresh reads.
+    #[must_use]
+    pub fn lost_writes(&self, task: u64, attempt: u64) -> Box<[crate::Name]> {
+        let mut names = List::with_capacity(self.writers.capacity());
+        for (name, slot) in &self.writers {
+            if slot.lost && slot.writer == (crate::Writer::Run { task, attempt }) {
+                names.push(name.clone()).expect("bounded lost writer names");
+            }
+        }
+        names.into_boxed()
+    }
+
+    /// Current resource slots for a connector entry, including restored flights.
+    #[must_use]
+    pub fn effect_writers(&self, entry: u64) -> Box<[crate::Name]> {
+        let mut names = List::with_capacity(self.writers.capacity());
+        for (name, slot) in &self.writers {
+            if slot.writer == (crate::Writer::Effect { entry }) {
+                names.push(name.clone()).expect("bounded writer names");
+            }
+        }
+        names.into_boxed()
+    }
+
     /// Current deployment-owned core recurring task identities for one project.
     #[must_use]
     pub fn recurring_tasks(&self, project: u32) -> Box<[u64]> {
@@ -345,20 +376,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::Kinds { connector, kinds } => crate::holds::kinds(domain, &env.limits, connector, &kinds),
         Event::Slots { pool, slots } => crate::holds::slots(domain, &env.limits, pool, slots, out),
         Event::AllocationGone { pool, task } => crate::holds::allocation_gone(domain, env, &pool, task, out),
-        Event::WakeProcedure { task } => {
-            let wake = match record(domain, task) {
-                Some(row) => match row.executor {
-                    crate::Executor::Procedure { .. } => row.phase == Phase::Active(Active::Idle),
-                    crate::Executor::Agent { .. } | crate::Executor::Person(_) => false,
-                },
-                None => false,
-            };
-            if wake {
-                task_mut(domain, task).expect("live procedure").record.phase = Phase::Active(Active::Due);
-                publish(domain, env, task, out);
-                activate(domain, task, out);
-            }
-        }
+        Event::WakeProcedure { task } => wake_procedure(domain, env, task, out),
         Event::ProposePerson { reply_to, proposal } => {
             crate::proposals::propose_person(domain, env, reply_to, proposal, out);
         }
@@ -471,12 +489,12 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::Claim { reply_to, task, attempt, budget, writes } => {
             crate::run::claim(domain, env, reply_to, task, attempt, budget, &writes, out);
         }
-        Event::ReadAfresh { resource } => crate::writers::read_afresh(domain, &resource, out),
+        Event::ReadAfresh { resource } => crate::writers::read_afresh(domain, env, &resource, out),
         Event::ChargeEffect { funder, maximum } => crate::funders::charge_effect(domain, env, funder, maximum, out),
         Event::EffectInFlight { reply_to, task, resource, entry } => {
             crate::writers::effect_in_flight(domain, &env.limits, reply_to, task, resource, entry, out);
         }
-        Event::EffectSettled { resource, entry } => crate::writers::effect_settled(domain, &resource, entry, out),
+        Event::EffectSettled { resource, entry } => crate::writers::effect_settled(domain, env, &resource, entry, out),
         Event::Turn { reply_to, task, attempt, turn, read, offered, cumulative } => {
             crate::admission::turn(domain, env, reply_to, task, attempt, turn, read, offered, cumulative, out);
         }
@@ -547,6 +565,22 @@ pub fn fire(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>) {
         }
     }
     crate::closing::progress(domain, env, out);
+}
+
+/// A changed writer or connector fact makes an idle procedure due.
+pub(crate) fn wake_procedure(domain: &mut Domain, env: &Env<Limits>, task: u64, out: &mut Queue<Request>) {
+    let wake = match record(domain, task) {
+        Some(row) => match row.executor {
+            crate::Executor::Procedure { .. } => row.phase == Phase::Active(Active::Idle),
+            crate::Executor::Agent { .. } | crate::Executor::Person(_) => false,
+        },
+        None => false,
+    };
+    if wake {
+        task_mut(domain, task).expect("live procedure").record.phase = Phase::Active(Active::Due);
+        publish(domain, env, task, out);
+        activate(domain, task, out);
+    }
 }
 
 pub(crate) fn record(domain: &Domain, number: u64) -> Option<&TaskRecord> {

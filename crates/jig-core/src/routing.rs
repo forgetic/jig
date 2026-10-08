@@ -5049,8 +5049,13 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
     let total = marked.checked_add(task_room).expect("fleet and task route room");
     let total = total.checked_add(party_room).expect("fleet and party route room");
     let mut out = Queue::with_capacity(total.checked_add(1).expect("fleet output room"));
+    let mut pending = Queue::with_capacity(marked);
     for _ in 0..child.len() {
-        let request = match child.pop().expect("fleet output count") {
+        pending.push(child.pop().expect("fleet output count"));
+    }
+    for _ in 0..marked {
+        let Some(next) = pending.pop() else { break };
+        let request = match next {
             fleet::Request::Assign { channel, kind, run, attempt } => {
                 record_host(core, &mut out, run, attempt, kind);
                 out.push(Request::Held(Box::new(Held::ViewStart { run, attempt })));
@@ -5073,7 +5078,27 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                 Request::Held(Box::new(Held::Relayed { channel, run, attempt, call, answer }))
             }
             fleet::Request::Drop { payload } => Request::Now(Box::new(Now::DropPayload { payload })),
-            fleet::Request::Listed { .. } => continue,
+            fleet::Request::Listed { run, attempt } => {
+                let claimed = match core.proofs.get(&run.raw()) {
+                    Some(proof) => proof.attempt == attempt.raw() && proof.terminal.is_none(),
+                    None => false,
+                };
+                // Listings precede adoption during a cold start. Only an open
+                // core has the complete proofs needed to reject a stale run.
+                if core.restart_ready() && !claimed {
+                    let mut follow = Queue::with_capacity(room);
+                    fleet::step(
+                        &mut core.fleet,
+                        &Env { now: env.now, wall: env.wall, limits: env.limits.fleet },
+                        fleet::Event::Cancel { run, attempt },
+                        &mut follow,
+                    );
+                    for _ in 0..follow.len() {
+                        pending.push(follow.pop().expect("fenced listing output count"));
+                    }
+                }
+                continue;
+            }
             fleet::Request::Placed { run, attempt } => {
                 if core.unreported_restored.get(&run.raw()) == Some(&attempt.raw()) {
                     let _: Option<u64> = core.unreported_restored.remove(&run.raw());
@@ -5154,9 +5179,6 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                     },
                     &mut out,
                 );
-                for &connector in core.connectors.as_ref() {
-                    out.push(Request::Ask { connector, ask: Ask::Lost { task: run.raw(), attempt: attempt.raw() } });
-                }
                 continue;
             }
             fleet::Request::AssignTyped { channel, kind, run, attempt, activation, assignment } => {

@@ -80,9 +80,10 @@ pub(super) fn route_core(
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one dispatcher translates the complete connector ask vocabulary")]
 fn route_ask(
     domain: &mut Domain,
-    _env: &Env<Limits>,
+    env: &Env<Limits>,
     decision: &mut Decision<Write, Delivery>,
     number: u16,
     ask: core::Ask,
@@ -90,32 +91,41 @@ fn route_ask(
 ) {
     match ask {
         core::Ask::Effect(ask) => route_effect_ask(domain, number, ask, work),
-        core::Ask::TaskHoldings { request, .. } => {
-            work.push(Work::Core(core::Event::Holdings { request, connector: number, holdings: Some(Box::new([])) }));
+        core::Ask::TaskHoldings { request, spec, .. } => {
+            let holdings = specification_holdings(domain, env, number, &spec);
+            work.push(Work::Core(core::Event::Holdings { request, connector: number, holdings }));
         }
         core::Ask::DelegateHoldings { request, members, .. } => {
             let mut holdings: List<Box<[tasks::Holding]>> =
                 List::with_capacity(u32::try_from(members.len()).expect("bounded batch"));
-            for _member in members {
-                holdings.push(Box::new([])).expect("batch room");
+            let mut valid = true;
+            for member in members {
+                match specification_holdings(domain, env, number, &member.spec) {
+                    Some(named) => holdings.push(named).expect("batch room"),
+                    None => valid = false,
+                }
             }
             work.push(Work::Core(core::Event::DelegateHoldings {
                 request,
                 connector: number,
-                holdings: Some(holdings.into_boxed()),
+                holdings: if valid { Some(holdings.into_boxed()) } else { None },
             }));
         }
         core::Ask::ProcedureHoldings { task, step, members } => {
             let mut holdings: List<Box<[tasks::Holding]>> =
                 List::with_capacity(u32::try_from(members.len()).expect("bounded batch"));
-            for _member in members {
-                holdings.push(Box::new([])).expect("batch room");
+            let mut valid = true;
+            for member in members {
+                match specification_holdings(domain, env, number, &member.spec) {
+                    Some(named) => holdings.push(named).expect("batch room"),
+                    None => valid = false,
+                }
             }
             work.push(Work::Core(core::Event::ProcedureHoldings {
                 task,
                 step,
                 connector: number,
-                holdings: Some(holdings.into_boxed()),
+                holdings: if valid { Some(holdings.into_boxed()) } else { None },
             }));
         }
         core::Ask::StartProcedure { context, step } => {
@@ -174,9 +184,19 @@ fn route_ask(
         core::Ask::Drop { section } => {
             work.push(Work::Connector { number, event: connector::Event::HandOver { token: section } });
         }
+        core::Ask::Lost { task, attempt } => {
+            for resource in domain.core.tasks.lost_writes(task, attempt) {
+                if resource.connector == number {
+                    let call = connector::SystemRequest::ReadFact {
+                        resource: path(resource.path.clone()),
+                        observed: env.wall,
+                    };
+                    hold(decision, Delivery::LostRead { connector: number, task, attempt, resource, call });
+                }
+            }
+        }
         core::Ask::Hold { .. }
         | core::Ask::EndTopic { .. }
-        | core::Ask::Lost { .. }
         | core::Ask::ProjectGoal { .. }
         | core::Ask::SubscriptionDone { .. }
         | core::Ask::UnsubscriptionDone { .. }
@@ -184,6 +204,37 @@ fn route_ask(
         | core::Ask::RepairRefused { .. }
         | core::Ask::DelegateRefused { .. } => {}
     }
+}
+
+/// Translate the connector's one-based resource IDs. Kinds one and two are
+/// respectively exclusive and pooled in this testing application's charter.
+fn specification_holdings(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    number: u16,
+    spec: &tasks::Spec,
+) -> Option<Box<[tasks::Holding]>> {
+    let mut holdings = List::with_capacity(env.limits.core.tasks.holdings);
+    for parameter in &spec.parameters {
+        match parameter {
+            tasks::Parameter::Resource { connector: owner, resource, .. } => {
+                if *owner == number {
+                    let described = crate::numbered(domain, number).specification_resource(*resource)?;
+                    let name = tasks::Name { connector: number, path: name(described.path.clone()).segments };
+                    let holding = match described.hold {
+                        connector::Hold::Exclusive { .. } => Some(tasks::Holding::Write { resource: name, kind: 1 }),
+                        connector::Hold::Pooled { .. } => Some(tasks::Holding::Slot { pool: name, kind: 2 }),
+                        connector::Hold::None => None,
+                    };
+                    if let Some(holding) = holding {
+                        holdings.push(holding).ok()?;
+                    }
+                }
+            }
+            tasks::Parameter::Number { .. } | tasks::Parameter::Bytes { .. } => {}
+        }
+    }
+    Some(holdings.into_boxed())
 }
 
 fn path(segments: Box<[Box<[u8]>]>) -> connector::Path {
@@ -198,7 +249,7 @@ fn path(segments: Box<[Box<[u8]>]>) -> connector::Path {
 #[expect(clippy::too_many_lines, reason = "one exhaustive root continuation boundary")]
 fn route_now(
     domain: &mut Domain,
-    _env: &Env<Limits>,
+    env: &Env<Limits>,
     _decision: &mut Decision<Write, Delivery>,
     now: core::Now,
     work: &mut Queue<Work>,
@@ -228,8 +279,40 @@ fn route_now(
         core::Now::BriefCorePlanned { task, .. } => {
             work.push(Work::Core(core::Event::BriefAssembled { task, ready: true }));
         }
-        core::Now::WorkspaceRequest { task, attempt, .. } => {
-            work.push(Work::Core(core::Event::WorkspacePrepared { task, attempt, writes: Some(Box::new([])) }));
+        core::Now::WorkspaceRequest { task, attempt, context } => {
+            let mut names = List::with_capacity(env.limits.core.tasks.holdings);
+            let mut checks = List::with_capacity(env.limits.core.authority.writes);
+            for number in [1, 2] {
+                let Some(holdings) = specification_holdings(domain, env, number, &context.spec) else {
+                    work.push(Work::Core(core::Event::WorkspacePrepared { task, attempt, writes: None }));
+                    return;
+                };
+                for holding in holdings {
+                    match holding {
+                        tasks::Holding::Write { resource, .. } => {
+                            checks
+                                .push(authority::Write {
+                                    effect: authority::Effect {
+                                        connector: resource.connector,
+                                        kind: 5,
+                                        name: authority::Name { segments: resource.path.clone() },
+                                        state: [0; 32],
+                                        price: None,
+                                        access: authority::EffectAccess::Owned,
+                                        additional: Box::new([]),
+                                        guards: Box::new([]),
+                                    },
+                                    held: authority::Writer::Task,
+                                })
+                                .expect("workspace write check room");
+                            names.push(resource).expect("admitted holding count");
+                        }
+                        tasks::Holding::Slot { .. } => {}
+                    }
+                }
+            }
+            assert!(domain.workspace_writes.insert(task, names.into_boxed()).is_ok(), "workspace per task");
+            work.push(Work::Core(core::Event::WorkspacePrepared { task, attempt, writes: Some(checks.into_boxed()) }));
         }
         core::Now::RunPrepared { task, attempt, charter, run, inbox, transcript, grant, .. } => {
             let budget = run.budget;
@@ -252,10 +335,12 @@ fn route_now(
                     .is_ok(),
                 "one prepared assignment per task"
             );
-            work.push(Work::Core(core::Event::ClaimPrepared { task, attempt, budget, writes: Box::new([]) }));
+            let writes = domain.workspace_writes.remove(&task).expect("assembled workspace writes");
+            work.push(Work::Core(core::Event::ClaimPrepared { task, attempt, budget, writes }));
         }
         core::Now::RunPreparationFailed { task } | core::Now::DropAssignment { task } => {
             drop(domain.assignments.remove(&task));
+            drop(domain.workspace_writes.remove(&task));
         }
         core::Now::DropPayload { payload } => {
             drop(domain.payloads.remove(&payload));
@@ -508,12 +593,15 @@ pub(super) fn route_connector(
                     outcome,
                 })));
             }
+            connector::Request::Slots { pool, slots } => {
+                let pool = tasks::Name { connector: number, path: name(pool).segments };
+                work.push(Work::Core(core::Event::Tasks(tasks::Event::Slots { pool, slots })));
+            }
             connector::Request::Make { entry: _ }
             | connector::Request::Adopted { project: _, resource: _, result: _ }
             | connector::Request::Named { task: _, resources: _ }
             | connector::Request::Unknown { task: _, resource: _ }
             | connector::Request::Refused { task: _ }
-            | connector::Request::Slots { pool: _, slots: _ }
             | connector::Request::News { topic: _, subscribers: _ }
             | connector::Request::Changed { resource: _ }
             | connector::Request::Answer { token: _, bytes: _ }

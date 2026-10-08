@@ -72,38 +72,7 @@ fn member(world: &World, executor: tasks::Executor, words: &[u8]) -> core::Deleg
 }
 
 fn plan_world(seed: u64) -> World {
-    let (mut configuration, mut limits) = fixture(seed, false);
-    limits.core.tasks.tasks = 5;
-    limits.core.tasks.project_tasks = 5;
-    limits.core.tasks.tree_tasks = 5;
-    limits.core.tasks.depth = 2;
-    limits.core.tasks.delegates = 3;
-    limits.core.tasks.funders = 16;
-    limits.core.tasks.inbox_bytes = 512;
-    limits.core.tasks.inbox_messages = 8;
-    limits.core.views.runs = 5;
-    limits.core.fleet.slots = 3;
-    limits.core.fleet.attempts = 5;
-    limits.core.call_records = 8;
-    limits.journal.writes = 10_000;
-    limits.journal.held = 10_000;
-    configuration.core.settings.chat_authority.delegation = authority::Delegation {
-        kinds: Box::new([authority::Executor::Charter(1), authority::Executor::Procedure(1)]),
-        tasks: 4,
-        depth: 2,
-    };
-    let mut rules = configuration.core.authority.rules().clone();
-    rules.ceiling.delegation.tasks = 6;
-    rules.ceiling.delegation.depth = 3;
-    rules.maximum_run_spend = 10;
-    let mut policy = configuration.core.authority.policy(1).expect("plan policy").clone();
-    policy.ceiling.delegation = rules.ceiling.delegation.clone();
-    policy.roles[0].authority.delegation = rules.ceiling.delegation.clone();
-    let mut checked = authority::Domain::new(rules, limits.core.authority).expect("bounded plan policy");
-    let mut out = Queue::with_capacity(authority::POLICY_MAX_OUT);
-    authority::step(&mut checked, authority::Event::Policy { project: 1, policy }, &mut out);
-    assert_eq!(out.pop(), Some(authority::PolicyFact::Added { project: 1 }));
-    configuration.core.authority = checked;
+    let (configuration, limits) = jig_core_world::faults::plan_fixture(seed);
     World::configured(seed, false, configuration, limits)
 }
 
@@ -460,4 +429,238 @@ fn a_judges_observed_facts_may_change_after_a_verdict_but_new_effects_use_the_ne
     ));
     assert_eq!(world.systems[0].observed().iter().filter(|entry| entry.applied).count(), 1);
     assert_eq!(world.spent(), 3);
+}
+
+#[test]
+fn an_exhausted_delegate_escalates_to_a_person_who_releases_it_to_finish() {
+    let mut world = plan_world(128);
+    let parent = world.assignments[0];
+    let mut child = member(&world, tasks::Executor::Agent { charter: 1 }, b"retry this delegate");
+    child.authority.delegation = tasks::Delegation { kinds: Box::new([]), tasks: 0, depth: 0 };
+    let child = delegate(&mut world, parent, 1, child);
+    for index in 0..2 {
+        let run = running(&world, child);
+        world.send(root::Event::Answer {
+            channel: Token::new(7),
+            task: run.0,
+            attempt: run.1,
+            cumulative: 0,
+            end: tasks::End::Failed(tasks::Class::Run),
+        });
+        if index == 0 {
+            world.advance(skein_lib::Duration::from_secs(2));
+            assert!(running(&world, child).1 > run.1);
+        }
+    }
+    assert!(matches!(world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(child)))),
+        Some(root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row))))
+            if matches!(row.phase, tasks::Phase::Held { why: tasks::Hold::Failures(tasks::Class::Run), .. })));
+    // The parent receives the escalation first, then passes its current revision
+    // to the person. The person decides through their authenticated client face.
+    let revision = match world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(child)))) {
+        Some(root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row)))) => match row.escalation {
+            tasks::Escalation::Waiting { revision, .. } => revision,
+            tasks::Escalation::Unheld { .. }
+            | tasks::Escalation::Routing { .. }
+            | tasks::Escalation::Rejected { .. } => panic!("escalation not routed"),
+        },
+        row => panic!("held child missing: {row:?}"),
+    };
+    world.send(root::Event::Core(core::Event::NamedAction {
+        to: ReplyTo::new(Token::new(9300)),
+        key: core::CallKey { task: parent.0, attempt: parent.1, completion: 2, position: 0 },
+        action: core::NamedAction::DecideEscalation { task: child, revision, choice: core::EscalationChoice::Pass },
+    }));
+    let revision = match world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(child)))) {
+        Some(root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row)))) => match row.escalation {
+            tasks::Escalation::Waiting { revision, holder: tasks::EscalationHolder::Person(_), .. } => revision,
+            ref escalation @ (tasks::Escalation::Unheld { .. }
+            | tasks::Escalation::Routing { .. }
+            | tasks::Escalation::Waiting { .. }
+            | tasks::Escalation::Rejected { .. }) => panic!("not passed to a person: {escalation:?}"),
+        },
+        row => panic!("held child missing: {row:?}"),
+    };
+    ask(
+        &mut world,
+        44,
+        people::Ask::DecideEscalation {
+            project: 1,
+            task: child,
+            revision,
+            decision: people::EscalationDecision::Release,
+        },
+    );
+    assert!(
+        world
+            .people_answers
+            .iter()
+            .any(|reply| matches!(reply, people::Reply::Outcome(people::Outcome::EscalationDecided { .. })))
+    );
+    let released = running(&world, child);
+    finish(&mut world, released, b"delegate recovered");
+    finish(&mut world, parent, b"parent done");
+    for task in [child, parent.0] {
+        assert!(world.store.rows.contains_key(&root::Key::Core(core::Key::Tasks(tasks::Key::Ended(task)))));
+    }
+}
+
+fn resource_member(world: &World, id: u64, words: &[u8]) -> core::Delegate {
+    let mut child = member(world, tasks::Executor::Agent { charter: 1 }, words);
+    child.spec.parameters = Box::new([tasks::Parameter::Resource { name: 1, connector: 1, resource: id }]);
+    child.authority.budget.spend = 10;
+    child.authority.delegation = tasks::Delegation { kinds: Box::new([]), tasks: 0, depth: 0 };
+    child
+}
+
+fn configure_resources(world: &mut World) {
+    world.configure_holds(
+        1,
+        Box::new([
+            tasks::Kind { connector: 1, kind: 1, hold: tasks::HoldKind::Exclusive { taken: tasks::Taken::Waits } },
+            tasks::Kind { connector: 1, kind: 2, hold: tasks::HoldKind::Pooled { taken: tasks::Taken::Waits } },
+        ]),
+    );
+}
+
+fn pool_size(world: &mut World, slots: u32) {
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::System(connector::SystemEvent::Pool {
+            path: jig_test_connector_world::path(1, 2),
+            slots,
+            lost: Box::new([]),
+        }),
+    });
+}
+
+#[test]
+fn two_tasks_waiting_for_the_last_pool_slot_take_it_one_at_a_time() {
+    let mut world = plan_world(129);
+    configure_resources(&mut world);
+    pool_size(&mut world, 1);
+    let parent = world.assignments[0];
+    let mut children = Vec::new();
+    for completion in 1..=3 {
+        let spec = resource_member(&world, 2, b"pool work");
+        children.push(delegate(&mut world, parent, completion, spec));
+    }
+    assert_eq!(world.assignments.len(), 2, "one pool holder and the parent");
+    for (index, child) in children.iter().enumerate() {
+        let run = running(&world, *child);
+        assert_eq!(world.assignments.len(), index + 2);
+        finish(&mut world, run, b"pool slot released");
+    }
+    finish(&mut world, parent, b"all pool work done");
+}
+
+#[test]
+fn a_shrinking_pool_keeps_its_holders_and_the_waiter_waits_until_it_drains() {
+    let mut world = plan_world(130);
+    configure_resources(&mut world);
+    pool_size(&mut world, 2);
+    let parent = world.assignments[0];
+    let mut children = Vec::new();
+    for completion in 1..=3 {
+        let spec = resource_member(&world, 2, b"pool work");
+        children.push(delegate(&mut world, parent, completion, spec));
+    }
+    assert_eq!(world.assignments.len(), 3);
+    pool_size(&mut world, 1);
+    let first = running(&world, children[0]);
+    finish(&mut world, first, b"first done");
+    assert_eq!(world.assignments.len(), 3, "the second holder still occupies the sole remaining slot");
+    let second = running(&world, children[1]);
+    finish(&mut world, second, b"second done");
+    assert_eq!(world.assignments.len(), 4);
+    let third = running(&world, children[2]);
+    finish(&mut world, third, b"waiter done");
+    finish(&mut world, parent, b"pool drained");
+}
+
+#[test]
+fn a_run_hands_a_resource_to_a_procedure_while_retaining_its_writer_slot() {
+    let mut world = plan_world(131);
+    configure_resources(&mut world);
+    let parent = world.assignments[0];
+    let mut holder = resource_member(&world, 1, b"hold the write resource");
+    holder.authority.budget.spend = 20;
+    holder.authority.delegation =
+        tasks::Delegation { kinds: Box::new([tasks::AuthorityExecutor::Procedure(1)]), tasks: 1, depth: 1 };
+    let holder = delegate(&mut world, parent, 1, holder);
+    let holder_run = running(&world, holder);
+    let mut procedure = resource_member(&world, 1, b"carry out the write");
+    procedure.executor = tasks::Executor::Procedure { connector: 1, code: 1 };
+    procedure.authority.budget.spend = 5;
+    let procedure = delegate(&mut world, holder_run, 1, procedure);
+    let row = |task| match world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(task)))) {
+        Some(root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row)))) => row,
+        row => panic!("live task missing: {row:?}"),
+    };
+    assert!(row(holder).holdings.is_empty(), "the task hold was handed to the procedure");
+    assert!(row(procedure).holds_taken);
+    assert!(world.store.rows.values().any(|row| matches!(row,
+        root::Record::Core(core::Record::Tasks(tasks::Stored::Writer(slot)))
+            if slot.writer == tasks::Writer::Run { task: holder, attempt: holder_run.1 })));
+    assert!(world.systems[0].observed().is_empty(), "the procedure's effect waits for the writer");
+    world.send(root::Event::Answer {
+        channel: Token::new(7),
+        task: holder,
+        attempt: holder_run.1,
+        cumulative: 0,
+        end: tasks::End::Parked,
+    });
+    world.advance(skein_lib::Duration::from_secs(2));
+    assert_eq!(world.systems[0].observed().iter().filter(|row| row.applied).count(), 1);
+    assert!(world.store.rows.contains_key(&root::Key::Core(core::Key::Tasks(tasks::Key::Ended(procedure)))));
+    let holder_run = running(&world, holder);
+    finish(&mut world, holder_run, b"handoff done");
+    finish(&mut world, parent, b"parent done");
+}
+
+#[test]
+fn a_lost_writer_is_read_afresh_only_after_its_loss_is_committed() {
+    let mut world = plan_world(132);
+    configure_resources(&mut world);
+    let parent = world.assignments[0];
+    let spec = resource_member(&world, 1, b"writer that disappears");
+    let child = delegate(&mut world, parent, 1, spec);
+    let run = running(&world, child);
+    let reads = world.systems[0].reads().len();
+    world.store.fault(jig_fake_store::Fault::Hold { commits: 1 });
+    world.send(root::Event::Core(core::Event::Fleet(jig_core_fleet::Event::Lost { channel: Token::new(7) })));
+    world.advance(skein_lib::Duration::from_secs(6));
+    assert_eq!(world.systems[0].reads().len(), reads, "fresh reads wait for the loss commit's completion");
+    world.release_commits();
+    world.advance(skein_lib::Duration::from_secs(1));
+    assert_eq!(world.systems[0].reads().len(), reads + 1);
+    assert!(!world.store.rows.values().any(|row| matches!(row,
+        root::Record::Core(core::Record::Tasks(tasks::Stored::Writer(slot)))
+            if slot.writer == tasks::Writer::Run { task: child, attempt: run.1 })));
+}
+
+#[test]
+fn a_procedures_effect_writer_survives_a_cold_restart_and_frees_after_settlement() {
+    let mut world = plan_world(133);
+    configure_resources(&mut world);
+    let parent = world.assignments[0];
+    let mut procedure = resource_member(&world, 1, b"durable write flight");
+    procedure.executor = tasks::Executor::Procedure { connector: 1, code: 1 };
+    procedure.authority.budget.spend = 5;
+    world.hold_writes = true;
+    let procedure = delegate(&mut world, parent, 1, procedure);
+    assert_eq!(world.pending_writes.len(), 1);
+    assert!(world.store.rows.values().any(|row| matches!(row,
+        root::Record::Core(core::Record::Tasks(tasks::Stored::Writer(slot)))
+            if matches!(slot.writer, tasks::Writer::Effect { .. }))));
+    world.restart_with(jig_core_world::faults::plan_fixture(133).0);
+    world.release_writes();
+    assert!(world.domain.ready(), "restart trace: {:#?}", world.trace.iter().rev().take(16).collect::<Vec<_>>());
+    world.advance(skein_lib::Duration::from_secs(2));
+    world.send(root::Event::ConnectorTimer { number: 1 });
+    assert_eq!(world.systems[0].observed().iter().filter(|row| row.applied).count(), 1);
+    assert!(!world.store.rows.values().any(|row| matches!(row,
+        root::Record::Core(core::Record::Tasks(tasks::Stored::Writer(slot)))
+            if matches!(slot.writer, tasks::Writer::Effect { .. }))));
+    assert!(world.store.rows.contains_key(&root::Key::Core(core::Key::Tasks(tasks::Key::Ended(procedure)))));
 }

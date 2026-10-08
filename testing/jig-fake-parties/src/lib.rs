@@ -165,6 +165,19 @@ impl Party {
         self.replies.push((to, reply));
     }
 
+    /// Retry an unanswered request after the engine's reply channel vanished.
+    /// Its key and resolved payload are retained; the replacement has a new token.
+    pub fn restart_engine(&mut self) {
+        if self.in_flight.take().is_some() {
+            match self.last.as_ref().expect("sent request retained") {
+                Up::SignIn { provider, subject, .. } => {
+                    self.script.push_front(Act::SignIn { provider: *provider, subject: subject.clone() });
+                }
+                Up::Request { .. } => self.script.push_front(Act::Twice),
+            }
+        }
+    }
+
     /// Add a later scenario phase without replacing outstanding work.
     pub fn extend(&mut self, acts: Box<[Act]>) {
         self.script.extend(acts);

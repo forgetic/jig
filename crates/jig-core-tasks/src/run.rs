@@ -382,7 +382,7 @@ pub(crate) fn activation(
         Some(why) => Phase::Held { was: was(next), why },
         None => next,
     };
-    crate::writers::answered(domain, number, attempt, lost_writer, out);
+    crate::writers::answered(domain, env, number, attempt, lost_writer, out);
     publish(domain, env, number, out);
     if narrowed && record(domain, number).expect("amended task live").phase == Phase::Active(Active::Due) {
         crate::domain::activate(domain, number, out);

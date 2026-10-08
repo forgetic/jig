@@ -97,6 +97,8 @@ pub enum Delivery {
     Fleet(fleet::Event),
     /// Connector output to its fake system.
     System { connector: u16, call: connector::SystemRequest },
+    /// A fresh read owed after this run's loss committed.
+    LostRead { connector: u16, task: u64, attempt: u64, resource: tasks::Name, call: connector::SystemRequest },
     /// A procedure is due at its owning connector.
     Procedure { task: u64, step: u64, connector: u16, code: u16 },
 }
@@ -137,6 +139,16 @@ pub enum Request {
 #[derive(Debug)]
 #[expect(clippy::large_enum_variant, reason = "the testing root moves admitted core events by value")]
 pub enum Event {
+    /// A correlated reply to the connector's fresh read after a lost writer.
+    WriterRead {
+        connector: u16,
+        resource: tasks::Name,
+        event: connector::SystemEvent,
+    },
+    /// A numbered connector's independent retry deadline elapsed.
+    ConnectorTimer {
+        number: u16,
+    },
     RestartBegin,
     RestartDone(core::RestartStep),
     /// Drive one due child timer through the same decision barrier.
@@ -227,6 +239,7 @@ pub struct Domain {
     journal: Journal<Write, Delivery>,
     now: Queue<core::Now>,
     assignments: Map<u64, Assignment>,
+    workspace_writes: Map<u64, Box<[tasks::Name]>>,
     procedure_steps: Map<u64, (u64, u16)>,
     effects: Map<Token, connector::Effect>,
     effect_procedures: Map<Token, u64>,
@@ -242,6 +255,17 @@ pub struct Domain {
 }
 
 impl Domain {
+    /// Install the application's fixed hold vocabulary before its first input.
+    pub fn configure_holds(&mut self, env: &Env<Limits>, connector: u16, kinds: Box<[tasks::Kind]>) {
+        let mut out = Queue::with_capacity(tasks::max_out(&env.limits.core.tasks));
+        tasks::step(
+            &mut self.core.tasks,
+            &Env { now: env.now, wall: env.wall, limits: env.limits.core.tasks },
+            tasks::Event::Kinds { connector, kinds },
+            &mut out,
+        );
+        assert!(out.is_empty(), "fixed hold vocabulary has no effects");
+    }
     /// Build the testing application without issuing a store request.
     #[must_use]
     pub fn new(config: Config, limits: &Limits) -> Domain {
@@ -262,6 +286,7 @@ impl Domain {
             journal: Journal::new(&limits.journal),
             now: Queue::with_capacity(limits.journal.now),
             assignments: Map::with_capacity(limits.core.tasks.tasks),
+            workspace_writes: Map::with_capacity(limits.core.tasks.tasks),
             procedure_steps: Map::with_capacity(limits.core.tasks.tasks),
             effects: Map::with_capacity(
                 limits.core.call_records.checked_add(limits.core.tasks.tasks).expect("effect room"),
@@ -299,23 +324,32 @@ impl Domain {
         self.core.reclaim();
     }
 
-    /// Whether every accepted decision and output has settled.
+    /// Whether no work can advance without another input. An assignment may
+    /// still wait for a host whose next hello supplies its capacity.
     #[must_use]
     pub fn quiescent(&self) -> bool {
         self.journal.idle()
             && self.now.is_empty()
-            && (!self.ready() || (self.core.due.is_empty() && self.assignments.is_empty()))
+            && (!self.ready() || self.core.due.is_empty() || !self.core.accounts.usable(self.core.settings.account))
     }
 }
 
 #[expect(clippy::large_enum_variant, reason = "the bounded route queue owns complete core events")]
 enum Work {
+    ConnectorFire {
+        number: u16,
+    },
     ConnectorResume {
         number: u16,
     },
     Restart(core::RestartRequest),
     AdoptRestored,
     AdoptDone,
+    WriterRead {
+        connector: u16,
+        resource: tasks::Name,
+        event: connector::SystemEvent,
+    },
     Timer(core::Timer),
     Core(core::Event),
     ResumeFleet,
@@ -359,6 +393,10 @@ enum Payload {
 /// Admit one input and route all synchronous continuations inside one decision.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
     match event {
+        Event::ConnectorTimer { number } => decide(domain, env, Work::ConnectorFire { number }),
+        Event::WriterRead { connector, resource, event } => {
+            decide(domain, env, Work::WriterRead { connector, resource, event });
+        }
         Event::RestartBegin => {
             domain.restart_active = true;
             match domain.core.restart_begin() {
@@ -412,9 +450,11 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
         | Work::AdoptRestored
         | Work::AdoptDone
         | Work::Timer(_)
+        | Work::WriterRead { .. }
         | Work::ResumeFleet
         | Work::Connector { .. }
         | Work::ConnectorResume { .. }
+        | Work::ConnectorFire { .. }
         | Work::EffectCall { .. }
         | Work::Turn { .. }
         | Work::Answer { .. } => core::room_max(&env.limits.core),
@@ -432,6 +472,15 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
     for _ in 0..env.limits.routes {
         let Some(next) = work.pop() else { break };
         match next {
+            Work::ConnectorFire { number } => {
+                let mut out = Queue::with_capacity(connector::MAX_OUT);
+                connector::fire(
+                    numbered(domain, number),
+                    &Env { now: env.now, wall: env.wall, limits: env.limits.connector },
+                    &mut out,
+                );
+                route_connector(domain, env, &mut decision, number, &mut out, &mut work);
+            }
             Work::Restart(request) => match request {
                 core::RestartRequest::Idle => {}
                 core::RestartRequest::Refused { .. } => domain.stopped_reported = false,
@@ -494,6 +543,15 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
                     &Env { now: env.now, wall: env.wall, limits: env.limits.core },
                 );
                 route_core(domain, env, &mut decision, requests, &mut work);
+            }
+            Work::WriterRead { connector, resource, event } => {
+                if let connector::SystemEvent::Fact { resource: observed, fact, .. } = &event
+                    && !fact.pending
+                    && observed.segments() == resource.path.as_ref()
+                {
+                    work.push(Work::Connector { number: connector, event: connector::Event::System(event) });
+                    work.push(Work::Core(core::Event::Tasks(tasks::Event::ReadAfresh { resource })));
+                }
             }
             Work::Connector { number, event } => {
                 let mut requests = Queue::with_capacity(connector::MAX_OUT);
@@ -646,6 +704,7 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
             | Delivery::Core(_)
             | Delivery::Assigned { .. }
             | Delivery::System { .. }
+            | Delivery::LostRead { .. }
             | Delivery::Procedure { .. }) => out.push(Request::Deliver(other)),
         }
     }
@@ -759,6 +818,10 @@ pub fn restore_record(domain: &mut Domain, env: &Env<Limits>, record: Record) ->
             match &record {
                 connector::Record::Outbox(row) => {
                     if domain.outbox_tasks.insert(row.number, row.task).is_err() {
+                        return false;
+                    }
+                    // The application encodes procedure purposes with attempt zero.
+                    if row.key.attempt == 0 && domain.outbox_procedures.insert(row.number, number).is_err() {
                         return false;
                     }
                 }

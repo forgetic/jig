@@ -702,7 +702,8 @@ impl World {
             other @ (root::Delivery::TypedAnswer { .. }
             | root::Delivery::Core(_)
             | root::Delivery::Fleet(_)
-            | root::Delivery::System { .. }) => {
+            | root::Delivery::System { .. }
+            | root::Delivery::LostRead { .. }) => {
                 panic!("unhandled walking delivery {other:?}: {:?}", self.trace)
             }
         }

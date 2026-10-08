@@ -121,6 +121,14 @@ impl Domain {
         }
     }
 
+    /// A one-based specification resource identity, in configured order.
+    /// The test application's opaque numeric parameters use this vocabulary.
+    #[must_use]
+    pub fn specification_resource(&self, number: u64) -> Option<&ResourceSpec> {
+        let index = usize::try_from(number.checked_sub(1)?).ok()?;
+        self.config.resources.get(index)
+    }
+
     /// The last known count for a pool, including the configuration's first count.
     #[must_use]
     pub fn slots(&self, pool: &Path) -> Option<u32> {

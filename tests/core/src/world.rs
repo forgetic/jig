@@ -1,12 +1,12 @@
 //! Seeded fixtures and scripts for the testing application.
 
+use crate::Store;
 use jig_core as core;
 use jig_core_accounts as accounts;
 use jig_core_authority as authority;
 use jig_core_fleet as fleet;
 use jig_core_people as people;
 use jig_core_tasks as tasks;
-use jig_fake_store::Store;
 use jig_test_domain as root;
 use skein_lib::{Duration, Env, JournalLimits, Queue, ReplyTo, Time, Token, Wall};
 use std::collections::VecDeque;
@@ -446,7 +446,7 @@ impl World {
                     while let Some(write) = writes.pop() {
                         rows.push(write);
                     }
-                    self.store.submit(number, rows.into_boxed_slice(), 0);
+                    self.store.submit(number, crate::store_writes(rows), 0);
                     let applied = self.store.tick(false).expect("store did not fail").expect("ready commit");
                     self.events.push_front(root::Event::Committed { number: applied });
                 }

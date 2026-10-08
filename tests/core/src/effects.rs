@@ -1,11 +1,11 @@
 //! A scripted caller and two independent systems exercise the root boundary.
+use crate::Store;
 use jig_core as core;
 use jig_core_accounts as accounts;
 use jig_core_authority as authority;
 use jig_core_fleet as fleet;
 use jig_core_people as people;
 use jig_core_tasks as tasks;
-use jig_fake_store::Store;
 use jig_test_connector as connector;
 use jig_test_domain as root;
 use jig_test_system::{Fault, System};
@@ -44,10 +44,23 @@ pub struct World {
     pub trace: Vec<String>,
     pub restart_steps: Vec<core::RestartStep>,
     pub hold_restart_reads: bool,
+    /// Delay before a submitted store transaction becomes durable.
+    pub store_delay: u32,
+    /// Whether the root reported a failed commit and stopped.
+    pub stopped: bool,
+    restoring: Option<Restore>,
     restart_reads: std::collections::BTreeMap<u16, core::RestartStep>,
     events: VecDeque<root::Event>,
     limits: root::Limits,
     wall: u64,
+}
+
+#[derive(Debug)]
+struct Restore {
+    step: core::RestartStep,
+    first: root::Key,
+    last: root::Key,
+    rows: Vec<root::Record>,
 }
 
 fn grant() -> authority::Grant {
@@ -149,6 +162,9 @@ impl World {
             trace: Vec::new(),
             restart_steps: Vec::new(),
             hold_restart_reads: false,
+            store_delay: 0,
+            stopped: false,
+            restoring: None,
             restart_reads: std::collections::BTreeMap::new(),
             events: VecDeque::new(),
             limits,
@@ -200,6 +216,9 @@ impl World {
 
     pub fn drain(&mut self) {
         for _ in 0..300 {
+            if self.stopped {
+                return;
+            }
             self.wall += 1_000_000;
             let env = self.env();
             if let Some(event) = self.events.pop_front() {
@@ -220,9 +239,7 @@ impl World {
                             rows.push(write);
                         }
                         self.commits.push(rows.clone());
-                        self.store.submit(number, rows.into_boxed_slice(), 0);
-                        let number = self.store.tick(false).expect("store stays available").expect("ready commit");
-                        self.events.push_front(root::Event::Committed { number });
+                        self.store.submit(number, crate::store_writes(rows), self.store_delay);
                     }
                     root::Request::Deliver(delivery) => self.delivered(delivery),
                     root::Request::Now(core::Now::StartPreparation { task, .. }) => {
@@ -262,11 +279,24 @@ impl World {
                         })));
                     }
                     root::Request::Now(_) => {}
-                    root::Request::Stop => panic!("root stopped: {:?}", self.trace),
+                    root::Request::Stop => self.stopped = true,
                 }
             }
+            if !self.stopped {
+                match self.store.tick(false) {
+                    Ok(Some(number)) => self.events.push_front(root::Event::Committed { number }),
+                    Ok(None) => {}
+                    Err(number) => self.events.push_front(root::Event::Failed { number }),
+                }
+                self.restore_pages();
+            }
             self.domain.reclaim();
-            if empty && self.events.is_empty() && self.domain.quiescent() {
+            if empty
+                && self.events.is_empty()
+                && self.store.pending.is_empty()
+                && !self.store.loading()
+                && (self.domain.quiescent() || !self.store.held.is_empty())
+            {
                 return;
             }
         }
@@ -549,48 +579,8 @@ impl World {
     fn restart_step(&mut self, step: core::RestartStep) {
         self.restart_steps.push(step);
         match step {
-            core::RestartStep::LoadCore => {
-                let rows: Vec<_> = self.store.rows.values().cloned().collect();
-                let env = self.env();
-                for group in 0..4 {
-                    for row in &rows {
-                        let rank = match row {
-                            root::Record::Core(core::Record::Core(core::CoreRecord::Deployment(_))) => 0,
-                            root::Record::Core(core::Record::Core(core::CoreRecord::RunProof(_))) => 2,
-                            root::Record::Core(core::Record::Core(core::CoreRecord::Call(_))) => 3,
-                            root::Record::Core(
-                                core::Record::Core(
-                                    core::CoreRecord::Turn(_)
-                                    | core::CoreRecord::Terminal(_)
-                                    | core::CoreRecord::ProposalDecision(_)
-                                    | core::CoreRecord::EscalationDecision(_),
-                                )
-                                | core::Record::Tasks(tasks::Stored::History(_)),
-                            )
-                            | root::Record::Connector { .. } => continue,
-                            root::Record::Core(
-                                core::Record::Tasks(_) | core::Record::People(_) | core::Record::Notes(_),
-                            ) => 1,
-                        };
-                        if rank == group {
-                            assert!(root::restore_record(&mut self.domain, &env, row.clone()), "restored {row:?}");
-                        }
-                    }
-                }
-                self.events.push_back(root::Event::Core(core::Event::People(people::Event::Restored)));
-                self.events.push_back(root::Event::RestartDone(step));
-            }
-            core::RestartStep::RestoreConnector { connector: number } => {
-                let env = self.env();
-                for row in self.store.rows.values() {
-                    if matches!(row, root::Record::Connector { number: owner, .. } if *owner == number) {
-                        assert!(
-                            root::restore_record(&mut self.domain, &env, row.clone()),
-                            "connector restored {row:?}"
-                        );
-                    }
-                }
-                self.events.push_back(root::Event::RestartDone(step));
+            core::RestartStep::LoadCore | core::RestartStep::RestoreConnector { .. } => {
+                self.load_restart(step);
             }
             core::RestartStep::ReadAfresh { connector: number } => {
                 self.restart_reads.insert(number, step);
@@ -609,6 +599,82 @@ impl World {
             }
             core::RestartStep::AdoptRuns | core::RestartStep::Open => panic!("root performs its synchronous step"),
         }
+    }
+
+    fn load_restart(&mut self, step: core::RestartStep) {
+        let keys: Vec<_> = self
+            .store
+            .rows
+            .keys()
+            .filter(|key| match (step, key) {
+                (core::RestartStep::LoadCore, root::Key::Core(_)) => true,
+                (core::RestartStep::RestoreConnector { connector }, root::Key::Connector { number, .. }) => {
+                    connector == *number
+                }
+                _ => false,
+            })
+            .cloned()
+            .collect();
+        if let (Some(first), Some(last)) = (keys.first(), keys.last()) {
+            self.store.load(1, first, last, None, 2);
+            self.restoring = Some(Restore { step, first: first.clone(), last: last.clone(), rows: Vec::new() });
+        } else {
+            self.restored(step, &[]);
+        }
+    }
+
+    fn restore_pages(&mut self) {
+        for (owner, page) in self.store.tick_pages() {
+            assert_eq!(owner, 1, "one restart page at a time");
+            let mut restore = self.restoring.take().expect("requested restart page");
+            self.trace.push(format!("store page {:?} {} rows", restore.step, page.rows.len()));
+            restore.rows.extend(page.rows);
+            if let Some(after) = page.next {
+                self.store.load(1, &restore.first, &restore.last, Some(&after), 2);
+                self.restoring = Some(restore);
+            } else {
+                self.restored(restore.step, &restore.rows);
+            }
+        }
+    }
+
+    fn restored(&mut self, step: core::RestartStep, rows: &[root::Record]) {
+        let env = self.env();
+        for group in 0..4 {
+            for row in rows {
+                let rank = match row {
+                    root::Record::Core(core::Record::Core(core::CoreRecord::Deployment(_))) => 0,
+                    root::Record::Core(core::Record::Core(core::CoreRecord::RunProof(_))) => 2,
+                    root::Record::Core(core::Record::Core(core::CoreRecord::Call(_))) => 3,
+                    root::Record::Core(
+                        core::Record::Core(
+                            core::CoreRecord::Turn(_)
+                            | core::CoreRecord::Terminal(_)
+                            | core::CoreRecord::ProposalDecision(_)
+                            | core::CoreRecord::EscalationDecision(_),
+                        )
+                        | core::Record::Tasks(tasks::Stored::History(_)),
+                    ) => continue,
+                    root::Record::Core(core::Record::Tasks(_) | core::Record::People(_) | core::Record::Notes(_))
+                    | root::Record::Connector { .. } => 1,
+                };
+                if rank == group {
+                    assert!(root::restore_record(&mut self.domain, &env, row.clone()), "restored {row:?}");
+                }
+            }
+        }
+        if step == core::RestartStep::LoadCore {
+            self.events.push_back(root::Event::Core(core::Event::People(people::Event::Restored)));
+        }
+        self.events.push_back(root::Event::RestartDone(step));
+    }
+
+    /// Let every previously durable completion through its ordered barrier.
+    pub fn release_commits(&mut self) {
+        while let Some(number) = self.store.release_held() {
+            self.events.push_back(root::Event::Committed { number });
+        }
+        self.drain();
     }
 
     pub fn finish_restart_reads(&mut self) {
@@ -631,6 +697,9 @@ impl World {
                 kind.recovery = self.recovery;
             }
         }
+        self.store.crash();
+        self.stopped = false;
+        self.restoring = None;
         self.domain = root::Domain::new(config, &self.limits);
         self.events.clear();
         self.pending_reads.clear();

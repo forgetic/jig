@@ -11,7 +11,7 @@ use jig_core_notes as notes;
 use jig_core_people as people;
 use jig_core_tasks as tasks;
 use jig_core_views as views;
-use skein_lib::{Env, List, Queue, ReplyTo, Token};
+use skein_lib::{Env, JournalRoom, List, Queue, ReplyTo, Token};
 
 use crate::{
     CallKey, CallPart, CallRecord, Core, CoreKey, CoreRecord, Delegate, Dependency, EscalationDecisionRecord,
@@ -231,6 +231,12 @@ pub enum Now {
 /// Limits of the core's child routes.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Limits {
+    /// Number of numbered connectors retained by the core.
+    pub connectors: u32,
+    /// Bytes retained for one task's resumable transcript tail.
+    pub resume_bytes: u32,
+    /// Owned bytes of the configured run policy and its model alternatives.
+    pub run_bytes: u32,
     /// Maximum encoded mutable policy row the application journal accepts.
     pub policy_bytes: u64,
     /// Bound on an archived person escalation rejection reason.
@@ -241,6 +247,8 @@ pub struct Limits {
     pub call_records: u32,
     /// The task hub's finite work.
     pub tasks: tasks::Limits,
+    /// Policy tables and authority payload bounds owned by the core.
+    pub authority: authority::Limits,
     /// Parties and their requests.
     pub people: people::Limits,
     /// Host slots and attempts.
@@ -4536,17 +4544,82 @@ fn remember_due(core: &mut Core, context: Box<tasks::RunContext>) {
     core.due.push(context);
 }
 
+fn route_room_checked(limits: &Limits) -> Option<u32> {
+    tasks::worst_case(&limits.tasks)?;
+    let tasks = tasks::max_out(&limits.tasks).checked_mul(16)?;
+    let people = people::max_out(&limits.people).checked_mul(8)?;
+    let fleet = fleet::max_out(&limits.fleet).checked_mul(8)?;
+    let brief = brief::gather_max_out(&limits.brief).checked_mul(4)?;
+    tasks
+        .checked_add(people)?
+        .checked_add(fleet)?
+        .checked_add(brief)?
+        .checked_add(limits.people.pending.checked_mul(2)?)?
+        .checked_add(limits.tasks.tasks)?
+        .checked_add(8)
+}
+
 fn route_room(limits: &Limits) -> u32 {
-    let tasks = tasks::max_out(&limits.tasks).checked_mul(16).expect("bounded task routes");
-    let people = people::max_out(&limits.people).checked_mul(8).expect("bounded party routes");
-    let fleet = fleet::max_out(&limits.fleet).checked_mul(8).expect("bounded host routes");
-    let brief = brief::gather_max_out(&limits.brief).checked_mul(4).expect("bounded brief routes");
-    let room = tasks.checked_add(people).expect("task and party routes");
-    let room = room.checked_add(fleet).expect("host routes");
-    let room = room.checked_add(brief).expect("brief routes");
-    let room = room.checked_add(limits.people.pending.checked_mul(2).expect("party flights")).expect("party routes");
-    let room = room.checked_add(limits.tasks.tasks).expect("task flights");
-    room.checked_add(8).expect("bounded core routes")
+    route_room_checked(limits).expect("validated core route room")
+}
+
+/// Largest core decision room, including a sibling callback reached after a
+/// connector's own event. Roots use this when their input begins outside the
+/// core but may synchronously hand work into it.
+#[must_use]
+pub fn room_max(limits: &Limits) -> Option<JournalRoom> {
+    let bound = route_room_checked(limits)?;
+    Some(JournalRoom { writes: bound, held: bound })
+}
+
+/// Pre-admission journal room for one core event, including all synchronous
+/// sibling continuations and connector handoffs it can cause. The application
+/// adds its connectors' writes and held outputs before taking the journal
+/// decision (`domain/root.md`, section 10). The shared ceiling is deliberate:
+/// a child callback may visit every other child before the decision ends.
+#[must_use]
+pub fn room(limits: &Limits, event: &Event) -> Option<JournalRoom> {
+    let room = room_max(limits)?;
+    match event {
+        Event::SignIn { .. }
+        | Event::Watch { .. }
+        | Event::Tasks(_)
+        | Event::StartRecurring { .. }
+        | Event::StartBrief { .. }
+        | Event::BriefAssembled { .. }
+        | Event::WorkspacePrepared { .. }
+        | Event::ClaimPrepared { .. }
+        | Event::ClaimRefused { .. }
+        | Event::ConnectorRepair { .. }
+        | Event::Period { .. }
+        | Event::PreparationFailed { .. }
+        | Event::PersonProposal(_)
+        | Event::PersonEscalation(_)
+        | Event::TaskEscalation(_)
+        | Event::People(_)
+        | Event::Fleet(_)
+        | Event::TurnPayload { .. }
+        | Event::AnswerPayload { .. }
+        | Event::AcceptedTurn { .. }
+        | Event::RefusedPayload { .. }
+        | Event::Activate { .. }
+        | Event::PreparedAgent { .. }
+        | Event::HistoricalProposal { .. }
+        | Event::HistoricalEscalation { .. }
+        | Event::EscalationRead { .. }
+        | Event::NamedAnswer { .. }
+        | Event::NamedAction { .. }
+        | Event::DelegateValidated { .. }
+        | Event::DelegateInputFailed { .. }
+        | Event::DelegateHoldings { .. }
+        | Event::ProcedureHoldings { .. }
+        | Event::ProcedureStep { .. }
+        | Event::Brief(_)
+        | Event::Holdings { .. }
+        | Event::Account(_)
+        | Event::View(_)
+        | Event::Notes(_) => Some(room),
+    }
 }
 
 /// Route one child event and each sibling continuation within one core decision.

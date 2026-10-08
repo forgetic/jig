@@ -97,15 +97,19 @@ pub fn limits() -> root::Limits {
         + tasks.tasks
         + 6;
     root::Limits {
-        journal: JournalLimits { commits: 3, held: 76, writes, now: 32, release: 32 },
+        journal: JournalLimits { commits: 3, held: 2000, writes: writes.max(2000), now: 32, release: 32 },
         routes: 200,
         connector: jig_test_connector_world::LIMITS,
         core: core::Limits {
+            connectors: 2,
+            resume_bytes: 256,
+            run_bytes: 256,
             policy_bytes: 8192,
             escalation_reason_bytes: 128,
             load_slots: 2,
             call_records: 2,
             tasks,
+            authority: authority_limits(),
             people,
             fleet,
             brief: jig_core_brief::Limits { briefs: 2, sections: 3, read_bytes: 256, brief_bytes: 384 },

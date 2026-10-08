@@ -21,7 +21,9 @@ mod escalation;
 mod goals;
 mod historical;
 mod inbox;
+mod memory;
 pub use goals::GoalStart;
+pub use memory::worst_case;
 mod numbers;
 mod person_task;
 mod policy;
@@ -34,7 +36,7 @@ mod sibling_routes;
 pub use numbers::{Counters, Deployment, Family, fresh};
 pub use routing::{
     Ask, CoreBriefBudgets, EscalationChoice, Event, Held, Limits, NamedAction, Now, PayloadRefusal, ProposalChoice,
-    Request, Requests, Timer, Write, fire, resume_fleet, step,
+    Request, Requests, Timer, Write, fire, resume_fleet, room, room_max, step,
 };
 pub use sibling_routes::{MadeRoute, PersonMessage, SentRoute};
 mod stored;
@@ -270,6 +272,36 @@ impl Core {
     /// Allocate the eight children and the bounded live core tables.
     #[must_use]
     pub fn new(config: Config, limits: &Limits) -> Core {
+        assert!(*config.authority.limits() == limits.authority, "core prices its authority's configured bounds");
+        assert!(
+            config.connectors.len() <= usize::try_from(limits.connectors).expect("connector count fits usize"),
+            "core prices every configured connector number"
+        );
+        assert!(
+            config.settings.resume_bytes > 0 && config.settings.resume_bytes <= limits.resume_bytes,
+            "core prices its transcript retention"
+        );
+        assert!(
+            match memory::policy_owned_bytes(&config.settings.run) {
+                Some(bytes) => bytes <= u64::from(limits.run_bytes),
+                None => false,
+            },
+            "core prices its configured run policy"
+        );
+        assert!(config.projects.capacity() <= limits.authority.projects, "core prices configured projects");
+        assert!(config.permission_roles.len() <= limits.authority.projects, "core prices project permissions");
+        for (_, roles) in &config.permission_roles {
+            let bytes = u64::try_from(roles.len())
+                .expect("permission count fits u64")
+                .checked_mul(u64::try_from(size_of::<people::PermissionRole>()).expect("role size fits u64"));
+            assert!(
+                match bytes {
+                    Some(bytes) => bytes <= limits.policy_bytes,
+                    None => false,
+                },
+                "core prices configured permission roles"
+            );
+        }
         Core {
             counters: Counters::bootstrap(config.deployment),
             watching: Map::with_capacity(limits.views.watchers),

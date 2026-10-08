@@ -188,6 +188,14 @@ impl Domain {
     #[must_use]
     pub fn new(config: Config, limits: &Limits) -> Domain {
         assert!(limits.routes > 0 && limits.journal.writes > 0 && limits.journal.held > 0, "finite route room");
+        let core_room = core::room_max(&limits.core).expect("valid core room");
+        let connector_room = connector::MAX_OUT.checked_mul(2).expect("two connector outputs");
+        let writes = core_room.writes.checked_add(connector_room).expect("combined route writes fit");
+        let held = core_room.held.checked_add(connector_room).expect("combined route deliveries fit");
+        assert!(
+            writes <= limits.journal.writes && held <= limits.journal.held,
+            "journal admits the whole core and connector route before stepping"
+        );
         Domain {
             core: core::Core::new(config.core, &limits.core),
             first: connector::Domain::new(config.first, &limits.connector),
@@ -243,7 +251,18 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
 }
 
 fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
-    let room = JournalRoom { writes: env.limits.journal.writes, held: env.limits.journal.held };
+    let core_room = match &first {
+        Work::Core(event) => core::room(&env.limits.core, event),
+        Work::ResumeFleet | Work::Connector { .. } | Work::Turn { .. } | Work::Answer { .. } => {
+            core::room_max(&env.limits.core)
+        }
+    }
+    .expect("validated core room");
+    let connector_room = connector::MAX_OUT.checked_mul(2).expect("two connector outputs");
+    let room = JournalRoom {
+        writes: core_room.writes.checked_add(connector_room).expect("combined route writes"),
+        held: core_room.held.checked_add(connector_room).expect("combined route deliveries"),
+    };
     let Some(mut decision) = domain.journal.decision(&room) else { return };
     let mut work = Queue::with_capacity(env.limits.routes);
     work.push(first);

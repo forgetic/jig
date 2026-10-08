@@ -1,31 +1,15 @@
 [package]
-name = "jig-core-world"
-description = "The core with its children, two connectors, parties, workers and store"
+name = "jig-conformance"
+description = "Application conformance harness and independent referee"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-jig-conformance.workspace = true
-jig-test-domain.workspace = true
-jig-fake-store.workspace = true
-jig-fake-workers.workspace = true
-jig-fake-parties.workspace = true
-jig-test-connector.workspace = true
-jig-test-connector-world = { path = "../test-connector" }
 jig-test-system.workspace = true
-jig-core.workspace = true
-jig-core-tasks.workspace = true
-jig-core-people.workspace = true
-jig-core-authority.workspace = true
-jig-core-fleet.workspace = true
-jig-core-accounts.workspace = true
-jig-core-brief.workspace = true
-jig-core-notes.workspace = true
-jig-core-views.workspace = true
-skein-lib.workspace = true
 skein-world.workspace = true
+skein-lib.workspace = true
 
 [lints.rust]
 unsafe_code = "forbid"

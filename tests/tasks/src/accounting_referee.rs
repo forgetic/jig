@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 pub struct Accounting {
     before: BTreeMap<Key, Stored>,
     charged: Option<(u64, u64)>,
+    procedure: Option<(u64, u64, Option<u64>)>,
 }
 
 fn live(rows: &BTreeMap<Key, Stored>, task: u64) -> Option<&TaskRecord> {
@@ -86,12 +87,22 @@ impl Accounting {
             if taken {
                 continue;
             }
+            let read = match self.procedure {
+                Some((task, step, read)) if task == old.number && after.attempt == step && old.attempt < step => read,
+                Some(_) | None => None,
+            };
             for word in &old.inbox {
+                if read.is_some_and(|fence| word.number <= fence) {
+                    if after.inbox.iter().any(|new| new.number == word.number) {
+                        return Err("procedure step kept its consumed inbox prefix");
+                    }
+                    continue;
+                }
                 let kept = after.inbox.iter().any(|new| {
                     new.number == word.number || (new.number > word.number && merged_hint(word.kind, new.kind))
                 });
                 if !kept {
-                    return Err("committed message disappeared without a turn or merge");
+                    return Err("committed message disappeared without a turn, procedure step or merge");
                 }
             }
         }
@@ -178,6 +189,11 @@ impl Accounting {
     pub fn charged(&mut self, task: u64, cumulative: u64) {
         let old = live(&self.before, task).expect("priced input names a live allocation");
         self.charged = Some((task, cumulative.checked_sub(old.run_spent).expect("admitted cumulative grows")));
+    }
+
+    /// Procedure input observed before its committed attempt and inbox changes.
+    pub fn procedure(&mut self, task: u64, step: u64, read: Option<u64>) {
+        self.procedure = Some((task, step, read));
     }
 
     fn delta(&self, task: u64) -> u64 {
@@ -358,11 +374,13 @@ impl Accounting {
         }
         self.before = rows.clone();
         self.charged = None;
+        self.procedure = None;
         Ok(())
     }
 
     pub fn reset(&mut self, rows: &BTreeMap<Key, Stored>) {
         self.before = rows.clone();
         self.charged = None;
+        self.procedure = None;
     }
 }

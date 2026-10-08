@@ -66,6 +66,12 @@ pub(crate) fn prepare(
     let mut inbox = List::with_capacity(limits.inbox_messages.saturating_add(1));
     for old in &task.inbox {
         if key.is_some() && key == merge_key(old.kind) {
+            // The hint offered to a procedure belongs to that step. A later
+            // hint stays unread and begins a fresh batch after its fence.
+            match domain.procedure_offered(number) {
+                Some(offered) if old.number <= offered => continue,
+                Some(_) | None => {}
+            }
             word.at = old.at;
             word.hits = old.hits.saturating_add(1);
             word.eligible = old.eligible;

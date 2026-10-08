@@ -3393,18 +3393,21 @@ fn procedure_step(
             reply_to: ReplyTo::new(Token::new(u64::MAX)),
             task,
             step,
+            read: core.tasks.procedure_offered(task),
             decision: tasks::ProcedureDecision::Result(result),
         })),
         ProcedureAction::Hold(why) => work.push(Event::Tasks(tasks::Event::Procedure {
             reply_to: ReplyTo::new(Token::new(u64::MAX)),
             task,
             step,
+            read: core.tasks.procedure_offered(task),
             decision: tasks::ProcedureDecision::Hold(why),
         })),
         ProcedureAction::Wait => work.push(Event::Tasks(tasks::Event::Procedure {
             reply_to: ReplyTo::new(Token::new(u64::MAX)),
             task,
             step,
+            read: core.tasks.procedure_offered(task),
             decision: tasks::ProcedureDecision::Wait,
         })),
     }
@@ -3466,6 +3469,7 @@ fn procedure_holdings(
                 reply_to: ReplyTo::new(Token::new(u64::MAX)),
                 task,
                 step,
+                read: core.tasks.procedure_offered(task),
                 decision: tasks::ProcedureDecision::Delegate(flight.members),
             }));
         }

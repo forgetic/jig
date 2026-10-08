@@ -1,7 +1,9 @@
 //! Live task and finite-source ownership, step dispatch and retry scheduling
 //! (domain/tasks.md, sections 2, 5 and 10). Root supplies authorized events
 //! and iteration time, routes outputs and owns durability/transport proofs.
-//! Tasks never performs IO or keeps full historical results or root shadows.
+//! A procedure keeps the transient inbox prefix offered to its current step;
+//! restoring reoffers its durable unread inbox. Tasks never performs IO or keeps
+//! full historical results or root shadows.
 use crate::{Active, Event, Fact, Limits, New, Party, Phase, Problem, Refusal, Request, Stored, TaskRecord, Tries};
 use alloc::boxed::Box;
 use skein_lib::{Deadlines, Env, Id, List, Map, Queue, ReplyTo, Rng, Slab, Time, Wall};
@@ -16,6 +18,7 @@ pub(crate) struct Alarm {
 pub(crate) struct Task {
     pub record: TaskRecord,
     pub alarm: Option<Alarm>,
+    pub procedure_offered: Option<u64>,
     pub observed_hold: Option<crate::Hold>,
     pub observed_phase: Option<Phase>,
 }
@@ -286,6 +289,12 @@ impl Domain {
         }
     }
 
+    /// Inbox prefix offered to the current procedure step; rebuilt from unread rows on restart.
+    #[must_use]
+    pub fn procedure_offered(&self, task: u64) -> Option<u64> {
+        self.tasks.get(*self.names.get(&task)?).expect("indexed task").procedure_offered
+    }
+
     /// Borrowed current creation ceiling; no mutable task ledger is copied
     /// into the root or retained after this call's decision.
     #[must_use]
@@ -405,8 +414,8 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::RecurringBatch { task, period, numbers } => {
             crate::recurring::make_batch(domain, env, task, period, &numbers, out);
         }
-        Event::Procedure { reply_to, task, step, decision } => {
-            crate::procedure::stepped(domain, env, reply_to, task, step, decision, out);
+        Event::Procedure { reply_to, task, step, read, decision } => {
+            crate::procedure::stepped(domain, env, reply_to, task, step, read, decision, out);
         }
         Event::TakePerson { reply_to, task, person } => {
             crate::person::take(domain, env, reply_to, task, person, out);
@@ -637,7 +646,18 @@ pub(crate) fn entrance(domain: &Domain, to: ReplyTo, number: u64) -> Result<Repl
     Ok(to)
 }
 
-pub(crate) fn activate(domain: &Domain, number: u64, out: &mut Queue<Request>) {
+#[expect(clippy::manual_map, reason = "step code does not use closures")]
+pub(crate) fn activate(domain: &mut Domain, number: u64, out: &mut Queue<Request>) {
+    let offered = match record(domain, number).expect("activation names live task").inbox.last() {
+        Some(word) => Some(word.number),
+        None => None,
+    };
+    match record(domain, number).expect("activation names live task").executor {
+        crate::Executor::Procedure { .. } => {
+            task_mut(domain, number).expect("live procedure").procedure_offered = offered;
+        }
+        crate::Executor::Agent { .. } | crate::Executor::Person(_) => {}
+    }
     let task = record(domain, number).expect("activation names live task");
     match task.executor {
         crate::Executor::Person(_) => return,
@@ -951,6 +971,7 @@ pub(crate) fn make_admitted(
     for new in batch {
         let number = new.number;
         let task = Task {
+            procedure_offered: None,
             record: TaskRecord {
                 created_at: env.wall,
                 ended_at: None,

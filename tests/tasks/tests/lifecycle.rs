@@ -215,6 +215,7 @@ fn a_plan_of_reports_a_choice_and_procedure_tasks_runs_in_dependency_order() {
         reply_to: skein_lib::ReplyTo::new(skein_lib::Token::new(key)),
         task: 3,
         step: 1,
+        read: None,
         decision: jig_core_tasks::ProcedureDecision::Result(TaskResult::Report { words: Box::new([8]) }),
     });
     assert_eq!(w.replies[&key], Reply::Done);

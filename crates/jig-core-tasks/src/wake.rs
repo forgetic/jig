@@ -172,6 +172,20 @@ pub(crate) fn after_message(
     }
 }
 
+/// News and results arriving after the offered prefix keep their own wake policy.
+pub(crate) fn after_step(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue<Request>) {
+    let inbox = record(domain, number).expect("stepped procedure live").inbox.clone();
+    schedule(domain, env, number);
+    for word in inbox {
+        // One activation offers the whole remaining inbox. Stop once it is
+        // due so the route's output bound does not grow with its message count.
+        if record(domain, number).expect("stepped procedure live").phase != Phase::Active(Active::Idle) {
+            return;
+        }
+        after_message(domain, env, number, None, word, out);
+    }
+}
+
 pub(crate) fn fire(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>) {
     let Some(number) = domain.wakes.expire(env.now) else { return };
     let Some(task) = record(domain, number) else { return };

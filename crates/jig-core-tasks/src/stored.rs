@@ -572,7 +572,13 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>, stored: Stored, ou
             };
             let id = domain
                 .tasks
-                .insert(Task { observed_phase: Some(task.phase.clone()), record: *task, alarm: None, observed_hold })
+                .insert(Task {
+                    procedure_offered: None,
+                    observed_phase: Some(task.phase.clone()),
+                    record: *task,
+                    alarm: None,
+                    observed_hold,
+                })
                 .expect("restored task admitted");
             let indexed = domain.names.insert(number, id);
             assert!(indexed == Ok(None), "restored name admitted");

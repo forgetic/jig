@@ -407,7 +407,7 @@ fn describe_busy(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, ou
             }
             EffectOrigin::Accept { to, key, .. } => accept_refused(core, work, out, to, key, authority::Answer::Wait),
             EffectOrigin::Projection { goal, .. } => projection_refused(core, env, work, goal),
-            EffectOrigin::Procedure { task, step, .. } => procedure_wait(work, task, step),
+            EffectOrigin::Procedure { task, step, .. } => procedure_wait(core, work, task, step),
         }
     }
 }
@@ -435,7 +435,7 @@ fn describe_refused(
             ),
             EffectOrigin::Accept { to, key, .. } => accept_refused(core, work, out, to, key, authority::Answer::Refuse),
             EffectOrigin::Projection { goal, .. } => projection_refused(core, env, work, goal),
-            EffectOrigin::Procedure { task, step, entry: _ } => procedure_wait(work, task, step),
+            EffectOrigin::Procedure { task, step, entry: _ } => procedure_wait(core, work, task, step),
         }
     }
 }
@@ -573,7 +573,7 @@ fn complete(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, out: &m
             EffectOrigin::Accept { to, key, .. } => accept_refused(core, work, out, to, key, checked),
             EffectOrigin::Propose { .. } => unreachable!("proposals completed separately"),
             EffectOrigin::Projection { goal, .. } => projection_refused(core, env, work, goal),
-            EffectOrigin::Procedure { task, step, entry: _ } => procedure_wait(work, task, step),
+            EffectOrigin::Procedure { task, step, entry: _ } => procedure_wait(core, work, task, step),
         }
         return;
     }
@@ -595,7 +595,7 @@ fn complete(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, out: &m
             EffectOrigin::Accept { to, key, .. } => accept_refused(core, work, out, to, key, authority::Answer::Refuse),
             EffectOrigin::Propose { .. } => unreachable!("proposal has no entry"),
             EffectOrigin::Projection { goal, .. } => projection_refused(core, env, work, goal),
-            EffectOrigin::Procedure { task, step, .. } => procedure_wait(work, task, step),
+            EffectOrigin::Procedure { task, step, .. } => procedure_wait(core, work, task, step),
         }
         return;
     }
@@ -636,7 +636,7 @@ fn complete(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, out: &m
         origin @ EffectOrigin::Accept { .. } => complete_accept(core, work, out, origin, flight.connector),
         EffectOrigin::Projection { .. } => EffectPurpose::Projection { purpose: description.purpose },
         EffectOrigin::Procedure { task, step, entry: _ } => {
-            procedure_wait(work, task, step);
+            procedure_wait(core, work, task, step);
             EffectPurpose::Procedure { purpose: description.purpose }
         }
     };
@@ -1100,11 +1100,12 @@ fn accept_refused(
     }
 }
 
-fn procedure_wait(work: &mut Queue<Event>, task: u64, step: u64) {
+fn procedure_wait(core: &Core, work: &mut Queue<Event>, task: u64, step: u64) {
     work.push(Event::Tasks(tasks::Event::Procedure {
         reply_to: ReplyTo::new(Token::new(u64::MAX)),
         task,
         step,
+        read: core.tasks.procedure_offered(task),
         decision: tasks::ProcedureDecision::Wait,
     }));
 }

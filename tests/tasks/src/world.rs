@@ -473,6 +473,9 @@ impl World {
         if matches!(event, Event::Restored) {
             self.restoring = false;
         }
+        if let Event::Procedure { task, step, read, .. } = &event {
+            self.accounting_referee.procedure(*task, *step, *read);
+        }
         self.remember_input(&event);
         self.trace.log(self.env.now, format_args!("{event:?}"));
         tasks::step(&mut self.domain, &self.env, event, &mut self.out);

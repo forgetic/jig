@@ -7,7 +7,8 @@ use skein_lib::ReplyTo;
 fn step(world: &mut World, task: u64, step: u64, decision: ProcedureDecision) -> Reply {
     let reply_to = world.to();
     let key = reply_to.into_token().raw();
-    world.send(Event::Procedure { reply_to: ReplyTo::new(skein_lib::Token::new(key)), task, step, decision });
+    let read = world.contexts.get(&task).and_then(|context| context.inbox.last().map(|word| word.number));
+    world.send(Event::Procedure { read, reply_to: ReplyTo::new(skein_lib::Token::new(key)), task, step, decision });
     world.replies[&key].clone()
 }
 

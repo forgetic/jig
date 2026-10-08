@@ -1,6 +1,6 @@
-//! Fenced procedure decisions at the tasks hub (domain/tasks.md, section 5.3).
+//! Fenced procedure decisions at the tasks hub (domain/tasks.md, sections 5.3 and 8.2).
 //! The owner keeps procedure state and chooses a step; tasks keeps only the
-//! executor identity, live topology, result contract and step fence. It never
+//! executor identity, live topology, result contract and the step's offered inbox fence. It never
 //! knows connector facts or effects. A due step may make one whole batch,
 //! finish after its delegates, hold, or wait for changed facts.
 use crate::domain::{Domain, make, publish, record, refused, task_mut};
@@ -9,12 +9,14 @@ use crate::{
 };
 use skein_lib::{Env, Queue, ReplyTo};
 
+#[expect(clippy::too_many_arguments, reason = "a procedure decision carries its offered inbox fence")]
 pub(crate) fn stepped(
     domain: &mut Domain,
     env: &Env<Limits>,
     to: ReplyTo,
     number: u64,
     step: u64,
+    read: Option<u64>,
     decision: ProcedureDecision,
     out: &mut Queue<Request>,
 ) {
@@ -30,6 +32,9 @@ pub(crate) fn stepped(
     }
     if task.phase != Phase::Active(Active::Due) || task.attempt.checked_add(1) != Some(step) {
         return refused(to, Some(number), Refusal::Attempt, out);
+    }
+    if read != domain.procedure_offered(number) {
+        return refused(to, Some(number), Refusal::Read, out);
     }
     match &decision {
         ProcedureDecision::Delegate(batch) => {
@@ -50,7 +55,10 @@ pub(crate) fn stepped(
         }
         ProcedureDecision::Hold(_) | ProcedureDecision::Wait => {}
     }
-    task_mut(domain, number).expect("procedure step preflighted").record.attempt = step;
+    let live = task_mut(domain, number).expect("procedure step preflighted");
+    live.record.attempt = step;
+    crate::inbox::take(&mut live.record, read);
+    live.procedure_offered = None;
     match decision {
         ProcedureDecision::Delegate(batch) => {
             task_mut(domain, number).expect("procedure task live").record.phase = Phase::Active(Active::Idle);
@@ -79,4 +87,5 @@ pub(crate) fn stepped(
             out.push(Request::Done { reply_to: to });
         }
     }
+    crate::wake::after_step(domain, env, number, out);
 }

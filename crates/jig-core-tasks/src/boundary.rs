@@ -1030,7 +1030,14 @@ pub enum Event {
     /// Root supplies fresh identities for the template batch requested by the core procedure.
     RecurringBatch { task: u64, period: u64, numbers: Box<[u64]> },
     /// Fenced decision from the owner of one due procedure task.
-    Procedure { reply_to: ReplyTo, task: u64, step: u64, decision: ProcedureDecision },
+    Procedure {
+        reply_to: ReplyTo,
+        task: u64,
+        step: u64,
+        /// Last message in the prefix offered to this step, or none for an empty inbox.
+        read: Option<u64>,
+        decision: ProcedureDecision,
+    },
     /// Root-authenticated role holder takes an active person task from every role inbox.
     TakePerson { reply_to: ReplyTo, task: u64, person: u64 },
     /// The current holder returns a role task to the role inbox.

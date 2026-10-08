@@ -313,6 +313,16 @@ Each carries bounded detail for operators; none of it is shown to an LLM.
   A run may have a bounded number of turns, and bytes, unacknowledged;
   past it, the hub stops taking the run's turns, and the run waits, its
   watchdog paused.
+- **The hub holds them, not the agent.** The hub acknowledges a turn to
+  its agent capability as soon as it has taken it, and keeps it until the
+  engine acknowledges it: for smith's host domain, the hub is the host
+  that says a turn is safe (smith's `host.md`, section 6). Its room is
+  what it lets the agent send: past it, the hub takes no more turns and
+  withholds the agent's acknowledgements, so the run waits.
+- **Stopping never waits for the engine.** Once a run is stopping, the
+  hub takes every turn the agent has sent, past its room if need be, since
+  the agent's own window bounds them, so the agent can be gone (section
+  5) while the engine is out of reach, and the stop bound holds (6.6).
 - **Before the answer.** The answer says how many turns the run took,
   and is sent after them.
 - **Lost with the worker.** A turn not acknowledged when a worker dies is

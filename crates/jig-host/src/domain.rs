@@ -19,7 +19,7 @@ pub const fn max_out(limits: &Limits) -> u32 {
     let cancelling = limits.run_calls.saturating_mul(2);
     let starting = limits.held.saturating_add(limits.accounts);
     let most = if starting > cancelling { starting } else { cancelling };
-    most.saturating_add(2)
+    most.saturating_add(2).saturating_add(limits.turns.saturating_mul(2))
 }
 
 /// The host child domain's state.
@@ -102,21 +102,6 @@ impl Domain {
         hosted::is_relayed_for(self, run, attempt, call)
     }
 
-    /// Both the stable agent name and the current local delivery must match.
-    #[must_use]
-    pub fn is_relayed_named_for(&self, run: Token, attempt: Token, delivery: Token, call: Token) -> bool {
-        if !self.is_relayed_for(run, attempt, delivery) {
-            return false;
-        }
-        let Some(entry) = self.calls.get(Id::from_token(delivery)) else {
-            return false;
-        };
-        match entry.state {
-            call::State::Relayed { call: name, .. } | call::State::Settling { call: name } => name == call,
-            call::State::Delivering { .. } | call::State::Closed => false,
-        }
-    }
-
     /// Whether a typed engine answer names this pending delivery and its opaque call name.
     #[must_use]
     pub fn is_relayed_typed_for(&self, run: Token, attempt: Token, delivery: Token, call: &[u8]) -> bool {
@@ -140,7 +125,7 @@ impl Domain {
         match self.calls.get(Id::from_token(call)) {
             Some(entry) => match entry.state {
                 call::State::Relayed { .. } => true,
-                call::State::Delivering { .. } | call::State::Settling { .. } | call::State::Closed => false,
+                call::State::Delivering { .. } | call::State::Settling | call::State::Closed => false,
             },
             None => false,
         }
@@ -235,15 +220,12 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::CalledTyped { owner, call, ask } => hosted::called_typed(domain, env, owner, call, ask, out),
         Event::WithdrawnTyped { owner, call } => hosted::withdrawn_typed(domain, owner, call, out),
         Event::AssignTyped { reply_to, assignment } => hosted::assign_typed(domain, env, reply_to, assignment, out),
-        Event::AssignV2 { reply_to, assignment } => hosted::assign_v2(domain, env, reply_to, assignment, out),
         Event::Turn { owner, turn } => hosted::turned(domain, env, owner, turn, out),
         Event::Facts { owner, fact } => hosted::told(domain, env, owner, fact),
         Event::AcknowledgeTurn { run, attempt, turn } => hosted::acknowledge_turn(domain, env, run, attempt, turn, out),
         Event::FinishedV2 { owner, turns, spent, finish } => {
             hosted::finished_v2(domain, env, owner, turns, spent, finish, out);
         }
-        Event::Assign { reply_to, assignment } => hosted::assign(domain, env, reply_to, assignment, out),
-        Event::Inbound { run, attempt, name, event } => hosted::inbound(domain, env, run, attempt, name, event, out),
         Event::Grant { run, attempt, grant } => hosted::grant(domain, run, attempt, grant, out),
         Event::Cancel { run, attempt } => hosted::cancel(domain, env, run, attempt, out),
         Event::Relayed { run, attempt, call, answer } => hosted::relayed(domain, run, attempt, call, answer, out),
@@ -254,11 +236,8 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::Prepared { owner, workspace } => hosted::prepared(domain, owner, workspace, out),
         Event::Unprepared { owner, failure, detail } => hosted::unprepared(domain, env, owner, failure, detail, out),
         Event::Started { owner, agent } => hosted::started(domain, env, owner, agent, out),
-        Event::Called { owner, call, ask } => hosted::called(domain, env, owner, call, ask, out),
-        Event::Withdrawn { owner, call } => hosted::withdrawn(domain, owner, call, out),
         Event::Bounced { owner, name, bounce } => hosted::bounced(domain, owner, name, bounce, out),
         Event::Yielded { owner } => hosted::yielded(domain, owner, out),
-        Event::Finished { owner, finish } => hosted::finished(domain, env, owner, finish, out),
         Event::Faulted { owner, fault } => hosted::faulted(domain, env, owner, fault, out),
         Event::Gone { owner, detail } => hosted::gone(domain, env, owner, detail, out),
         Event::Delivered { owner, delivery } => hosted::delivered(domain, owner, delivery, out),

@@ -75,7 +75,7 @@ fn committed_turns_replay_after_busy_and_reconnect_then_restore_credit() {
     world.retry_busy(1);
     world.lose_contact();
     world.turn(2, b"two");
-    assert!(!world.reading(), "the full window pauses its agent");
+    assert!(world.reading(), "the hub ACK leaves room in the agent window");
     world.reconnect();
     world.commit_turn(1);
     assert!(world.reading(), "the exact commit returns one read credit");

@@ -287,10 +287,6 @@ impl World {
         assert!(self.turns.contains_key(&number), "the core saw the turn");
         self.seen.push(Seen::TurnAck(number));
         self.hub_events.push_back(hub::Event::AcknowledgeTurn { run: RUN, attempt: ATTEMPT, turn: number });
-        self.inline_events.push_back(agent_host::Event::Acknowledge {
-            agent: self.agent_client.expect("an admitted inline agent"),
-            turn: number,
-        });
     }
 
     /// Move until one observation appears, advancing only injected clocks.
@@ -405,7 +401,10 @@ impl World {
                     self.acknowledge(number);
                 }
             }
-            hub::Request::TurnCredit { .. } | hub::Request::Hosting { .. } => {}
+            hub::Request::AcknowledgeAgentTurn { agent, turn } => {
+                self.inline_events.push_back(agent_host::Event::Acknowledge { agent, turn });
+            }
+            hub::Request::Hosting { .. } => {}
             hub::Request::DeliverTyped { agent, name, sender, words } => {
                 self.inline_events.push_back(agent_host::Event::Message { agent, name, label: sender, text: words });
             }
@@ -439,17 +438,9 @@ impl World {
                 self.hub_events.push_back(hub::Event::Unacknowledged { answers: 0 });
             }
             hub::Request::Bounced { .. } => panic!("the scripted message fits"),
-            hub::Request::Start { .. }
-            | hub::Request::StartV2 { .. }
-            | hub::Request::Relay { .. }
-            | hub::Request::RelayV2 { .. }
-            | hub::Request::Answer { .. }
-            | hub::Request::Prepare { .. }
+            hub::Request::Prepare { .. }
             | hub::Request::Abort { .. }
-            | hub::Request::Deliver { .. }
-            | hub::Request::Reply { .. }
             | hub::Request::DeliverV2 { .. }
-            | hub::Request::DeliverWorkspace { .. }
             | hub::Request::Save { .. }
             | hub::Request::Release { .. }
             | hub::Request::CancelRelay { .. } => panic!("unscripted hub request: {request:?}"),

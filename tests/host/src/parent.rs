@@ -15,7 +15,7 @@
 //!   idle time) or some work, then its fate: it ends, parks or fails as it
 //!   says, exits without a word, hangs or overruns until the watchdog faults
 //!   it, breaks the rules, or says more than the limits allow (an outcome or a
-//!   snapshot). It does not
+//!   conversation). It does not
 //!   wait for its calls' replies, so it may finish with calls in flight.
 //! - A stop before its word winds it down, maybe with one late call, and it
 //!   goes after a while, sometimes saying how its run finishes first (ended,
@@ -262,17 +262,6 @@ impl Parent {
     #[expect(clippy::needless_pass_by_value, reason = "the world takes ownership of emitted requests")]
     pub fn take(&mut self, request: Request) -> Vec<Out> {
         match request {
-            jig_host::Request::RelayTyped { .. }
-            | jig_host::Request::DeliverTyped { .. }
-            | jig_host::Request::ReplyTyped { .. }
-            | jig_host::Request::StartTyped { .. }
-            | jig_host::Request::Turn { .. }
-            | jig_host::Request::DeliverV2 { .. }
-            | jig_host::Request::RelayV2 { .. }
-            | jig_host::Request::AnswerV2 { .. }
-            | jig_host::Request::StartV2 { .. }
-            | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
-
             Request::Prepare { owner, workspace } => self.prepare(owner, &workspace),
             // A notice: the prepare still ends as it was going to, which the
             // world checks the host takes.
@@ -280,18 +269,20 @@ impl Parent {
                 self.tally.aborts += 1;
                 Vec::new()
             }
-            Request::Start { owner, workspace, charter: _, snapshot: _, grants: _ } => {
+            Request::StartTyped { owner, workspace, .. } => {
                 self.start(owner, workspace.expect("the scripted assignments have workspace items"))
             }
-            Request::Deliver { agent, name: _, event: _ } => self.deliver(agent),
-            Request::Reply { agent, call: _, reply: _ } => self.reply(agent),
+            Request::DeliverTyped { agent, .. } => self.deliver(agent),
+            Request::ReplyTyped { agent, call: _, reply: _ } => self.reply(agent),
             Request::Stop { agent } => self.stop(agent),
-            Request::DeliverWorkspace { owner, workspace, message: _ } => self.delivery(owner, workspace),
+            Request::DeliverV2 { owner, workspace, .. } => self.delivery(owner, workspace),
             Request::Save { owner, workspace } => self.save(owner, workspace),
             Request::Release { workspace } => self.release(workspace),
             Request::Grant { .. } => Vec::new(),
-            Request::Answer { .. }
-            | Request::Relay { .. }
+            Request::Turn { .. }
+            | Request::AcknowledgeAgentTurn { .. }
+            | Request::AnswerV2 { .. }
+            | Request::RelayTyped { .. }
             | Request::CancelRelay { .. }
             | Request::Bounced { .. }
             | Request::Hosting { .. } => {
@@ -328,7 +319,7 @@ impl Parent {
                     1 => Finish::Parked { snapshot: None },
                     _ => Finish::Failed { failure: RunFailure::Cancelled },
                 };
-                let mut out = vec![host(Duration::ZERO, Event::Finished { owner: self.owner(agent), finish })];
+                let mut out = vec![host(Duration::ZERO, crate::fixtures::finished(self.owner(agent), finish))];
                 out.extend(self.goes(agent, b"cancelled"));
                 out
             }
@@ -389,9 +380,9 @@ impl Parent {
         let roll = u32::try_from(self.rng.below(1000)).expect("fits");
         let (relays, deliveries, yields) = (self.script.relays, self.script.deliveries, self.script.yields);
         if roll < relays {
-            out.push(self.call(agent, Ask::Relay { body: Box::from(&b"read record"[..]) }));
+            out.push(self.call(agent, crate::fixtures::relay(Box::from(&b"read record"[..]))));
         } else if roll < relays + deliveries {
-            out.push(self.call(agent, Ask::Deliver { message: Box::from(&b"fix: the thing"[..]) }));
+            out.push(self.call(agent, crate::fixtures::deliver(Box::from(&b"fix: the thing"[..]))));
         } else if roll < relays + deliveries + yields {
             self.tally.yields += 1;
             self.set(agent, Phase::Waiting { steps });
@@ -420,11 +411,7 @@ impl Parent {
             }
             Fate::Failed(failure) => self.say(agent, Finish::Failed { failure }),
             Fate::Oversized => {
-                let finish = if self.rng.chance(500) {
-                    Finish::Ended { outcome: bytes(self.limits.outcome_bytes + 1) }
-                } else {
-                    Finish::Parked { snapshot: Some(bytes(self.limits.snapshot_bytes + 1)) }
-                };
+                let finish = Finish::Ended { outcome: bytes(self.limits.outcome_bytes + 1) };
                 self.say(agent, finish)
             }
             Fate::Exited => self.goes(agent, b"panicked at 'index out of bounds'"),
@@ -447,7 +434,7 @@ impl Parent {
     /// The run says how it finishes, and its agent exits after a while.
     fn say(&mut self, agent: Token, finish: Finish) -> Vec<Out> {
         let after = self.script.exit.draw(&mut self.rng);
-        vec![host(Duration::ZERO, Event::Finished { owner: self.owner(agent), finish }), self.exit(agent, after)]
+        vec![host(Duration::ZERO, crate::fixtures::finished(self.owner(agent), finish)), self.exit(agent, after)]
     }
 
     fn exit(&mut self, agent: Token, after: Duration) -> Out {
@@ -463,17 +450,13 @@ impl Parent {
 
     fn call(&mut self, agent: Token, ask: Ask) -> Out {
         match ask {
-            Ask::RelayTyped { .. } | jig_host::Ask::DeliverV2 { .. } => {
-                unreachable!("this script runs version one")
-            }
-
-            Ask::Relay { .. } => self.tally.relays += 1,
-            Ask::Deliver { .. } => self.tally.deliveries += 1,
+            Ask::RelayTyped { .. } => self.tally.relays += 1,
+            Ask::DeliverV2 { .. } => self.tally.deliveries += 1,
         }
         let entry = self.agents.get_mut(&agent).expect("an agent is kept once made");
         entry.calls += 1;
         let call = Token::new(entry.calls);
-        host(Duration::ZERO, Event::Called { owner: entry.owner, call, ask })
+        host(Duration::ZERO, crate::fixtures::called(entry.owner, call, ask))
     }
 
     fn deliver(&mut self, agent: Token) -> Vec<Out> {
@@ -512,7 +495,7 @@ impl Parent {
                 let mut out = Vec::new();
                 if self.rng.chance(self.script.late) {
                     self.tally.late_calls += 1;
-                    out.push(self.call(agent, Ask::Relay { body: Box::from(&b"one more"[..]) }));
+                    out.push(self.call(agent, crate::fixtures::relay(Box::from(&b"one more"[..]))));
                 }
                 let word = self.rng.chance(self.script.words);
                 self.set(agent, Phase::Stopping { word });

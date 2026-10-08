@@ -34,11 +34,6 @@ pub enum Event {
         reply_to: ReplyTo,
         assignment: AssignmentTyped,
     },
-    /// A version-two run: transcript and committed call tail stay opaque.
-    AssignV2 {
-        reply_to: ReplyTo,
-        assignment: AssignmentV2,
-    },
     /// One completed conversation turn, from its started agent.
     Turn {
         owner: Token,
@@ -61,21 +56,6 @@ pub enum Event {
         turns: u32,
         spent: u64,
         finish: FinishV2,
-    },
-    /// From the engine, a call: host the run of `assignment`, and answer once
-    /// it has ended. A fresh call for an already hosted attempt is refused
-    /// as busy; its parent deduplicates wire retransmissions before calling.
-    Assign {
-        reply_to: ReplyTo,
-        assignment: Assignment,
-    },
-    /// From the engine: an inbound event for the run `run`'s attempt
-    /// `attempt`, which goes down to the run as it arrives.
-    Inbound {
-        run: Token,
-        attempt: Token,
-        name: Token,
-        event: Box<[u8]>,
     },
     /// From the engine: cancel the run `run`'s attempt `attempt`.
     Cancel {
@@ -134,21 +114,6 @@ pub enum Event {
         owner: Token,
         agent: Token,
     },
-    /// A host call of the run, which the host answers with one `Reply`.
-    /// `call` is the agent's name for it.
-    Called {
-        owner: Token,
-        call: Token,
-        ask: Ask,
-    },
-    /// The run withdrew its host call `call`, its own deadline for it having
-    /// passed. A relayed call is answered at once as withdrawn; a delivery goes
-    /// on, and is answered with how it went. A call answered already is not
-    /// in flight, and nothing happens.
-    Withdrawn {
-        owner: Token,
-        call: Token,
-    },
     /// The agent could not take an inbound event for the run, for `bounce`.
     Bounced {
         owner: Token,
@@ -158,12 +123,6 @@ pub enum Event {
     /// The run yielded: it waits for its next inbound event.
     Yielded {
         owner: Token,
-    },
-    /// The run said how it finishes. Its agent exits next. Said as it winds
-    /// down after a stop, it is still the run's answer.
-    Finished {
-        owner: Token,
-        finish: Finish,
     },
     /// The agent child domain is stopping the agent for `fault`.
     Faulted {
@@ -225,26 +184,11 @@ pub enum Request {
         answered: Box<[AnsweredCall]>,
         grants: Box<[Grant]>,
     },
-    /// Stable agent name on the engine wire; delivery identifies this local wait.
-    RelayV2 {
-        run: Token,
-        attempt: Token,
-        call: Token,
-        delivery: Token,
-        body: Box<[u8]>,
-    },
     AnswerV2 {
         to: ReplyTo,
         run: Token,
         attempt: Token,
         answer: AnswerV2,
-    },
-    StartV2 {
-        owner: Token,
-        workspace: Option<Token>,
-        charter: Box<[u8]>,
-        transcript: Option<Box<[u8]>>,
-        grants: Box<[Grant]>,
     },
     /// A transmission copy of a turn retained until engine acknowledgement.
     Turn {
@@ -253,30 +197,15 @@ pub enum Request {
         attempt: Token,
         turn: Turn,
     },
-    /// Whether the agent may read another turn after the retained bound.
-    TurnCredit {
+    /// The hub has taken this turn and now owns its retention.
+    AcknowledgeAgentTurn {
         agent: Token,
-        read: bool,
+        turn: u32,
     },
     DeliverV2 {
         owner: Token,
         workspace: Token,
         title: Box<[u8]>,
-        body: Box<[u8]>,
-    },
-    /// To the engine, the answer to an `Assign`: exactly one per assignment.
-    Answer {
-        to: ReplyTo,
-        run: Token,
-        attempt: Token,
-        answer: Answer,
-    },
-    /// To the engine: a host call of the run `run`'s attempt `attempt`, which
-    /// the host names `call`, relayed as it is.
-    Relay {
-        run: Token,
-        attempt: Token,
-        call: Token,
         body: Box<[u8]>,
     },
     /// Cancel the local delivery and wait of a relay. Exactly one terminal
@@ -309,27 +238,6 @@ pub enum Request {
     Abort {
         owner: Token,
     },
-    /// Start an agent on `charter`, resumed from `snapshot` if there is one.
-    /// A run without workspace items starts with no workspace.
-    Start {
-        owner: Token,
-        workspace: Option<Token>,
-        charter: Box<[u8]>,
-        snapshot: Option<Box<[u8]>>,
-        grants: Box<[Grant]>,
-    },
-    /// An inbound event for the run of the agent `agent`.
-    Deliver {
-        agent: Token,
-        name: Token,
-        event: Box<[u8]>,
-    },
-    /// The one answer to the host call `call` of the agent `agent`.
-    Reply {
-        agent: Token,
-        call: Token,
-        reply: Reply,
-    },
     /// Stop the agent `agent`: cancel its run, then end what is left of it
     /// past the grace. Its start's `Gone` comes once it has all gone. Sent
     /// whenever its run leaves live, also once the run has said how it
@@ -341,12 +249,6 @@ pub enum Request {
     Grant {
         agent: Token,
         grant: Grant,
-    },
-    /// Ask the workspace to deliver the run's work for call `owner`.
-    DeliverWorkspace {
-        owner: Token,
-        workspace: Token,
-        message: Box<[u8]>,
     },
     /// Ask the workspace to save unfinished work.
     Save {
@@ -386,33 +288,10 @@ pub enum ToAgent {
         answered: Box<[AnsweredCall]>,
         grants: Box<[Grant]>,
     },
-    ReadCredit {
+    /// The hub holds this turn independently of the engine link.
+    Acknowledge {
         agent: Token,
-        read: bool,
-    },
-    StartV2 {
-        owner: Token,
-        workspace: Option<Token>,
-        charter: Box<[u8]>,
-        transcript: Option<Box<[u8]>>,
-        grants: Box<[Grant]>,
-    },
-    Start {
-        owner: Token,
-        workspace: Option<Token>,
-        charter: Box<[u8]>,
-        snapshot: Option<Box<[u8]>>,
-        grants: Box<[Grant]>,
-    },
-    Message {
-        agent: Token,
-        name: Token,
-        event: Box<[u8]>,
-    },
-    Answer {
-        agent: Token,
-        call: Token,
-        reply: Reply,
+        turn: u32,
     },
     Grant {
         agent: Token,
@@ -456,15 +335,6 @@ pub enum FromAgent {
         owner: Token,
         agent: Token,
     },
-    Called {
-        owner: Token,
-        call: Token,
-        ask: Ask,
-    },
-    Withdrawn {
-        owner: Token,
-        call: Token,
-    },
     Bounced {
         owner: Token,
         name: Token,
@@ -472,10 +342,6 @@ pub enum FromAgent {
     },
     Yielded {
         owner: Token,
-    },
-    Finished {
-        owner: Token,
-        finish: Finish,
     },
     Faulted {
         owner: Token,
@@ -498,11 +364,8 @@ impl Event {
             FromAgent::Facts { owner, fact } => Event::Facts { owner, fact },
             FromAgent::FinishedV2 { owner, turns, spent, finish } => Event::FinishedV2 { owner, turns, spent, finish },
             FromAgent::Started { owner, agent } => Event::Started { owner, agent },
-            FromAgent::Called { owner, call, ask } => Event::Called { owner, call, ask },
-            FromAgent::Withdrawn { owner, call } => Event::Withdrawn { owner, call },
             FromAgent::Bounced { owner, name, bounce } => Event::Bounced { owner, name, bounce },
             FromAgent::Yielded { owner } => Event::Yielded { owner },
-            FromAgent::Finished { owner, finish } => Event::Finished { owner, finish },
             FromAgent::Faulted { owner, fault } => Event::Faulted { owner, fault },
             FromAgent::Gone { owner, detail } => Event::Gone { owner, detail },
         }
@@ -521,30 +384,19 @@ impl Request {
             Request::StartTyped { owner, workspace, charter, activation, turns, answered, grants } => {
                 Ok(ToAgent::StartTyped { owner, workspace, charter, activation, turns, answered, grants })
             }
-            Request::StartV2 { owner, workspace, charter, transcript, grants } => {
-                Ok(ToAgent::StartV2 { owner, workspace, charter, transcript, grants })
-            }
-            Request::Start { owner, workspace, charter, snapshot, grants } => {
-                Ok(ToAgent::Start { owner, workspace, charter, snapshot, grants })
-            }
-            Request::Deliver { agent, name, event } => Ok(ToAgent::Message { agent, name, event }),
-            Request::Reply { agent, call, reply } => Ok(ToAgent::Answer { agent, call, reply }),
+
             Request::Grant { agent, grant } => Ok(ToAgent::Grant { agent, grant }),
-            Request::TurnCredit { agent, read } => Ok(ToAgent::ReadCredit { agent, read }),
+            Request::AcknowledgeAgentTurn { agent, turn } => Ok(ToAgent::Acknowledge { agent, turn }),
             Request::Stop { agent } => Ok(ToAgent::Cancel { agent }),
             other @ (Request::RelayTyped { .. }
-            | Request::RelayV2 { .. }
             | Request::AnswerV2 { .. }
             | Request::Turn { .. }
             | Request::DeliverV2 { .. }
-            | Request::Answer { .. }
-            | Request::Relay { .. }
             | Request::CancelRelay { .. }
             | Request::Bounced { .. }
             | Request::Hosting { .. }
             | Request::Prepare { .. }
             | Request::Abort { .. }
-            | Request::DeliverWorkspace { .. }
             | Request::Save { .. }
             | Request::Release { .. }) => Err(other),
         }
@@ -566,13 +418,6 @@ pub struct Assignment {
     /// The state of a parked run to resume from, passed through.
     pub snapshot: Option<Box<[u8]>>,
     pub grants: Box<[Grant]>,
-}
-
-/// An explicit second-version assignment. A snapshot is invalid here.
-#[derive(PartialEq, Eq, Hash, Debug)]
-pub struct AssignmentV2 {
-    pub assignment: Assignment,
-    pub transcript: Option<Box<[u8]>>,
 }
 
 /// An assignment with the conversation state the agent consumes (hosts.md, 2).
@@ -656,14 +501,6 @@ pub enum Ask {
     },
     DeliverV2 {
         title: Box<[u8]>,
-        body: Box<[u8]>,
-    },
-    /// Deliver work through the application's workspace.
-    Deliver {
-        message: Box<[u8]>,
-    },
-    /// A call relayed to the engine as it is.
-    Relay {
         body: Box<[u8]>,
     },
 }

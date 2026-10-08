@@ -64,7 +64,7 @@ fn random_worlds_settle_and_reach_every_ending() {
     assert!(missing.is_empty(), "every ending is reached: {missing:?} are not");
     let paths = [
         "duplicate assignments",
-        "oversized snapshots",
+        "oversized outcomes",
         "endings said during a stop",
         "deliveries settled during a stop",
         "cancels as a workspace was prepared",

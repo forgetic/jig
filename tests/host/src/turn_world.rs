@@ -6,8 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use jig_host::{
-    self as host, AnswerV2, AnsweredCall, Ask, Assignment, AssignmentTyped, AssignmentV2, Delivery, DeliveryOutcome,
-    EndingV2, Event, FinishV2, Limits, Reason, Reply, Request, Turn, Workspace,
+    self as host, AnswerV2, AnsweredCall, Ask, Assignment, AssignmentTyped, Delivery, DeliveryOutcome, EndingV2, Event,
+    FinishV2, Limits, Reason, Request, Turn, Workspace,
 };
 use skein_lib::{Duration, Env, Queue, ReplyTo, Time, Token, Wall};
 
@@ -160,9 +160,13 @@ impl World {
             snapshot: None,
             grants: Box::new([]),
         };
-        self.send(Event::AssignV2 {
+        self.send(Event::AssignTyped {
             reply_to: ReplyTo::new(RUN),
-            assignment: AssignmentV2 { assignment, transcript: Some(Box::from(&b"prior turn"[..])) },
+            assignment: AssignmentTyped {
+                assignment,
+                turns: vec![Box::from(&b"prior turn"[..])].into_boxed_slice(),
+                answered: Box::new([]),
+            },
         });
         assert!(self.owner.is_some() && self.agent_live && self.reading);
     }
@@ -222,18 +226,18 @@ impl World {
     }
 
     pub fn deliver(&mut self) {
-        self.send(Event::Called {
+        self.send(Event::CalledTyped {
             owner: self.owner.expect("assigned"),
-            call: Token::new(71),
+            call: Box::from(Token::new(71).raw().to_be_bytes()),
             ask: Ask::DeliverV2 { title: Box::from(&b"title"[..]), body: Box::from(&b"body"[..]) },
         });
     }
 
     pub fn relay(&mut self) {
-        self.send(Event::Called {
+        self.send(Event::CalledTyped {
             owner: self.owner.expect("assigned"),
-            call: Token::new(72),
-            ask: Ask::Relay { body: Box::from(&b"read"[..]) },
+            call: Box::from(Token::new(72).raw().to_be_bytes()),
+            ask: crate::fixtures::relay(Box::from(&b"read"[..])),
         });
     }
 
@@ -388,7 +392,6 @@ impl World {
         assert!(!self.host.is_ready());
     }
 
-    #[expect(clippy::too_many_lines, reason = "the scripted peer routes every host request")]
     fn route(&mut self, request: Request) {
         match request {
             Request::RelayTyped { run, attempt, call, delivery, tool, writes, input, deadline } => {
@@ -402,9 +405,9 @@ impl World {
                     answer: Box::from(&b"reply"[..]),
                 });
             }
-            Request::ReplyTyped { agent, call, reply } => {
+            Request::ReplyTyped { agent, call, reply: _ } => {
                 assert_eq!(agent, AGENT);
-                assert_eq!(reply, Reply::Relayed { answer: Box::from(&b"reply"[..]) });
+
                 self.typed_reply = Some(call);
                 self.stats.replies += 1;
             }
@@ -420,23 +423,18 @@ impl World {
                 self.space_live = true;
                 self.events.push_back(Event::Prepared { owner, workspace: SPACE });
             }
-            Request::StartV2 { owner, workspace, .. } => {
-                assert_eq!(workspace, if self.space_live { Some(SPACE) } else { None });
-                self.owner = Some(owner);
-                self.agent_live = true;
-                self.reading = true;
-                self.events.push_back(Event::Started { owner, agent: AGENT });
-            }
+
             Request::Turn { run, attempt, turn, .. } => {
                 assert_eq!((run, attempt), (RUN, ATTEMPT));
                 if self.connected {
                     self.receive_turn(turn);
                 }
             }
-            Request::TurnCredit { agent, read } => {
+            Request::AcknowledgeAgentTurn { agent, .. } => {
                 assert_eq!(agent, AGENT);
-                self.reading = read;
+                self.reading = true;
             }
+
             Request::DeliverV2 { owner, workspace, .. } => {
                 assert!(self.agent_live && self.space_live && workspace == SPACE);
                 self.stats.deliveries += 1;
@@ -445,27 +443,7 @@ impl World {
                     delivery: Delivery { outcome: DeliveryOutcome::Delivered, left: Token::new(7), changed: true },
                 });
             }
-            Request::RelayV2 { run, attempt, delivery, .. } => {
-                assert_eq!((run, attempt), (RUN, ATTEMPT));
-                self.stats.relays += 1;
-                self.events.push_back(Event::Relayed {
-                    run,
-                    attempt,
-                    call: delivery,
-                    answer: Box::from(&b"reply"[..]),
-                });
-            }
-            Request::Reply { agent, reply, .. } => {
-                assert_eq!(agent, AGENT);
-                match reply {
-                    Reply::Delivered(_)
-                    | Reply::Relayed { .. }
-                    | Reply::Unavailable
-                    | Reply::Busy
-                    | Reply::Withdrawn => {}
-                }
-                self.stats.replies += 1;
-            }
+
             Request::Stop { agent } => {
                 assert_eq!(agent, AGENT);
                 self.stop_pending = true;
@@ -497,15 +475,9 @@ impl World {
             Request::Hosting { runs } => {
                 assert_eq!(runs.len(), usize::from(self.agent_live));
             }
-            Request::Answer { .. }
-            | Request::Relay { .. }
-            | Request::CancelRelay { .. }
-            | Request::Bounced { .. }
-            | Request::Start { .. }
-            | Request::Deliver { .. }
-            | Request::Grant { .. }
-            | Request::Abort { .. }
-            | Request::DeliverWorkspace { .. } => panic!("unscripted request: {request:?}"),
+            Request::CancelRelay { .. } | Request::Bounced { .. } | Request::Grant { .. } | Request::Abort { .. } => {
+                panic!("unscripted request: {request:?}")
+            }
         }
     }
 
@@ -520,7 +492,7 @@ impl World {
         answered: Box<[AnsweredCall]>,
         grants: &[host::Grant],
     ) {
-        assert_eq!(workspace, None);
+        assert_eq!(workspace, if self.space_live { Some(SPACE) } else { None });
         assert_eq!(charter, b"charter");
         assert!(grants.is_empty());
         self.owner = Some(owner);

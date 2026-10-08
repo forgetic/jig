@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use jig_host::{self as host, AgentFailure, Event, Fact, Failure, Finish, Limits, Reason, Reply, Request, RunFailure};
+use jig_host::{self as host, AgentFailure, Event, Fact, Failure, Limits, Reason, Reply, Request, RunFailure};
 use skein_lib::{Duration, ReplyTo, Rng, Time, Token};
 use skein_world::domain::{Ledger, Schedule, Span, Stage, Trace};
 
@@ -58,9 +58,9 @@ impl Settings {
                 slots: 4,
                 charter_bytes: 4096,
                 snapshot_bytes: 1024,
-                transcript_bytes: 0,
+                transcript_bytes: 1040,
                 delivery_evidence_bytes: 0,
-                turn_bytes: 0,
+                turn_bytes: 1024,
                 outcome_bytes: 512,
                 detail_bytes: 64,
                 held: 2,
@@ -535,7 +535,7 @@ impl World {
                     charter: Box::from(&b"again"[..]),
                     snapshot: None,
                 };
-                let event = Event::Assign { reply_to: ReplyTo::new(run), assignment };
+                let event = crate::fixtures::assign(ReplyTo::new(run), assignment);
                 self.stage.inbox.push_front(Arrival { event, stale: false, duplicate: true });
             }
         }
@@ -548,7 +548,13 @@ impl World {
     fn duplicate_answered(&mut self) {
         let request = self.stage.out.pop().expect("counted");
         assert!(
-            matches!(request, Request::Answer { answer: host::Answer::Refused(host::Refusal::Busy), .. }),
+            matches!(
+                request,
+                Request::AnswerV2 {
+                    answer: host::AnswerV2 { ending: host::EndingV2::Refused(host::Refusal::Busy), .. },
+                    ..
+                }
+            ),
             "a duplicate call is refused without changing its hosted attempt: {request:?}"
         );
     }
@@ -559,46 +565,32 @@ impl World {
             return Taken::Stale;
         }
         match event {
-            jig_host::Event::InboundTyped { .. }
-            | jig_host::Event::CalledTyped { .. }
-            | jig_host::Event::WithdrawnTyped { .. }
-            | jig_host::Event::AssignTyped { .. }
-            | jig_host::Event::AssignV2 { .. }
-            | jig_host::Event::Turn { .. }
-            | jig_host::Event::FinishedV2 { .. }
-            | Event::AcknowledgeTurn { .. } => unreachable!("this script runs version one"),
-
-            Event::Assign { reply_to: _, assignment } => {
-                Taken::Assign { run: assignment.run, attempt: assignment.attempt }
+            Event::AssignTyped { reply_to: _, assignment } => {
+                Taken::Assign { run: assignment.assignment.run, attempt: assignment.assignment.attempt }
             }
             Event::Started { owner, agent } => Taken::Started { owner: *owner, agent: *agent },
-            Event::Called { owner, call, ask } => {
+            Event::CalledTyped { owner, call, ask } => {
                 let delivery = match ask {
-                    jig_host::Ask::DeliverV2 { .. } | host::Ask::RelayTyped { .. } => {
-                        unreachable!("this script runs version one")
-                    }
-
-                    host::Ask::Deliver { .. } => true,
-                    host::Ask::Relay { .. } => false,
+                    host::Ask::DeliverV2 { .. } => true,
+                    host::Ask::RelayTyped { .. } => false,
                 };
-                Taken::Called { owner: *owner, call: *call, delivery }
+                Taken::Called { owner: *owner, call: crate::fixtures::callback(call), delivery }
             }
             Event::Gone { owner, detail: _ } => Taken::Gone { owner: *owner },
             Event::Delivered { owner, delivery: _ } => Taken::Delivered { call: *owner },
             Event::Saved { owner, at: _ } => Taken::Saved { owner: *owner },
             Event::Prepared { owner, workspace: _ } => Taken::Prepared { owner: *owner, prepared: true },
             Event::Unprepared { owner, .. } => Taken::Prepared { owner: *owner, prepared: false },
-            Event::Finished { owner, finish } => {
+            Event::FinishedV2 { owner, finish, .. } => {
                 let limits = &self.settings.host;
                 let word = match finish {
-                    Finish::Ended { outcome } if len(outcome) > limits.outcome_bytes => Word::Rules,
-                    Finish::Ended { .. } => Word::Ended,
-                    Finish::Parked { snapshot: Some(snapshot) } if len(snapshot) > limits.snapshot_bytes => {
-                        self.path("oversized snapshots");
+                    host::FinishV2::Ended { outcome } if len(outcome) > limits.outcome_bytes => {
+                        self.path("oversized outcomes");
                         Word::Rules
                     }
-                    Finish::Parked { .. } => Word::Parked,
-                    Finish::Failed { failure } => Word::Failed(*failure),
+                    host::FinishV2::Ended { .. } => Word::Ended,
+                    host::FinishV2::Parked => Word::Parked,
+                    host::FinishV2::Failed { failure } => Word::Failed(*failure),
                 };
                 Taken::Finished { owner: *owner, word }
             }
@@ -613,16 +605,18 @@ impl World {
                 self.stats.reports += 1;
                 Taken::Other
             }
-            Event::Inbound { .. }
+            Event::InboundTyped { .. }
             | Event::Facts { .. }
             | Event::Grant { .. }
             | Event::Cancel { .. }
             | Event::Unacknowledged { .. }
             | Event::Relayed { .. }
             | Event::RelayCancelled { .. }
-            | Event::Withdrawn { .. }
+            | Event::WithdrawnTyped { .. }
             | Event::Bounced { .. }
             | Event::Yielded { .. }
+            | Event::Turn { .. }
+            | Event::AcknowledgeTurn { .. }
             | Event::Faulted { .. } => Taken::Other,
         }
     }
@@ -692,20 +686,9 @@ impl World {
     /// `run`'s attempt `attempt`: a refusal, or a prepare that admits it.
     fn assigned(&mut self, run: Token, attempt: Token, request: &Request) {
         match request {
-            jig_host::Request::RelayTyped { .. }
-            | jig_host::Request::DeliverTyped { .. }
-            | jig_host::Request::ReplyTyped { .. }
-            | jig_host::Request::StartTyped { .. }
-            | jig_host::Request::Turn { .. }
-            | jig_host::Request::DeliverV2 { .. }
-            | jig_host::Request::RelayV2 { .. }
-            | jig_host::Request::AnswerV2 { .. }
-            | jig_host::Request::StartV2 { .. }
-            | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
-
-            Request::Answer { to: _, run: answered, attempt: of, answer } => {
+            Request::AnswerV2 { to: _, run: answered, attempt: of, answer } => {
                 assert_eq!((*answered, *of), (run, attempt), "an assignment is answered as itself");
-                match answer {
+                match crate::fixtures::plain(answer) {
                     host::Answer::Refused(_) => {}
                     host::Answer::Ended { .. } | host::Answer::Parked { .. } | host::Answer::Failed { .. } => {
                         panic!("an assignment answered at once is refused: {answer:?}")
@@ -724,56 +707,47 @@ impl World {
                 assert!(self.hosted.insert(*owner, entry).is_none(), "a hosted run's token is its own");
                 assert!(self.admitted.insert((run, attempt), *owner).is_none(), "an attempt is admitted once");
             }
-            Request::Relay { .. }
+            Request::RelayTyped { .. }
             | Request::CancelRelay { .. }
             | Request::Bounced { .. }
             | Request::Grant { .. }
             | Request::Hosting { .. }
             | Request::Abort { .. }
-            | Request::Start { .. }
-            | Request::Deliver { .. }
-            | Request::Reply { .. }
+            | Request::StartTyped { .. }
+            | Request::DeliverTyped { .. }
+            | Request::ReplyTyped { .. }
             | Request::Stop { .. }
-            | Request::DeliverWorkspace { .. }
+            | Request::DeliverV2 { .. }
             | Request::Save { .. }
+            | Request::Turn { .. }
+            | Request::AcknowledgeAgentTurn { .. }
             | Request::Release { .. } => panic!("an assignment is refused or prepared: {request:?}"),
         }
     }
 
     /// Hands the host's `request` to whom it is for, checking it on the way.
-    #[expect(clippy::too_many_lines, reason = "the world routes the full host output vocabulary")]
     fn route(&mut self, request: Request) {
         self.trace.log(self.now, format!("host -> {request:?}"));
         match request {
-            jig_host::Request::RelayTyped { .. }
-            | jig_host::Request::DeliverTyped { .. }
-            | jig_host::Request::ReplyTyped { .. }
-            | jig_host::Request::StartTyped { .. }
-            | jig_host::Request::Turn { .. }
-            | jig_host::Request::DeliverV2 { .. }
-            | jig_host::Request::RelayV2 { .. }
-            | jig_host::Request::AnswerV2 { .. }
-            | jig_host::Request::StartV2 { .. }
-            | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
-
-            Request::Answer { to, run, attempt, answer } => {
+            Request::AnswerV2 { to, run, attempt, answer } => {
                 if let Some(owner) = self.admitted.remove(&(run, attempt)) {
                     assert!(self.parent.settled(owner), "a run answers once all of it has settled and is released");
                     let hosted = self.hosted.get(&owner).expect("admitted runs are hosted");
                     if let Some(agent) = hosted.agent {
                         assert!(self.left.contains(&agent), "a run answers once it has left live");
                     }
-                    check_word(hosted, &answer);
-                    if let Some(path) = cancel_path(hosted, &answer) {
+                    check_word(hosted, &crate::fixtures::plain(&answer));
+                    if let Some(path) = cancel_path(hosted, &crate::fixtures::plain(&answer)) {
                         self.path(path);
                     }
                 }
-                self.send_engine(Request::Answer { to, run, attempt, answer });
+                self.send_engine(Request::AnswerV2 { to, run, attempt, answer });
             }
-            Request::Relay { run, attempt, call, body } => {
+            Request::RelayTyped { run, attempt, delivery: call, .. } => {
                 assert!(self.relays.insert(call, (run, attempt)).is_none(), "a relay starts once");
-                self.send_engine(Request::Relay { run, attempt, call, body });
+                self.send_engine(request);
             }
+            Request::Turn { .. } | Request::AcknowledgeAgentTurn { .. } => panic!("turns are exercised by turn_world"),
             Request::CancelRelay { call } => {
                 if self.relays.remove(&call).is_some() {
                     let event = Event::RelayCancelled { call };
@@ -791,18 +765,19 @@ impl World {
                 let acts = self.engine.reconnected(&runs);
                 self.acts(acts);
             }
-            Request::Deliver { agent, name, event } => {
+            Request::DeliverTyped { agent, ref words, .. } => {
                 let owner = *self.agents.get(&agent).expect("a delivery is to a started agent");
-                let len = u64::try_from(event.len()).expect("fits");
+                let len = u64::try_from(words.len()).expect("fits");
                 assert!(len <= self.settings.host.event_bytes, "an event within the limits");
                 let hosted = self.hosted.get_mut(&owner).expect("an agent's run is hosted");
-                let head = event.get(..8).expect("an event begins with its place");
+                let head = words.get(..8).expect("an event begins with its place");
                 let place = u64::from_be_bytes(head.try_into().expect("eight bytes"));
                 assert!(hosted.delivered < Some(place), "inbound events are delivered once, in the order sent");
                 hosted.delivered = Some(place);
-                self.parcel(Request::Deliver { agent, name, event });
+                self.parcel(request);
             }
-            Request::Reply { agent, call, reply } => {
+            Request::ReplyTyped { agent, ref call, ref reply } => {
+                let call = crate::fixtures::callback(call);
                 self.calls.end((agent, call));
                 if self.kept.remove(&(agent, call)) {
                     self.path("deliveries settled during a stop");
@@ -813,14 +788,14 @@ impl World {
                         }
                     }
                 } else if self.left.contains(&agent) {
-                    assert_eq!(reply, Reply::Unavailable, "a call of a run that has left live is unavailable");
+                    assert_eq!(*reply, Reply::Unavailable, "a call of a run that has left live is unavailable");
                 }
                 match reply {
                     Reply::Unavailable => self.stats.unavailable += 1,
                     Reply::Busy => self.stats.busy += 1,
                     Reply::Relayed { .. } | Reply::Delivered(_) | Reply::Withdrawn => {}
                 }
-                self.parcel(Request::Reply { agent, call, reply });
+                self.parcel(request);
             }
             Request::Stop { agent } => {
                 assert!(self.left.contains(&agent), "a stop is of a run that leaves live");
@@ -835,14 +810,11 @@ impl World {
                 assert!(hosted.prepared.is_none(), "an abort is of a prepare in flight");
                 self.parcel(request);
             }
-            Request::Start { owner, .. } => {
+            Request::StartTyped { owner, .. } => {
                 self.hosted.get_mut(&owner).expect("a start is of a hosted run").launch = Launch::Asked;
                 self.parcel(request);
             }
-            Request::DeliverWorkspace { .. }
-            | Request::Save { .. }
-            | Request::Release { .. }
-            | Request::Grant { .. } => {
+            Request::DeliverV2 { .. } | Request::Save { .. } | Request::Release { .. } | Request::Grant { .. } => {
                 self.parcel(request);
             }
         }
@@ -901,7 +873,7 @@ impl World {
                     self.stage.push(Arrival { event, stale, duplicate: false });
                 }
                 Delivery::Engine(request) => {
-                    if let Request::Relay { call, .. } = &request
+                    if let Request::RelayTyped { delivery: call, .. } = &request
                         && !self.relays.contains_key(call)
                     {
                         continue;

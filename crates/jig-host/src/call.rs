@@ -14,18 +14,18 @@ pub(crate) struct Call {
     /// The run that made it.
     pub(crate) hosted: Id<Hosted>,
     pub(crate) state: State,
-    /// The agent's opaque name for a typed call; legacy calls use `state`'s token.
+    /// The agent's opaque name, moved out when its one reply is sent.
     pub(crate) typed: Option<Box<[u8]>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) enum State {
     /// A delivery in flight, for the call `call` of the agent `agent`.
-    Delivering { agent: Token, call: Token },
+    Delivering { agent: Token },
     /// Relayed to the engine, for the call `call` of the agent `agent`.
-    Relayed { agent: Token, call: Token },
+    Relayed { agent: Token },
     /// The agent has its answer; local delivery is being cancelled.
-    Settling { call: Token },
+    Settling,
     /// Terminal: holds nothing.
     Closed,
 }

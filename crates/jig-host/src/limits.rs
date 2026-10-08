@@ -47,8 +47,10 @@ pub struct Limits {
     pub told: u32,
     /// The most bytes in one agent fact.
     pub fact_bytes: u64,
-    /// Unacknowledged turns per attempt and their total body bytes.
+    /// Normal retained turns per attempt. One additional agent window of
+    /// this size is reserved for turns sent before stopping.
     pub turns: u32,
+    /// Normal retained body bytes per attempt, with the same stopping reserve.
     pub turn_queue_bytes: u64,
 }
 
@@ -73,6 +75,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     if limits.turns > 0 && (limits.turn_bytes == 0 || limits.turn_queue_bytes < limits.turn_bytes) {
         return None;
     }
+    cancellations_bound(limits)?;
     // The reserved output bound must be representable without saturation.
     // Cancelling each relay emits its reply and its cancellation request.
     let cancellations = limits.run_calls.checked_mul(2)?;
@@ -88,9 +91,9 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     let facts = Queue::<Fact>::worst_case(limits.facts)?;
     let told =
         Queue::<Told>::worst_case(limits.told)?.checked_add(u64::from(limits.told).checked_mul(limits.fact_bytes)?)?;
-    let capacity = limits.slots.checked_mul(limits.turns)?;
+    let capacity = limits.slots.checked_mul(limits.turns)?.checked_mul(2)?;
     let turns = Map::<Name, Pending>::worst_case(capacity)?
-        .checked_add(u64::from(limits.slots).checked_mul(limits.turn_queue_bytes)?)?;
+        .checked_add(u64::from(limits.slots).checked_mul(limits.turn_queue_bytes.checked_mul(2)?)?)?;
     // Until its agent starts, a run holds its charter, its snapshot and the
     // inbound events that came meanwhile; from when it is told how the run
     // finishes, the outcome, the snapshot or the detail of the failure.
@@ -118,4 +121,13 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(turns)?
         .checked_add(runs)?
         .checked_add(delivered)
+}
+
+fn cancellations_bound(limits: &Limits) -> Option<u32> {
+    limits
+        .run_calls
+        .checked_mul(2)?
+        .max(limits.held.checked_add(limits.accounts)?)
+        .checked_add(2)?
+        .checked_add(limits.turns.checked_mul(2)?)
 }

@@ -177,7 +177,7 @@ impl Engine {
                 let attempt = self.name();
                 let event = Box::from(&b"stale"[..]);
                 vec![
-                    Self::host(Event::Inbound { name: Token::new(1), run, attempt, event }, true),
+                    Self::host(crate::fixtures::inbound(run, attempt, Token::new(1), event), true),
                     Self::host(Event::Cancel { run, attempt }, true),
                 ]
             }
@@ -187,23 +187,12 @@ impl Engine {
     /// Takes the host's request `request`, which is for the engine.
     pub fn take(&mut self, request: Request) -> Vec<Act> {
         match request {
-            jig_host::Request::RelayTyped { .. }
-            | jig_host::Request::DeliverTyped { .. }
-            | jig_host::Request::ReplyTyped { .. }
-            | jig_host::Request::StartTyped { .. }
-            | jig_host::Request::Turn { .. }
-            | jig_host::Request::DeliverV2 { .. }
-            | jig_host::Request::RelayV2 { .. }
-            | jig_host::Request::AnswerV2 { .. }
-            | jig_host::Request::StartV2 { .. }
-            | Request::TurnCredit { .. } => unreachable!("this script runs version one"),
-
-            Request::Answer { to, run, attempt, answer } => {
+            Request::AnswerV2 { to, run, attempt, answer } => {
                 assert_eq!(to, ReplyTo::new(run), "an answer goes to its assignment");
-                self.answered(run, attempt, &answer);
+                self.answered(run, attempt, &crate::fixtures::plain(&answer));
                 Vec::new()
             }
-            Request::Relay { run, attempt, call, body: _ } => self.relay(run, attempt, call),
+            Request::RelayTyped { run, attempt, delivery: call, .. } => self.relay(run, attempt, call),
             Request::Bounced { name: _, run: _, attempt: _, bounce } => {
                 match bounce {
                     Bounce::TooLarge => self.tally.too_large += 1,
@@ -212,15 +201,18 @@ impl Engine {
                 }
                 Vec::new()
             }
+            Request::Turn { .. } | Request::AcknowledgeAgentTurn { .. } => {
+                unreachable!("turns are exercised by turn_world")
+            }
             Request::Hosting { .. }
             | Request::CancelRelay { .. }
             | Request::Prepare { .. }
             | Request::Abort { .. }
-            | Request::Start { .. }
-            | Request::Deliver { .. }
-            | Request::Reply { .. }
+            | Request::StartTyped { .. }
+            | Request::DeliverTyped { .. }
+            | Request::ReplyTyped { .. }
             | Request::Stop { .. }
-            | Request::DeliverWorkspace { .. }
+            | Request::DeliverV2 { .. }
             | Request::Save { .. }
             | Request::Release { .. }
             | Request::Grant { .. } => unreachable!("for the top level or the parent"),
@@ -261,7 +253,7 @@ impl Engine {
         let (assignment, invalid) = self.draw(run, attempt);
         let assigned = Assigned { invalid, next: 0, cancelled: false };
         assert!(self.open.insert((run, attempt), assigned).is_none(), "an attempt is assigned once");
-        acts.push(Self::host(Event::Assign { reply_to: ReplyTo::new(run), assignment }, false));
+        acts.push(Self::host(crate::fixtures::assign(ReplyTo::new(run), assignment), false));
         // What it sends the run while it is in flight.
         let events = self.rng.below(u64::from(self.script.events) + 1);
         let mut at = Duration::ZERO;
@@ -306,7 +298,7 @@ impl Engine {
             Invalid::Charter
         } else {
             assignment.snapshot = Some(bytes(self.limits.snapshot_bytes.saturating_add(1)));
-            Invalid::Snapshot
+            Invalid::Transcript
         };
         (assignment, Some(invalid))
     }
@@ -326,7 +318,7 @@ impl Engine {
             event.extend_from_slice(b"event");
             event.into_boxed_slice()
         };
-        vec![Self::host(Event::Inbound { name: Token::new(1), run, attempt, event }, false)]
+        vec![Self::host(crate::fixtures::inbound(run, attempt, Token::new(1), event), false)]
     }
 
     fn cancel(&mut self, run: Token, attempt: Token) -> Vec<Act> {

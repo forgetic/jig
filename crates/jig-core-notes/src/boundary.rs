@@ -5,9 +5,19 @@ use alloc::boxed::Box;
 
 use skein_lib::{List, Token};
 
-/// A connector's bounded resource pattern, in that connector's vocabulary.
+/// A connector's bounded resource pattern, preserving literal segment boundaries.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Pattern(pub Box<[u8]>);
+pub struct Pattern {
+    pub segments: Box<[Box<[u8]>]>,
+    pub last: Last,
+}
+
+/// The terminal matching rule of a resource pattern.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Last {
+    Exact(Box<[u8]>),
+    Open(Box<[u8]>),
+}
 
 /// Where a note applies.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -28,11 +38,11 @@ pub enum Author {
     /// A party corrected or made the entry.
     Party { party: u64 },
     /// A task's attempt wrote it.
-    Task { task: u64, attempt: u32 },
+    Task { task: u64, attempt: u64 },
 }
 
 /// A note kept in the store and loaded on demand.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Entry {
     pub name: u64,
     pub scope: Scope,
@@ -55,7 +65,7 @@ pub struct New {
 }
 
 /// The durable line used to load a scope's index without its bodies.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Line {
     pub scope: Scope,
     pub name: u64,
@@ -82,7 +92,7 @@ pub enum Record {
 }
 
 /// Which records to load, starting after a previous page's last name.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Range {
     /// A globally named entry.
     Entry { name: u64 },
@@ -97,7 +107,7 @@ pub struct Rows {
 }
 
 /// How entries are recalled from the store.
-#[derive(PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Recall {
     /// A globally named entry.
     Name { name: u64 },
@@ -115,7 +125,7 @@ pub enum Change {
 }
 
 /// Why a write was refused without changing the store.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Refusal {
     /// Another call is being served.
     Busy,
@@ -143,7 +153,9 @@ pub enum Event {
     /// Write an entry, naming the revision this writer recalled, if any.
     Write { owner: Token, entry: New, recalled: Option<u32> },
     /// Correct or delete an entry on a party's request.
-    Edit { owner: Token, party: u64, name: u64, change: Change },
+    Edit { owner: Token, party: u64, name: u64, scope: Scope, change: Change },
+    /// The parent could not load the requested store page.
+    LoadFailed { owner: Token },
     /// A bounded store page for the load with this owner.
     Loaded { owner: Token, rows: Rows, more: bool },
     /// One durable record supplied during restart.

@@ -39,14 +39,14 @@ impl Intent {
             Event::Write { owner, entry, recalled } => {
                 Intent::Write { owner: *owner, name: entry.name, recalled: *recalled }
             }
-            Event::Edit { owner, party, name, change } => {
+            Event::Edit { owner, party, name, change, .. } => {
                 let recalled = match change {
                     Change::Correct { description: _, body: _, references: _, recalled }
                     | Change::Delete { recalled } => *recalled,
                 };
                 Intent::Edit { owner: *owner, party: *party, name: *name, recalled }
             }
-            Event::Loaded { .. } | Event::Restore { .. } | Event::Restored => {
+            Event::Loaded { .. } | Event::LoadFailed { .. } | Event::Restore { .. } | Event::Restored => {
                 unreachable!("a caller starts with a call")
             }
         }

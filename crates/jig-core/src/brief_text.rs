@@ -2,6 +2,7 @@
 //! (domain/engine.md, section 9).
 
 use alloc::boxed::Box;
+use jig_core_notes as notes;
 use jig_core_tasks as tasks;
 use skein_lib::{Decimal, List, Writer};
 
@@ -23,6 +24,64 @@ pub enum BriefPart {
     Delegates,
     Attempts,
     TranscriptTail,
+}
+
+/// Render the bounded note index by durable name so a run can recall entries.
+#[must_use]
+pub fn note_index_text(lines: &List<notes::Line>, more: u32, budget: u32) -> Box<[u8]> {
+    let limit = usize::try_from(budget).expect("brief byte bound fits usize");
+    let mut kept = 0_u32;
+    let mut length = 0_usize;
+    for line in lines {
+        let name = Decimal::of(line.name);
+        let revision = Decimal::of(u64::from(line.revision));
+        let bytes = name
+            .as_bytes()
+            .len()
+            .saturating_add(revision.as_bytes().len())
+            .saturating_add(line.description.len())
+            .saturating_add(b" r: \n".len());
+        if length.saturating_add(bytes).saturating_add(32) > limit {
+            break;
+        }
+        length = length.saturating_add(bytes);
+        kept = kept.checked_add(1).expect("bounded note lines");
+    }
+    let omitted = u64::from(more).saturating_add(u64::from(lines.len().saturating_sub(kept)));
+    let marker = Decimal::of(omitted);
+    let marker_length = b"[more: ".len().saturating_add(marker.as_bytes().len()).saturating_add(b"]\n".len());
+    let show_more = omitted > 0 && length.saturating_add(marker_length) <= limit;
+    if show_more {
+        length = length.saturating_add(marker_length);
+    }
+    let show_empty = kept == 0 && omitted == 0 && length.saturating_add(b"No notes\n".len()) <= limit;
+    if show_empty {
+        length = length.saturating_add(b"No notes\n".len());
+    }
+    let mut writer = Writer::new(length);
+    let mut at = 0_u32;
+    for line in lines {
+        if at >= kept {
+            break;
+        }
+        let name = Decimal::of(line.name);
+        let revision = Decimal::of(u64::from(line.revision));
+        writer.put(name.as_bytes()).expect("measured note name");
+        writer.put(b" r").expect("measured revision label");
+        writer.put(revision.as_bytes()).expect("measured revision");
+        writer.put(b": ").expect("measured separator");
+        writer.put(&line.description).expect("measured description");
+        writer.put(b"\n").expect("measured newline");
+        at = at.checked_add(1).expect("bounded note lines");
+    }
+    if show_more {
+        writer.put(b"[more: ").expect("measured marker");
+        writer.put(marker.as_bytes()).expect("measured omitted count");
+        writer.put(b"]\n").expect("measured marker end");
+    } else if show_empty {
+        writer.put(b"No notes\n").expect("measured empty index");
+    }
+    writer.finish()
 }
 
 /// A bounded fragment and the amount its root renderer omitted.

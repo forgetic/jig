@@ -114,7 +114,13 @@ pub fn limits() -> root::Limits {
             fleet,
             brief: jig_core_brief::Limits { briefs: 2, sections: 3, read_bytes: 256, brief_bytes: 384 },
             brief_parts: 2,
-            brief_core_budgets: core::CoreBriefBudgets { task: 128, dependencies: 128, attempts: 128, plan: 128 },
+            brief_core_budgets: core::CoreBriefBudgets {
+                task: 128,
+                dependencies: 128,
+                attempts: 128,
+                plan: 128,
+                notes: 64,
+            },
             accounts: accounts::Limits {
                 accounts: 1,
                 refresh_margin: Duration::from_secs(1),
@@ -133,7 +139,7 @@ pub fn limits() -> root::Limits {
                 facts: 8,
             },
             notes: jig_core_notes::Limits {
-                scopes: 1,
+                scopes: 4,
                 entries_per_scope: 1,
                 pattern_bytes: 64,
                 description_bytes: 64,
@@ -166,7 +172,7 @@ fn authority_limits() -> authority::Limits {
 
 fn authority_value(spend: u64, kinds: Box<[authority::Executor]>) -> authority::Authority {
     authority::Authority {
-        tools: authority::Tools(0),
+        tools: authority::Tools(1023),
         grants: Box::new([]),
         delegation: authority::Delegation { kinds, tasks: 3, depth: 2 },
         budget: authority::Budget { spend, deadline: None },
@@ -284,6 +290,7 @@ pub fn config(seed: u64) -> root::Config {
                 period_budget: 1000,
                 person_budget: 500,
                 chat_authority,
+                tools: core::ToolFamilies::standard(),
                 account: 1,
                 account_generation: 1,
                 account_valid: Some(Duration::from_secs(60)),
@@ -473,6 +480,30 @@ impl World {
     #[expect(clippy::too_many_lines, reason = "one script handles each externally observed delivery")]
     fn delivered(&mut self, delivery: root::Delivery) {
         match delivery {
+            root::Delivery::Core(core::Held::NotesLoad { owner, range }) => {
+                let mut rows = skein_lib::List::with_capacity(self.limits.core.notes.load_rows);
+                let mut more = false;
+                for record in self.store.rows.values() {
+                    let root::Record::Core(core::Record::Notes(record)) = record else { continue };
+                    let matches = match (&range, record) {
+                        (jig_core_notes::Range::Entry { name }, jig_core_notes::Record::Entry(entry)) => {
+                            *name == entry.name
+                        }
+                        (jig_core_notes::Range::Lines { scope, after }, jig_core_notes::Record::Line(line)) => {
+                            *scope == line.scope && after.is_none_or(|cursor| line.name > cursor)
+                        }
+                        _ => false,
+                    };
+                    if matches && rows.push(record.clone()).is_err() {
+                        more = true;
+                    }
+                }
+                self.events.push_back(root::Event::Core(core::Event::Notes(jig_core_notes::Event::Loaded {
+                    owner,
+                    rows: jig_core_notes::Rows { records: rows },
+                    more,
+                })));
+            }
             root::Delivery::Core(core::Held::PeopleReply {
                 sign_in: Some(sign_in),
                 reply: people::Reply::SignedIn { .. },

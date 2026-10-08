@@ -1,5 +1,6 @@
 //! Bounds for notes (jig's domain/engine.md, sections 10 and 13).
 
+use alloc::boxed::Box;
 use core::mem::size_of;
 
 use skein_lib::{List, Map};
@@ -39,25 +40,27 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         return None;
     }
     let _max_lines = limits.scopes.checked_mul(limits.entries_per_scope)?;
+    let pattern_room =
+        u64::from(limits.pattern_bytes).checked_mul(u64::try_from(size_of::<Box<[u8]>>()).ok()?.checked_add(1)?)?;
     let pending = u64::try_from(size_of::<Pending>())
         .ok()?
-        .checked_add(u64::from(limits.pattern_bytes))?
+        .checked_add(pattern_room)?
         .checked_add(u64::from(limits.description_bytes))?
         .checked_add(u64::from(limits.body_bytes))?
         .checked_add(List::<u64>::worst_case(limits.references)?)?;
     let entry = u64::try_from(size_of::<Entry>())
         .ok()?
-        .checked_add(u64::from(limits.pattern_bytes))?
+        .checked_add(pattern_room)?
         .checked_add(u64::from(limits.description_bytes))?
         .checked_add(u64::from(limits.body_bytes))?
         .checked_add(List::<u64>::worst_case(limits.references)?)?;
     let line = u64::try_from(size_of::<Line>())
         .ok()?
-        .checked_add(u64::from(limits.pattern_bytes))?
+        .checked_add(pattern_room)?
         .checked_add(u64::from(limits.description_bytes))?;
     let page = List::<Record>::worst_case(limits.load_rows)?
         .checked_add(u64::from(limits.load_rows).checked_mul(entry.max(line))?)?;
-    let per_index = u64::from(limits.pattern_bytes)
+    let per_index = pattern_room
         .checked_add(Map::<u64, Line>::worst_case(limits.entries_per_scope)?)?
         .checked_add(u64::from(limits.entries_per_scope).checked_mul(line)?)?;
     let indexes = Map::<Scope, Cached>::worst_case(limits.scopes)?
@@ -69,7 +72,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(List::<Line>::worst_case(limits.lines)?)?
         .checked_add(List::<u64>::worst_case(limits.recalled)?)?
         .checked_add(List::<Entry>::worst_case(limits.recalled)?)?
-        .checked_add(u64::from(limits.scopes).checked_mul(u64::from(limits.pattern_bytes))?)?
+        .checked_add(u64::from(limits.scopes).checked_mul(pattern_room)?)?
         .checked_add(u64::from(limits.lines).checked_mul(line)?)?
         .checked_add(u64::from(limits.recalled).checked_mul(entry)?)?
         .checked_add(u64::from(limits.description_bytes))?;

@@ -286,6 +286,7 @@ fn route_now(
         | core::Now::NotesIndexed { .. }
         | core::Now::NotesRecalled { .. }
         | core::Now::NotesRefused { .. }
+        | core::Now::NoteBusy { .. }
         | core::Now::EscalationReply { .. }
         | core::Now::EscalationRefused { .. }) => domain.now.push(other),
     }

@@ -172,6 +172,8 @@ pub enum Now {
     NotesRecalled { owner: Token, entries: List<notes::Entry>, more: bool },
     /// A note request refused before changing state.
     NotesRefused { owner: Token, why: notes::Refusal },
+    /// The notes child could not serve this named call yet; the host retries its name.
+    NoteBusy { to: ReplyTo, key: CallKey },
     /// Forget a root-owned host payload that the fleet no longer needs.
     DropPayload { payload: Token },
     /// Forget the application's assignment for a run the host never started.
@@ -274,6 +276,8 @@ pub struct CoreBriefBudgets {
     pub dependencies: u32,
     pub attempts: u32,
     pub plan: u32,
+    /// Maximum note index text in one brief.
+    pub notes: u32,
 }
 
 /// One event routed to a child of the core.
@@ -289,6 +293,8 @@ pub enum Event {
     StartRecurring { project: u32, authority: tasks::Authority, template: tasks::RecurringTemplate },
     /// Begin core-owned brief planning for one preparing task.
     StartBrief { task: u64 },
+    /// The notes child supplied the brief's bounded index before connector gathering.
+    BriefNotes { task: u64, lines: List<notes::Line>, more: u32 },
     /// The root assembled all selected connector sections, or found a missing owner.
     BriefAssembled { task: u64, ready: bool },
     /// The root translated the selected connector's workspace writes.
@@ -478,17 +484,211 @@ pub enum PayloadRefusal {
 /// Connector-free work a named host call asks the core to route.
 #[derive(Debug)]
 pub enum NamedAction {
-    Message { target: u64, kind: tasks::MessageKind, words: Box<[u8]> },
-    Introduce { left: u64, right: u64 },
-    Subscribe { kind: tasks::SubscriptionKind },
-    Unsubscribe { subscription: u64 },
-    Control { target: u64, control: tasks::Control },
-    Amend { target: u64, amendment: tasks::Amendment },
-    DecideEscalation { task: u64, revision: u64, choice: EscalationChoice },
-    WithdrawProposal { proposal: u64 },
-    DecideProposal { proposer: u64, proposal: u64, choice: ProposalChoice },
-    Propose { action: tasks::ProposalAction, reason: Box<[u8]>, as_holder: bool },
-    ProposeBatch { batch: Box<[Delegate]>, reason: Box<[u8]>, as_holder: bool },
+    Message {
+        target: u64,
+        kind: tasks::MessageKind,
+        words: Box<[u8]>,
+    },
+    Introduce {
+        left: u64,
+        right: u64,
+    },
+    Subscribe {
+        kind: tasks::SubscriptionKind,
+    },
+    Unsubscribe {
+        subscription: u64,
+    },
+    Control {
+        target: u64,
+        control: tasks::Control,
+    },
+    Amend {
+        target: u64,
+        amendment: tasks::Amendment,
+    },
+    DecideEscalation {
+        task: u64,
+        revision: u64,
+        choice: EscalationChoice,
+    },
+    WithdrawProposal {
+        proposal: u64,
+    },
+    DecideProposal {
+        proposer: u64,
+        proposal: u64,
+        choice: ProposalChoice,
+    },
+    Propose {
+        action: tasks::ProposalAction,
+        reason: Box<[u8]>,
+        as_holder: bool,
+    },
+    ProposeBatch {
+        batch: Box<[Delegate]>,
+        reason: Box<[u8]>,
+        as_holder: bool,
+    },
+    /// Save one scoped note under a revision seen by the run.
+    Note {
+        entry: notes::New,
+        recalled: Option<u32>,
+    },
+    /// Recall one page of notes by name or description search.
+    Recall {
+        by: notes::Recall,
+        page: u32,
+    },
+}
+
+/// One engine-tool family and any condition the authority check needs.
+#[derive(Debug)]
+pub enum ToolKind {
+    Delegate,
+    Message { target: u64 },
+    Control,
+    Decide,
+    Propose,
+    Subscribe,
+    Effect,
+    Note { scope: notes::Scope },
+    Recall { by: notes::Recall },
+    Read,
+}
+
+impl Core {
+    /// Check a named run call against its live task and policy before routing it.
+    #[must_use]
+    pub fn authorize_tool(&self, key: CallKey, kind: ToolKind) -> Option<CallPart> {
+        let Some(task) = self.tasks.task(key.task) else {
+            return Some(CallPart::ToolDenied {
+                answer: authority::Answer::Refuse,
+                findings: Box::new([authority::Finding::UnknownProject]),
+            });
+        };
+        let family = match &kind {
+            ToolKind::Delegate => self.settings.tools.delegate,
+            ToolKind::Message { .. } => self.settings.tools.message,
+            ToolKind::Control => self.settings.tools.control,
+            ToolKind::Decide => self.settings.tools.decide,
+            ToolKind::Propose => self.settings.tools.propose,
+            ToolKind::Subscribe => self.settings.tools.subscribe,
+            ToolKind::Effect => self.settings.tools.effect,
+            ToolKind::Note { .. } => self.settings.tools.note,
+            ToolKind::Recall { .. } => self.settings.tools.recall,
+            ToolKind::Read => self.settings.tools.read,
+        };
+        let call = match kind {
+            ToolKind::Message { target } => authority::Call::Message {
+                referenced: task.requester == tasks::Party::Task(target)
+                    || task.delegates.contains(&target)
+                    || task.references.contains(&target),
+            },
+            ToolKind::Note { scope } => {
+                let scope = match scope {
+                    notes::Scope::Deployment => authority::NoteScope::Deployment,
+                    notes::Scope::Project { project } if project == task.project => authority::NoteScope::Project,
+                    notes::Scope::Goal { project, goal } if project == task.project && goal == task.root => {
+                        authority::NoteScope::Goal
+                    }
+                    notes::Scope::Resources { project, connector, pattern } if project == task.project => {
+                        let last = match pattern.last {
+                            notes::Last::Exact(value) => authority::Last::Exact(value),
+                            notes::Last::Open(value) => authority::Last::Open(value),
+                        };
+                        authority::NoteScope::Resources(authority::ResourceScope {
+                            connector,
+                            pattern: authority::Pattern { segments: pattern.segments, last },
+                        })
+                    }
+                    notes::Scope::Project { .. } | notes::Scope::Goal { .. } | notes::Scope::Resources { .. } => {
+                        return Some(CallPart::ToolDenied {
+                            answer: authority::Answer::Refuse,
+                            findings: Box::new([authority::Finding::Scope { source: authority::Source::Task }]),
+                        });
+                    }
+                };
+                authority::Call::Note(scope)
+            }
+            ToolKind::Recall { by } => {
+                let readable = match by {
+                    notes::Recall::Name { .. } => true,
+                    notes::Recall::Search { scopes, .. } => {
+                        let mut readable = true;
+                        for scope in &scopes {
+                            if !self.note_readable(key.task, scope) {
+                                readable = false;
+                            }
+                        }
+                        readable
+                    }
+                };
+                if !readable {
+                    return Some(CallPart::ToolDenied {
+                        answer: authority::Answer::Refuse,
+                        findings: Box::new([authority::Finding::Scope { source: authority::Source::Task }]),
+                    });
+                }
+                authority::Call::Tool
+            }
+            ToolKind::Delegate
+            | ToolKind::Control
+            | ToolKind::Decide
+            | ToolKind::Propose
+            | ToolKind::Subscribe
+            | ToolKind::Effect
+            | ToolKind::Read => authority::Call::Tool,
+        };
+        let mut why = Queue::with_capacity(authority::max_out(self.authority.limits()).expect("bounded findings"));
+        let answer = authority::check_call(
+            &self.authority,
+            &authority::CallAsk {
+                project: task.project,
+                authority: crate::translate::authority_value(&task.authority),
+                family,
+                call,
+            },
+            &mut why,
+        );
+        if answer == authority::Answer::Allow {
+            return None;
+        }
+        let mut findings = List::with_capacity(why.capacity());
+        for _ in 0..why.len() {
+            findings.push(why.pop().expect("finding count")).expect("finding room");
+        }
+        Some(CallPart::ToolDenied { answer, findings: findings.into_boxed() })
+    }
+
+    /// A named recall may read only notes in this task's project and goal, or deployment notes.
+    #[must_use]
+    pub fn note_readable(&self, task: u64, scope: &notes::Scope) -> bool {
+        let Some(row) = self.tasks.task(task) else { return false };
+        match scope {
+            notes::Scope::Deployment => true,
+            notes::Scope::Project { project } | notes::Scope::Resources { project, .. } => *project == row.project,
+            notes::Scope::Goal { project, goal } => *project == row.project && *goal == row.root,
+        }
+    }
+}
+
+/// The parent caller held while the notes child reads its store pages.
+#[derive(Debug)]
+pub(crate) enum NoteRoute {
+    Call { to: ReplyTo, key: CallKey },
+    Person { request: Token },
+    Brief { task: u64 },
+}
+
+impl Core {
+    fn begin_note_route(&mut self, route: NoteRoute) -> Token {
+        let owner = Token::new(self.next_note_owner);
+        self.next_note_owner = self.next_note_owner.checked_add(1).expect("transient note owner space");
+        let previous = self.note_routes.insert(owner, route).expect("notes keeps one pending route plus a refusal");
+        assert!(previous.is_none(), "transient note owners are unique");
+        owner
+    }
 }
 
 /// A task holder's choice on one pending proposal.
@@ -2567,6 +2767,12 @@ fn delegate_validated(
     batch: Box<[Delegate]>,
     stubs: Box<[tasks::Stub]>,
 ) -> Requests {
+    if let Some(part) = core.authorize_tool(key, ToolKind::Delegate) {
+        let mut out = Queue::with_capacity(3);
+        call_decision(core, &mut out, to, key, part);
+        out.push(Request::Decided);
+        return Requests::Out(out);
+    }
     if let Err(part) = core.delegate_preflight(&env.limits.tasks, key, &batch) {
         let mut out = Queue::with_capacity(3);
         call_decision(core, &mut out, to, key, part);
@@ -3196,7 +3402,56 @@ fn workspace_prepared(
     Requests::Out(out)
 }
 
-fn start_brief(core: &Core, env: &Env<Limits>, work: &mut Queue<Event>, task: u64) -> Requests {
+fn start_brief(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, task: u64) -> Requests {
+    let mut out = Queue::with_capacity(1);
+    let Some(context) = core.contexts.get(&task) else {
+        out.push(Request::Decided);
+        return Requests::Out(out);
+    };
+    let Some(current) = core.tasks.task(task) else {
+        out.push(Request::Decided);
+        return Requests::Out(out);
+    };
+    if current.phase != tasks::Phase::Active(tasks::Active::Preparing) || current.last_message != context.last_message {
+        out.push(Request::Decided);
+        return Requests::Out(out);
+    }
+    if core.notes.busy() {
+        core.pending_note_briefs.insert(task, true).expect("brief count bounds waiting notes");
+        out.push(Request::Decided);
+        return Requests::Out(out);
+    }
+    let mut scopes = List::with_capacity(env.limits.notes.scopes);
+    scopes.push(notes::Scope::Goal { project: context.project, goal: current.root }).expect("goal scope room");
+    scopes.push(notes::Scope::Project { project: context.project }).expect("project scope room");
+    scopes.push(notes::Scope::Deployment).expect("deployment scope room");
+    for resource in &context.authority.note_resources {
+        let last = match &resource.pattern.last {
+            tasks::Last::Exact(value) => notes::Last::Exact(value.clone()),
+            tasks::Last::Open(value) => notes::Last::Open(value.clone()),
+        };
+        scopes
+            .push(notes::Scope::Resources {
+                project: context.project,
+                connector: resource.connector,
+                pattern: notes::Pattern { segments: resource.pattern.segments.clone(), last },
+            })
+            .expect("admitted note resource scope room");
+    }
+    let owner = core.begin_note_route(NoteRoute::Brief { task });
+    work.push(Event::Notes(notes::Event::Index { owner, scopes, most: env.limits.notes.lines }));
+    out.push(Request::Decided);
+    Requests::Out(out)
+}
+
+fn plan_brief(
+    core: &Core,
+    env: &Env<Limits>,
+    work: &mut Queue<Event>,
+    task: u64,
+    lines: List<notes::Line>,
+    more: u32,
+) -> Requests {
     let mut out = Queue::with_capacity(2);
     let Some(context) = core.contexts.get(&task) else {
         out.push(Request::Decided);
@@ -3262,6 +3517,7 @@ fn start_brief(core: &Core, env: &Env<Limits>, work: &mut Queue<Event>, task: u6
             })
             .expect("tail brief room");
     }
+    plan_note_index(&mut wanted, &env.limits, &lines, more);
     if !context.delegates.is_empty()
         && wanted.room() > 0
         && let Some(text) = crate::read_brief_part(core, text_limits, task, crate::BriefPart::Delegates)
@@ -3290,13 +3546,31 @@ fn start_brief(core: &Core, env: &Env<Limits>, work: &mut Queue<Event>, task: u6
             })
             .expect("attempt brief room");
     }
-    let parent = match context.requester {
-        tasks::Party::Task(parent) => Some(parent),
-        tasks::Party::Person(_) | tasks::Party::Deployment { .. } => None,
-    };
+    let parent = brief_parent(context.requester);
     out.push(Request::Now(Box::new(Now::BriefCorePlanned { task, parent, sections: wanted })));
     out.push(Request::Decided);
     Requests::Out(out)
+}
+
+fn brief_parent(requester: tasks::Party) -> Option<u64> {
+    match requester {
+        tasks::Party::Task(parent) => Some(parent),
+        tasks::Party::Person(_) | tasks::Party::Deployment { .. } => None,
+    }
+}
+
+fn plan_note_index(wanted: &mut List<brief::Planned>, limits: &Limits, lines: &List<notes::Line>, more: u32) {
+    if wanted.room() > 0 {
+        wanted
+            .push(brief::Planned::Core {
+                kind: brief::Core::NotesIndex,
+                text: crate::note_index_text(lines, more, limits.brief.read_bytes.min(limits.brief_core_budgets.notes)),
+                limit: limits.brief_core_budgets.notes,
+                priority: 4,
+                required: false,
+            })
+            .expect("note index section room");
+    }
 }
 
 fn start_recurring(
@@ -3620,6 +3894,12 @@ fn named_action(
     action: NamedAction,
 ) -> Requests {
     assert!(core.current_proof(key.task, key.attempt), "named action belongs to current claim");
+    if let Some(part) = core.authorize_tool(key, named_tool_kind(&action)) {
+        let mut out = Queue::with_capacity(3);
+        call_decision(core, &mut out, to, key, part);
+        out.push(Request::Decided);
+        return Requests::Out(out);
+    }
     let token = to.into_token();
     let mut out = Queue::with_capacity(3);
     match action {
@@ -3798,9 +4078,59 @@ fn named_action(
         NamedAction::ProposeBatch { batch, reason, as_holder } => {
             return propose_batch(core, env, ReplyTo::new(token), key, batch, reason, as_holder);
         }
+        NamedAction::Note { mut entry, recalled } => {
+            if recalled.is_none() && entry.name != 0 {
+                call_decision(core, &mut out, ReplyTo::new(token), key, CallPart::NoteRefused(notes::Refusal::Exists));
+                out.push(Request::Decided);
+                return Requests::Out(out);
+            }
+            if recalled.is_some() && entry.name == 0 {
+                call_decision(core, &mut out, ReplyTo::new(token), key, CallPart::NoteRefused(notes::Refusal::Missing));
+                out.push(Request::Decided);
+                return Requests::Out(out);
+            }
+            if entry.name == 0 {
+                let Some(name) = crate::fresh(&mut core.counters, crate::Family::Message) else {
+                    call_decision(
+                        core,
+                        &mut out,
+                        ReplyTo::new(token),
+                        key,
+                        CallPart::NoteRefused(notes::Refusal::Full),
+                    );
+                    out.push(Request::Decided);
+                    return Requests::Out(out);
+                };
+                entry.name = name;
+            }
+            entry.author = notes::Author::Task { task: key.task, attempt: key.attempt };
+            assert!(core.pending_calls.insert(key, true) == Ok(None), "note call record room reserved");
+            let owner = core.begin_note_route(NoteRoute::Call { to: ReplyTo::new(token), key });
+            work.push(Event::Notes(notes::Event::Write { owner, entry, recalled }));
+        }
+        NamedAction::Recall { by, page } => {
+            assert!(core.pending_calls.insert(key, true) == Ok(None), "recall call record room reserved");
+            let owner = core.begin_note_route(NoteRoute::Call { to: ReplyTo::new(token), key });
+            work.push(Event::Notes(notes::Event::Recall { owner, by, page }));
+        }
     }
     out.push(Request::Decided);
     Requests::Out(out)
+}
+
+fn named_tool_kind(action: &NamedAction) -> ToolKind {
+    match action {
+        NamedAction::Message { target, .. } => ToolKind::Message { target: *target },
+        NamedAction::Introduce { left, .. } => ToolKind::Message { target: *left },
+        NamedAction::Subscribe { .. } | NamedAction::Unsubscribe { .. } => ToolKind::Subscribe,
+        NamedAction::Control { .. } | NamedAction::Amend { .. } => ToolKind::Control,
+        NamedAction::DecideEscalation { .. }
+        | NamedAction::WithdrawProposal { .. }
+        | NamedAction::DecideProposal { .. } => ToolKind::Decide,
+        NamedAction::Propose { .. } | NamedAction::ProposeBatch { .. } => ToolKind::Propose,
+        NamedAction::Note { entry, .. } => ToolKind::Note { scope: entry.scope.clone() },
+        NamedAction::Recall { by, .. } => ToolKind::Recall { by: by.clone() },
+    }
 }
 
 #[expect(clippy::too_many_lines, reason = "one exhaustive party vocabulary routes its bounded child decision")]
@@ -3976,27 +4306,9 @@ fn tag_people(
                     }
                     continue;
                 }
-                if let people::Ask::EditNote { scope, .. } = &*ask {
-                    let allowed = core.note_authorized(project, role, scope);
-                    let mut follow = Queue::with_capacity(people::max_out(&env.limits.people));
-                    people::step(
-                        &mut core.people,
-                        &Env { now: env.now, wall: env.wall, limits: env.limits.people },
-                        people::Event::Decided {
-                            request,
-                            outcome: people::Outcome::Refused(if allowed {
-                                people::Refusal::NotOffered
-                            } else {
-                                people::Refusal::Authority
-                            }),
-                        },
-                        &mut follow,
-                    );
-                    for _ in 0..follow.len() {
-                        pending.push(follow.pop().expect("note decision count"));
-                    }
+                let Some(ask) = route_person_note(core, work, request, person, project, role, ask) else {
                     continue;
-                }
+                };
                 if let people::Ask::Adopt { .. } = &*ask {
                     match core.role_allowed(person, project, env.limits.tasks.tree_tasks) {
                         Ok(()) => {
@@ -4268,6 +4580,208 @@ fn tag_people(
     assert!(pending.is_empty(), "finite party routes fit their bound");
     out.push(Request::Decided);
     Requests::Out(out)
+}
+
+fn route_person_note(
+    core: &mut Core,
+    work: &mut Queue<Event>,
+    request: Token,
+    person: u64,
+    project: u32,
+    role: Option<people::Role>,
+    ask: Box<people::Ask>,
+) -> Option<Box<people::Ask>> {
+    match *ask {
+        people::Ask::EditNote { name, scope, change, .. } => {
+            if core.note_authorized(project, role, &scope) {
+                let owner = core.begin_note_route(NoteRoute::Person { request });
+                let scope = person_note_scope(project, *scope);
+                let change = person_note_change(*change);
+                work.push(Event::Notes(notes::Event::Edit { owner, party: person, name, scope, change }));
+            } else {
+                work.push(Event::People(people::Event::Decided {
+                    request,
+                    outcome: people::Outcome::Refused(people::Refusal::Authority),
+                }));
+            }
+            None
+        }
+        other @ (people::Ask::Watch { .. }
+        | people::Ask::MakeService { .. }
+        | people::Ask::Adopt { .. }
+        | people::Ask::SetGoal { .. }
+        | people::Ask::Stop { .. }
+        | people::Ask::Cancel { .. }
+        | people::Ask::Release { .. }
+        | people::Ask::TakePerson { .. }
+        | people::Ask::HandBackPerson { .. }
+        | people::Ask::AnswerPerson { .. }
+        | people::Ask::DecideProposal { .. }
+        | people::Ask::Amend { .. }
+        | people::Ask::SetRoles { .. }
+        | people::Ask::ChangePolicy { .. }
+        | people::Ask::SetPool { .. }
+        | people::Ask::DecideEscalation { .. }
+        | people::Ask::StartChat { .. }
+        | people::Ask::Say { .. }
+        | people::Ask::AnswerQuestion { .. }
+        | people::Ask::Prioritise { .. }
+        | people::Ask::Move { .. }) => Some(Box::new(other)),
+    }
+}
+
+fn person_note_scope(project: u32, scope: people::NoteScope) -> notes::Scope {
+    match scope {
+        people::NoteScope::Deployment => notes::Scope::Deployment,
+        people::NoteScope::Project => notes::Scope::Project { project },
+        people::NoteScope::Goal { goal } => notes::Scope::Goal { project, goal },
+        people::NoteScope::Resources { connector, pattern } => {
+            let mut segments = List::with_capacity(u32::try_from(pattern.segments.len()).expect("bounded pattern"));
+            for segment in pattern.segments {
+                segments.push(segment).expect("pattern segment room");
+            }
+            let last = match pattern.last {
+                people::Last::Exact(value) => notes::Last::Exact(value),
+                people::Last::Open(value) => notes::Last::Open(value),
+            };
+            notes::Scope::Resources {
+                project,
+                connector,
+                pattern: notes::Pattern { segments: segments.into_boxed(), last },
+            }
+        }
+    }
+}
+
+fn person_note_change(change: people::NoteChange) -> notes::Change {
+    match change {
+        people::NoteChange::Correct { description, body, references, recalled } => {
+            let mut kept = List::with_capacity(u32::try_from(references.len()).expect("bounded references"));
+            for reference in references {
+                kept.push(reference).expect("reference room");
+            }
+            notes::Change::Correct { description, body, references: kept, recalled }
+        }
+        people::NoteChange::Delete { recalled } => notes::Change::Delete { recalled },
+    }
+}
+
+fn note_person_refusal(why: notes::Refusal) -> people::Refusal {
+    match why {
+        notes::Refusal::Busy => people::Refusal::Busy,
+        notes::Refusal::Oversized | notes::Refusal::Full | notes::Refusal::RevisionExhausted => people::Refusal::Limit,
+        notes::Refusal::Missing => people::Refusal::NoteMissing,
+        notes::Refusal::Moved => people::Refusal::NoteMoved,
+        notes::Refusal::Exists => people::Refusal::Unknown,
+    }
+}
+
+fn tag_notes(
+    core: &mut Core,
+    env: &Env<Limits>,
+    work: &mut Queue<Event>,
+    mut child: Queue<notes::Request>,
+) -> Requests {
+    let room = notes::max_out(&env.limits.notes).checked_add(3).expect("bounded note route");
+    let mut out = Queue::with_capacity(room);
+    for _ in 0..child.len() {
+        match child.pop().expect("note output count") {
+            notes::Request::Save { record } => out.push(Request::Write(Write::Save(Record::Notes(record)))),
+            notes::Request::Erase { key } => out.push(Request::Write(Write::Erase(Key::Notes(key)))),
+            notes::Request::Load { owner, range } => {
+                out.push(Request::Held(Box::new(Held::NotesLoad { owner, range })));
+            }
+            notes::Request::Written { owner, name, revision } => match core.note_routes.remove(&owner) {
+                Some(NoteRoute::Call { to, key }) => {
+                    call_decision(core, &mut out, to, key, CallPart::NoteWritten { name, revision });
+                }
+                Some(NoteRoute::Person { request }) => work.push(Event::People(people::Event::Decided {
+                    request,
+                    outcome: people::Outcome::NoteEdited { name },
+                })),
+                Some(NoteRoute::Brief { .. }) => unreachable!("an index cannot write an entry"),
+                None => unreachable!("a note write has a waiting caller"),
+            },
+            notes::Request::Deleted { owner, name } => match core.note_routes.remove(&owner) {
+                Some(NoteRoute::Person { request }) => work.push(Event::People(people::Event::Decided {
+                    request,
+                    outcome: people::Outcome::NoteEdited { name },
+                })),
+                Some(NoteRoute::Call { .. } | NoteRoute::Brief { .. }) | None => {
+                    unreachable!("only a party deletes a note")
+                }
+            },
+            notes::Request::Recalled { owner, entries, more } => match core.note_routes.remove(&owner) {
+                Some(NoteRoute::Call { to, key }) => {
+                    let part = recalled_part(core, key.task, entries, more);
+                    call_decision(core, &mut out, to, key, part);
+                }
+                Some(NoteRoute::Person { .. } | NoteRoute::Brief { .. }) | None => {
+                    unreachable!("a run owns this recall")
+                }
+            },
+            notes::Request::Indexed { owner, lines, more } => match core.note_routes.remove(&owner) {
+                Some(NoteRoute::Brief { task }) => work.push(Event::BriefNotes { task, lines, more }),
+                Some(NoteRoute::Call { .. } | NoteRoute::Person { .. }) | None => {
+                    unreachable!("brief preparation owns note index")
+                }
+            },
+            notes::Request::Refused { owner, why } => match core.note_routes.remove(&owner) {
+                Some(NoteRoute::Call { to, key }) => match why {
+                    notes::Refusal::Busy => {
+                        let _pending = core.pending_calls.remove(&key);
+                        out.push(Request::Now(Box::new(Now::NoteBusy { to, key })));
+                    }
+                    notes::Refusal::Oversized
+                    | notes::Refusal::Full
+                    | notes::Refusal::Exists
+                    | notes::Refusal::Missing
+                    | notes::Refusal::Moved
+                    | notes::Refusal::RevisionExhausted => {
+                        call_decision(core, &mut out, to, key, CallPart::NoteRefused(why));
+                    }
+                },
+                Some(NoteRoute::Person { request }) => work.push(Event::People(people::Event::Decided {
+                    request,
+                    outcome: people::Outcome::Refused(note_person_refusal(why)),
+                })),
+                Some(NoteRoute::Brief { task }) => match why {
+                    notes::Refusal::Busy => {
+                        core.pending_note_briefs.insert(task, true).expect("brief count bounds waiting notes");
+                    }
+                    notes::Refusal::Oversized
+                    | notes::Refusal::Full
+                    | notes::Refusal::Exists
+                    | notes::Refusal::Missing
+                    | notes::Refusal::Moved
+                    | notes::Refusal::RevisionExhausted => {
+                        work.push(Event::Tasks(tasks::Event::PreparationFailed { task }));
+                    }
+                },
+                None => out.push(Request::Now(Box::new(Now::NotesRefused { owner, why }))),
+            },
+        }
+    }
+    if !core.notes.busy()
+        && let Some((&task, _)) = core.pending_note_briefs.iter().next()
+    {
+        core.pending_note_briefs.remove(&task);
+        work.push(Event::StartBrief { task });
+    }
+    out.push(Request::Decided);
+    Requests::Out(out)
+}
+
+fn recalled_part(core: &Core, task: u64, entries: List<notes::Entry>, more: bool) -> CallPart {
+    for entry in &entries {
+        if !core.note_readable(task, &entry.scope) {
+            return CallPart::ToolDenied {
+                answer: authority::Answer::Refuse,
+                findings: Box::new([authority::Finding::Scope { source: authority::Source::Task }]),
+            };
+        }
+    }
+    CallPart::NoteRecalled { entries: entries.into_boxed(), more }
 }
 
 fn append_people(core: &mut Core, env: &Env<Limits>, event: people::Event, out: &mut Queue<Request>) {
@@ -4586,6 +5100,7 @@ pub fn room(limits: &Limits, event: &Event) -> Option<JournalRoom> {
         | Event::Tasks(_)
         | Event::StartRecurring { .. }
         | Event::StartBrief { .. }
+        | Event::BriefNotes { .. }
         | Event::BriefAssembled { .. }
         | Event::WorkspacePrepared { .. }
         | Event::ClaimPrepared { .. }
@@ -4694,6 +5209,7 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
             Requests::Out(out)
         }
         Event::StartBrief { task } => start_brief(core, env, work, task),
+        Event::BriefNotes { task, lines, more } => plan_brief(core, env, work, task, lines, more),
         Event::BriefAssembled { task, ready } => brief_assembled(core, work, task, ready),
         Event::WorkspacePrepared { task, attempt, writes } => {
             workspace_prepared(core, env, work, task, attempt, writes)
@@ -5168,31 +5684,7 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
                 event,
                 &mut child,
             );
-            let mut out =
-                Queue::with_capacity(notes::max_out(&env.limits.notes).checked_add(1).expect("notes output room"));
-            for _ in 0..child.len() {
-                let request = match child.pop().expect("notes output count") {
-                    notes::Request::Save { record } => Request::Write(Write::Save(Record::Notes(record))),
-                    notes::Request::Erase { key } => Request::Write(Write::Erase(Key::Notes(key))),
-                    notes::Request::Load { owner, range } => Request::Held(Box::new(Held::NotesLoad { owner, range })),
-                    notes::Request::Written { owner, name, revision } => {
-                        Request::Held(Box::new(Held::NotesWritten { owner, name, revision }))
-                    }
-                    notes::Request::Deleted { owner, name } => {
-                        Request::Held(Box::new(Held::NotesDeleted { owner, name }))
-                    }
-                    notes::Request::Indexed { owner, lines, more } => {
-                        Request::Now(Box::new(Now::NotesIndexed { owner, lines, more }))
-                    }
-                    notes::Request::Recalled { owner, entries, more } => {
-                        Request::Now(Box::new(Now::NotesRecalled { owner, entries, more }))
-                    }
-                    notes::Request::Refused { owner, why } => Request::Now(Box::new(Now::NotesRefused { owner, why })),
-                };
-                out.push(request);
-            }
-            out.push(Request::Decided);
-            Requests::Out(out)
+            tag_notes(core, env, work, child)
         }
     }
 }

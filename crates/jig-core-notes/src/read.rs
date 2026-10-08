@@ -119,6 +119,21 @@ fn valid_scopes(scopes: &List<Scope>, limits: &Limits) -> bool {
     true
 }
 
+/// Check a recall's bounded shape before a parent retains its payload.
+#[must_use]
+pub fn valid_recall(by: &Recall, limits: &Limits) -> bool {
+    match by {
+        Recall::Name { name } => *name != 0,
+        Recall::Search { scopes, query } => {
+            valid_scopes(scopes, limits)
+                && match u32::try_from(query.len()) {
+                    Ok(bytes) => bytes <= limits.description_bytes,
+                    Err(_) => false,
+                }
+        }
+    }
+}
+
 fn drive(domain: &mut Domain, limits: &Limits, out: &mut Queue<Request>) {
     let mut read = domain.read.take().expect("a read is ready to advance");
     match &read.kind {
@@ -310,6 +325,16 @@ pub(crate) fn loaded(
             }
         }
         Stage::Ready => unreachable!("ready reads have no load outstanding"),
+    }
+}
+
+/// Release a failed store read so the caller can retry with the same name.
+pub(crate) fn failed(domain: &mut Domain, owner: Token, out: &mut Queue<Request>) {
+    let pending = domain.read.take();
+    match pending {
+        Some(read) if read.load_owner == owner => push(out, Request::Refused { owner: read.owner, why: Refusal::Busy }),
+        Some(read) => domain.read = Some(read),
+        None => {}
     }
 }
 

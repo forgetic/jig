@@ -32,7 +32,7 @@ pub(crate) struct Pending {
 #[derive(Debug)]
 enum Action {
     Write { entry: New, recalled: Option<u32> },
-    Edit { party: u64, name: u64, change: Change },
+    Edit { party: u64, name: u64, scope: Scope, change: Change },
 }
 
 #[derive(Debug)]
@@ -107,13 +107,23 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
                 begin(domain, owner, Action::Write { entry, recalled }, out);
             }
         }
-        Event::Edit { owner, party, name, change } => {
+        Event::Edit { owner, party, name, scope, change } => {
             if domain.busy() {
                 push(out, Request::Refused { owner, why: Refusal::Busy });
-            } else if !valid_change(&change, &env.limits) {
+            } else if !valid_scope(&scope, &env.limits) || !valid_change(&change, &env.limits) {
                 push(out, Request::Refused { owner, why: Refusal::Oversized });
             } else {
-                begin(domain, owner, Action::Edit { party, name, change }, out);
+                begin(domain, owner, Action::Edit { party, name, scope, change }, out);
+            }
+        }
+        Event::LoadFailed { owner } => {
+            let pending = domain.pending.take();
+            match pending {
+                Some(pending) if pending.load_owner == owner => {
+                    push(out, Request::Refused { owner: pending.owner, why: Refusal::Busy });
+                }
+                Some(pending) => domain.pending = Some(pending),
+                None => read::failed(domain, owner, out),
             }
         }
         Event::Loaded { owner, rows, more } => {
@@ -133,7 +143,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
 fn begin(domain: &mut Domain, owner: Token, action: Action, out: &mut Queue<Request>) {
     let name = match &action {
         Action::Write { entry, recalled: _ } => entry.name,
-        Action::Edit { party: _, name, change: _ } => *name,
+        Action::Edit { party: _, name, scope: _, change: _ } => *name,
     };
     let load_owner = domain.next_load_token();
     domain.pending = Some(Pending { owner, load_owner, action, phase: Phase::Entry });
@@ -226,12 +236,12 @@ fn entry_loaded(domain: &mut Domain, mut pending: Pending, found: Option<Entry>,
                 }
             },
         },
-        Action::Edit { party, name, change } => match found {
+        Action::Edit { party, name, scope, change } => match found {
             None => push(out, Request::Refused { owner: pending.owner, why: Refusal::Missing }),
             Some(mut old) => match change {
                 Change::Correct { description, body, references, recalled } => {
                     assert!(old.name == name, "entry lookup returns the named entry");
-                    if old.revision != recalled {
+                    if old.revision != recalled || old.scope != scope {
                         push(out, Request::Refused { owner: pending.owner, why: Refusal::Moved });
                     } else if let Some(revision) = old.revision.checked_add(1) {
                         old.description = description;
@@ -247,7 +257,7 @@ fn entry_loaded(domain: &mut Domain, mut pending: Pending, found: Option<Entry>,
                 }
                 Change::Delete { recalled } => {
                     assert!(old.name == name, "entry lookup returns the named entry");
-                    if old.revision == recalled {
+                    if old.revision == recalled && old.scope == scope {
                         domain.invalidate(&old.scope);
                         push(out, Request::Erase { key: Key::Entry { name } });
                         push(out, Request::Erase { key: Key::Line { scope: old.scope, name } });
@@ -291,11 +301,50 @@ fn save_entry(owner: Token, entry: Entry, out: &mut Queue<Request>) {
     push(out, Request::Written { owner, name, revision });
 }
 
-fn valid_new(entry: &New, limits: &Limits) -> bool {
+/// Check a write's bounded shape before a parent retains its payload.
+#[must_use]
+pub fn valid_new(entry: &New, limits: &Limits) -> bool {
     valid_scope(&entry.scope, limits)
         && valid_text(&entry.description, limits.description_bytes, true)
         && valid_text(&entry.body, limits.body_bytes, false)
-        && entry.references.capacity() <= limits.references
+        && valid_references(&entry.references, limits)
+}
+
+/// Check one durable entry before a parent admits it from a store page.
+#[must_use]
+pub fn valid_entry(entry: &Entry, limits: &Limits) -> bool {
+    let author_valid = match entry.author {
+        Author::Party { party } => party != 0,
+        Author::Task { task, attempt } => task != 0 && attempt != 0,
+    };
+    entry.name != 0
+        && entry.revision != 0
+        && author_valid
+        && valid_scope(&entry.scope, limits)
+        && valid_text(&entry.description, limits.description_bytes, true)
+        && valid_text(&entry.body, limits.body_bytes, false)
+        && valid_references(&entry.references, limits)
+}
+
+fn valid_references(references: &skein_lib::List<u64>, limits: &Limits) -> bool {
+    if references.capacity() > limits.references {
+        return false;
+    }
+    for reference in references {
+        if *reference == 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Check a durable scope index line before a parent admits it from a store page.
+#[must_use]
+pub fn valid_line(line: &Line, limits: &Limits) -> bool {
+    line.name != 0
+        && line.revision != 0
+        && valid_scope(&line.scope, limits)
+        && valid_text(&line.description, limits.description_bytes, true)
 }
 
 fn valid_change(change: &Change, limits: &Limits) -> bool {
@@ -312,11 +361,29 @@ fn valid_change(change: &Change, limits: &Limits) -> bool {
 pub(crate) fn valid_scope(scope: &Scope, limits: &Limits) -> bool {
     match scope {
         Scope::Deployment | Scope::Project { .. } | Scope::Goal { .. } => true,
-        Scope::Resources { project: _, connector: _, pattern } => match u32::try_from(pattern.0.len()) {
-            Ok(len) => len <= limits.pattern_bytes,
-            Err(_) => false,
-        },
+        Scope::Resources { project: _, connector: _, pattern } => {
+            let segments_fit = match u32::try_from(pattern.segments.len()) {
+                Ok(segments) => segments <= limits.pattern_bytes,
+                Err(_) => false,
+            };
+            let bytes_fit = match u32::try_from(pattern_bytes(pattern)) {
+                Ok(bytes) => bytes <= limits.pattern_bytes,
+                Err(_) => false,
+            };
+            segments_fit && bytes_fit
+        }
     }
+}
+
+fn pattern_bytes(pattern: &crate::Pattern) -> usize {
+    let mut total = 0_usize;
+    for segment in &pattern.segments {
+        total = total.saturating_add(segment.len());
+    }
+    let last = match &pattern.last {
+        crate::Last::Exact(bytes) | crate::Last::Open(bytes) => bytes.len(),
+    };
+    total.saturating_add(last)
 }
 
 fn valid_text(bytes: &[u8], bound: u32, one_line: bool) -> bool {

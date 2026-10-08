@@ -12,7 +12,7 @@ extern crate alloc;
 
 mod amendments;
 mod brief_text;
-pub use brief_text::{BriefPart, BriefTextLimits, read_brief_part};
+pub use brief_text::{BriefPart, BriefTextLimits, note_index_text, read_brief_part};
 pub mod connector;
 mod delegation;
 pub use amendments::TaskAmendDenied;
@@ -36,7 +36,7 @@ mod sibling_routes;
 pub use numbers::{Counters, Deployment, Family, fresh};
 pub use routing::{
     Ask, CoreBriefBudgets, EscalationChoice, Event, Held, Limits, NamedAction, Now, PayloadRefusal, ProposalChoice,
-    Request, Requests, Timer, Write, fire, resume_fleet, room, room_max, step,
+    Request, Requests, Timer, ToolKind, Write, fire, resume_fleet, room, room_max, step,
 };
 pub use sibling_routes::{MadeRoute, PersonMessage, SentRoute};
 mod stored;
@@ -112,6 +112,66 @@ pub struct Settings {
     pub account_valid: Option<skein_lib::Duration>,
     /// Connector number for recurring procedures.
     pub recurring_connector: u16,
+    /// Configured one-bit authority family for each engine tool.
+    pub tools: ToolFamilies,
+}
+
+/// Authority bits assigned to the engine's tool families by the charter.
+#[derive(Clone, Copy, Debug)]
+pub struct ToolFamilies {
+    pub delegate: authority::Tools,
+    pub message: authority::Tools,
+    pub control: authority::Tools,
+    pub decide: authority::Tools,
+    pub propose: authority::Tools,
+    pub subscribe: authority::Tools,
+    pub effect: authority::Tools,
+    pub note: authority::Tools,
+    pub recall: authority::Tools,
+    pub read: authority::Tools,
+}
+
+impl ToolFamilies {
+    /// Every offered family has one distinct authority bit.
+    #[must_use]
+    pub fn valid(&self) -> bool {
+        let mut seen = 0_u64;
+        for family in [
+            self.delegate,
+            self.message,
+            self.control,
+            self.decide,
+            self.propose,
+            self.subscribe,
+            self.effect,
+            self.note,
+            self.recall,
+            self.read,
+        ] {
+            if family.0.count_ones() != 1 || seen & family.0 != 0 {
+                return false;
+            }
+            seen |= family.0;
+        }
+        true
+    }
+
+    /// A ten-family assignment available to a charter that offers every engine tool.
+    #[must_use]
+    pub const fn standard() -> Self {
+        Self {
+            delegate: authority::Tools(1),
+            message: authority::Tools(2),
+            control: authority::Tools(4),
+            decide: authority::Tools(8),
+            propose: authority::Tools(16),
+            subscribe: authority::Tools(32),
+            effect: authority::Tools(64),
+            note: authority::Tools(128),
+            recall: authority::Tools(256),
+            read: authority::Tools(512),
+        }
+    }
 }
 
 /// The eight child domains of the core. Routing and durable live state are
@@ -170,6 +230,12 @@ pub struct Core {
     pub call_parts: Map<CallKey, CallPart>,
     /// Calls routed among the core children.
     pub routing_calls: Map<Token, RoutedCall>,
+    /// Correlations while the notes child loads a page for a caller.
+    pub(crate) note_routes: Map<Token, routing::NoteRoute>,
+    /// Preparations waiting for the notes child's current load or write.
+    pub(crate) pending_note_briefs: Map<u64, bool>,
+    /// Transient owner names for notes routes; pending calls are restored from their records.
+    pub(crate) next_note_owner: u64,
     /// Durable deployment numbers.
     pub counters: Counters,
     /// Live task preparation contexts.
@@ -272,6 +338,7 @@ impl Core {
     /// Allocate the eight children and the bounded live core tables.
     #[must_use]
     pub fn new(config: Config, limits: &Limits) -> Core {
+        assert!(config.settings.tools.valid(), "each engine tool has one configured authority bit");
         assert!(*config.authority.limits() == limits.authority, "core prices its authority's configured bounds");
         assert!(
             config.connectors.len() <= usize::try_from(limits.connectors).expect("connector count fits usize"),
@@ -328,6 +395,9 @@ impl Core {
             pending_calls: Map::with_capacity(limits.call_records),
             call_parts: Map::with_capacity(limits.call_records),
             routing_calls: Map::with_capacity(limits.fleet.calls),
+            note_routes: Map::with_capacity(2),
+            pending_note_briefs: Map::with_capacity(limits.brief.briefs),
+            next_note_owner: 1,
             contexts: Map::with_capacity(limits.tasks.tasks),
             workspace_pending: Map::with_capacity(limits.tasks.tasks),
             transcripts: Map::with_capacity(limits.tasks.tasks),
@@ -384,6 +454,8 @@ impl Core {
             && self.dependency_results.is_empty()
             && self.pending_calls.is_empty()
             && self.routing_calls.is_empty()
+            && self.note_routes.is_empty()
+            && self.pending_note_briefs.is_empty()
             && self.routing_people_proposals.is_empty()
             && self.made.is_empty()
             && self.goal_routes.is_empty()

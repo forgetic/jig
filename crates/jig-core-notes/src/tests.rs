@@ -145,8 +145,13 @@ fn a_revision_must_name_the_entry_the_writer_recalled() {
 #[test]
 fn a_party_deletes_only_the_revision_it_saw() {
     let mut h = Harness::new();
-    let asked =
-        h.step(Event::Edit { owner: Token::new(6), party: 2, name: 20, change: Change::Delete { recalled: 2 } });
+    let asked = h.step(Event::Edit {
+        owner: Token::new(6),
+        party: 2,
+        name: 20,
+        scope: Scope::Project { project: 7 },
+        change: Change::Delete { recalled: 2 },
+    });
     let [Request::Load { owner, .. }] = &*asked else {
         panic!("entry lookup");
     };

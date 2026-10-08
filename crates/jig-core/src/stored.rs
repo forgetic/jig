@@ -22,6 +22,8 @@ pub enum CallPart {
     Connector { connector: u16 },
     /// The core denied a connector effect after checking its authority.
     EffectDenied { answer: jig_core_authority::Answer, findings: Box<[jig_core_authority::Finding]> },
+    /// A named engine tool was refused before serving it, with the missing authority.
+    ToolDenied { answer: jig_core_authority::Answer, findings: Box<[jig_core_authority::Finding]> },
     /// One held descendant decision reached its semantic terminal.
     EscalationDecided { task: u64, revision: u64, outcome: jig_core_tasks::EscalationOutcome },
     /// A task holder's decision call was refused before mutation.
@@ -56,6 +58,12 @@ pub enum CallPart {
     DelegationDenied { answer: jig_core_authority::Answer, findings: Box<[jig_core_authority::Finding]> },
     /// A batch refused by structural or funding admission.
     DelegationRefused(jig_core_tasks::Problem),
+    /// A scoped note was committed at the named revision.
+    NoteWritten { name: u64, revision: u32 },
+    /// One bounded recall page was answered from the notes child.
+    NoteRecalled { entries: Box<[jig_core_notes::Entry]>, more: bool },
+    /// A note request changed nothing.
+    NoteRefused(jig_core_notes::Refusal),
     /// The named tool is deferred to a later route.
     Unavailable,
 }
@@ -76,6 +84,7 @@ impl CallPart {
             | CallPart::Introduced
             | CallPart::Unsubscribed
             | CallPart::Controlled
+            | CallPart::NoteRefused(_)
             | CallPart::ControlDenied { .. } => true,
             CallPart::Proposed { proposal } | CallPart::ProposalDecided { proposal, .. } => {
                 *proposal != 0 && *proposal <= deployment.messages
@@ -84,6 +93,18 @@ impl CallPart {
                 *task != 0 && *task <= deployment.tasks && *revision != 0
             }
             CallPart::Sent { message } => *message != 0 && *message <= deployment.messages,
+            CallPart::NoteWritten { name, revision } => *name != 0 && *name <= deployment.messages && *revision != 0,
+            CallPart::NoteRecalled { entries, .. } => {
+                if entries.len() > usize::try_from(limits.notes.recalled).expect("u32 fits usize") {
+                    return false;
+                }
+                for entry in entries {
+                    if !jig_core_notes::valid_entry(entry, &limits.notes) {
+                        return false;
+                    }
+                }
+                true
+            }
             CallPart::Subscribed { subscription } => *subscription != 0 && *subscription <= deployment.messages,
             CallPart::Delegated(numbers) => {
                 if numbers.is_empty() || numbers.len() > usize::try_from(limits.tasks.batch).expect("u32 fits usize") {
@@ -101,7 +122,9 @@ impl CallPart {
                 }
                 true
             }
-            CallPart::EffectDenied { answer, findings } | CallPart::DelegationDenied { answer, findings } => {
+            CallPart::EffectDenied { answer, findings }
+            | CallPart::ToolDenied { answer, findings }
+            | CallPart::DelegationDenied { answer, findings } => {
                 *answer != jig_core_authority::Answer::Allow
                     && findings.len()
                         <= usize::try_from(

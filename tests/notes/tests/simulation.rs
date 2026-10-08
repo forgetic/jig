@@ -25,6 +25,7 @@ fn a_revision_of_an_entry_changed_since_it_was_recalled_is_refused_as_moved() {
             owner: Token::new(3),
             party: 5,
             name: 20,
+            scope: PROJECT,
             change: correction(1, b"warmup corrected", b"new")
         }),
         Answer::Written { name: 20, revision: 2 }
@@ -53,6 +54,7 @@ fn a_party_corrects_a_note_and_the_next_recall_sees_the_correction() {
         owner: Token::new(2),
         party: 5,
         name: 20,
+        scope: PROJECT,
         change: correction(1, b"slow warmup", b"new"),
     });
     let got = world.call(Event::Recall { owner: Token::new(3), by: Recall::Name { name: 20 }, page: 0 });

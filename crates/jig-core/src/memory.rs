@@ -81,7 +81,11 @@ fn context_carrier(limits: &Limits) -> Option<u64> {
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "one checked sum names each retained and in-flight owner")]
 pub fn worst_case(limits: &Limits) -> Option<u64> {
-    if limits.resume_bytes == 0 || limits.run_bytes == 0 || limits.call_records == 0 {
+    if limits.resume_bytes == 0
+        || limits.run_bytes == 0
+        || limits.call_records == 0
+        || limits.notes.scopes < 3_u32.checked_add(limits.authority.grants)?
+    {
         return None;
     }
     let route = crate::routing::room_max(limits)?;
@@ -107,6 +111,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         size_of::<crate::PersonTaskRoute>(),
         size_of::<crate::PersonProposalRoute>(),
         size_of::<crate::RoutedCall>(),
+        size_of::<crate::routing::NoteRoute>(),
         size_of::<crate::CallPart>(),
         size_of::<crate::routing::Creation>(),
         size_of::<crate::routing::DelegateCreation>(),
@@ -139,6 +144,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         limits.call_records,       // pending calls
         limits.call_records,       // answered calls
         limits.fleet.calls,        // routed calls
+        limits.brief.briefs,       // briefs awaiting notes
         limits.tasks.tasks,        // contexts
         limits.tasks.tasks,        // workspaces
         limits.tasks.tasks,        // transcripts
@@ -150,6 +156,8 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         total = total.checked_add(Map::<CallKey, Event>::worst_case(capacity)?)?;
     }
     total = total.checked_add(List::<u32>::worst_case(limits.authority.projects)?)?;
+    total = total.checked_add(Map::<skein_lib::Token, crate::routing::NoteRoute>::worst_case(2)?)?;
+    total = total.checked_add(Map::<u64, bool>::worst_case(limits.brief.briefs)?)?;
     total = total.checked_add(bytes(limits.connectors, sizeof(size_of::<u16>())?)?)?;
     total = total.checked_add(Queue::<Box<tasks::RunContext>>::worst_case(limits.tasks.tasks)?)?;
     total = total.checked_add(Queue::<fleet::Event>::worst_case(limits.tasks.tasks.checked_mul(2)?)?)?;
@@ -184,6 +192,14 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         bytes(task.batch, sizeof(size_of::<u64>())?)?
             .checked_add(bytes(authority::max_out(&limits.authority)?, sizeof(size_of::<authority::Finding>())?)?)?,
     )?)?;
+    let note_pattern =
+        u64::from(limits.notes.pattern_bytes).checked_mul(sizeof(size_of::<Box<[u8]>>())?.checked_add(1)?)?;
+    let note_entry = sizeof(size_of::<notes::Entry>())?
+        .checked_add(note_pattern)?
+        .checked_add(u64::from(limits.notes.description_bytes))?
+        .checked_add(u64::from(limits.notes.body_bytes))?
+        .checked_add(List::<u64>::worst_case(limits.notes.references)?)?;
+    total = total.checked_add(bytes(limits.call_records, bytes(limits.notes.recalled, note_entry)?)?)?;
     total = total.checked_add(bytes(task.tasks, u64::from(task.result_bytes).checked_mul(3)?)?)?;
     total = total.checked_add(u64::from(task.message_bytes))?;
 

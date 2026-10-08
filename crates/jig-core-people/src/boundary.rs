@@ -356,6 +356,10 @@ pub enum Refusal {
     /// Root names an unknown target, bootstrap lacks its initialized project, or restore references
     /// an unknown person.
     Unknown,
+    /// A note changed since the person recalled its revision or belongs to a different scope.
+    NoteMoved,
+    /// A named note has gone from the store.
+    NoteMissing,
     /// Root reports the requested target has ended.
     Ended,
     /// Configured capacity is unavailable or the root reports transient admission pressure; a newly

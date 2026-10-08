@@ -1,4 +1,4 @@
-//! Durable proposals owned by live proposers (domain/tasks.md, section 8).
+//! Durable proposals owned by live proposers (domain/tasks.md, section 9).
 //! The root decides authority, funding and holder coverage. This child keeps
 //! one pending proposal per live task, its action and current recipient; it
 //! never knows role membership or a worker call identity. Terminal proposals
@@ -439,11 +439,14 @@ pub(crate) fn fire(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Reque
 }
 
 /// Apply root's fresh next-holder choice only if the exact old proposal still waits.
+#[expect(clippy::too_many_arguments, reason = "one reroute carries its old holder, revision and replacement")]
 pub(crate) fn stalled(
     domain: &mut Domain,
     env: &Env<Limits>,
     proposer: u64,
     number: u64,
+    from: ProposalHolder,
+    revision: u64,
     holder: ProposalHolder,
     out: &mut Queue<Request>,
 ) {
@@ -452,7 +455,8 @@ pub(crate) fn stalled(
         ProposalState::Pending { holder, .. } => holder,
         ProposalState::Accepted { .. } | ProposalState::Rejected { .. } | ProposalState::Withdrawn => return,
     };
-    if current == holder || record(domain, proposer).expect("live proposal").revision == u64::MAX {
+    let task_revision = record(domain, proposer).expect("live proposal").revision;
+    if current != from || task_revision != revision || current == holder || task_revision == u64::MAX {
         return;
     }
     proposal.state = ProposalState::Pending { holder, since: env.wall };

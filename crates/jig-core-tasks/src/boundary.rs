@@ -1028,8 +1028,14 @@ pub enum Event {
     },
     /// Proposer withdraws its own pending action before it closes.
     WithdrawProposal { reply_to: ReplyTo, proposer: u64, proposal: u64 },
-    /// Root routes one stalled pending proposal to its next covering holder.
-    StalledProposal { proposer: u64, proposal: u64, holder: crate::ProposalHolder },
+    /// Root routes one pending proposal only from the holder and revision it checked.
+    StalledProposal {
+        proposer: u64,
+        proposal: u64,
+        from: crate::ProposalHolder,
+        revision: u64,
+        holder: crate::ProposalHolder,
+    },
     /// Root-checked live ancestor controls a delegate and its subtree.
     Control { reply_to: ReplyTo, by: Party, task: u64, control: crate::Control },
     /// Root-checked amendment of a live delegate, with a fresh commit-order message number.

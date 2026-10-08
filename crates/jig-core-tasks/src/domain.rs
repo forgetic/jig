@@ -356,8 +356,8 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::DecideProposal { reply_to, proposer, proposal, message, by, decision } => {
             crate::proposals::decide(domain, env, reply_to, proposer, proposal, message, by, decision, out);
         }
-        Event::StalledProposal { proposer, proposal, holder } => {
-            crate::proposals::stalled(domain, env, proposer, proposal, holder, out);
+        Event::StalledProposal { proposer, proposal, from, revision, holder } => {
+            crate::proposals::stalled(domain, env, proposer, proposal, from, revision, holder, out);
         }
         Event::WithdrawProposal { reply_to, proposer, proposal } => {
             crate::proposals::withdraw(domain, env, reply_to, proposer, proposal, out);

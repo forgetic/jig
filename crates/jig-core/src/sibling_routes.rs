@@ -183,6 +183,7 @@ impl Core {
             tasks::Refusal::Busy | tasks::Refusal::NotReady => people::Refusal::Busy,
             tasks::Refusal::Funding | tasks::Refusal::AuthorityShape => people::Refusal::Authority,
             tasks::Refusal::Unknown | tasks::Refusal::State => people::Refusal::Ended,
+            tasks::Refusal::ResourceUnavailable => people::Refusal::ResourceUnavailable,
             tasks::Refusal::Duplicate
             | tasks::Refusal::Empty
             | tasks::Refusal::Batch

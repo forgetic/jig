@@ -12,6 +12,9 @@
 //! ended rows remain in root storage and cannot re-enter live state
 
 //!
+//! Current per-project resource access is a transient connector report cache.
+//! Unavailability refuses holds and holds live tasks; context narrowing stops
+//! a claimed run writer. Committed effect writers settle normally.
 //! `step` receives root-authorized batches, finite-source inputs and
 //! lifecycle notifications. Reply-bearing inputs have one terminal reply;
 //! notifications can be ignored when stale. Priced turns/terminals preflight
@@ -78,9 +81,9 @@ pub use boundary::{
     Accepted, Active, Cause, Closing, Contract, DelegateState, DelegationContext, End, Ending, Event, Executor, Hold,
     HoldKind, Holding, InvalidResult, Key, Kind, MessageKind, Name, New, NewsClass, NoticeState, Parameter, Party,
     PersonAddress, Phase, PoolSlots, Problem, ProcedureDecision, QuestionCredit, RecurringOverlap, RecurringState,
-    RecurringTemplate, Refusal, Request, ResultFollowups, ResultKind, ResultsWake, RunContext, SavedResource, Spec,
-    Stage, Status, Stored, Stub, Subscription, SubscriptionKind, Taken, TaskRecord, TaskResult, Verdict, WakePolicy,
-    WakeRule, Was, Word, Writer, WriterSlot,
+    RecurringTemplate, Refusal, Request, ResourceAccess, ResultFollowups, ResultKind, ResultsWake, RunContext,
+    SavedResource, Spec, Stage, Status, Stored, Stub, Subscription, SubscriptionKind, Taken, TaskRecord, TaskResult,
+    Verdict, WakePolicy, WakeRule, Was, Word, Writer, WriterSlot,
 };
 pub use control::{Amendment, Change, Control, History, Milestone};
 pub use domain::{Domain, ViewTask, fire, max_out, step, view_phase};
@@ -88,6 +91,7 @@ pub use escalation::{Escalation, EscalationContext, EscalationDecision, Escalati
 pub use facts::Fact;
 pub use failures::{Class, Retries, Retry, Tries};
 pub use funders::FundingRecord;
+pub use holds::valid_name;
 pub use limits::{Limits, worst_case};
 pub use owned::{phase_bytes, stored_bytes, terminal_bytes};
 pub use proposals::{

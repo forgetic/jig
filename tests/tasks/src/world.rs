@@ -348,7 +348,8 @@ impl World {
         self.priced = match event {
             Event::Turn { task, cumulative, .. }
             | Event::Activation { task, cause: Cause::Priced { cumulative }, .. } => Some((*task, *cumulative)),
-            Event::Resource { .. }
+            Event::ResourceAccess { .. }
+            | Event::Resource { .. }
             | Event::Kinds { .. }
             | Event::Slots { .. }
             | Event::AllocationGone { .. }
@@ -411,7 +412,8 @@ impl World {
             Event::Message { word, .. } | Event::DelegateResult { word, .. } | Event::Notice { word, .. } => {
                 self.message = self.message.max(word.number);
             }
-            Event::Resource { .. }
+            Event::ResourceAccess { .. }
+            | Event::Resource { .. }
             | Event::Kinds { .. }
             | Event::Slots { .. }
             | Event::AllocationGone { .. }

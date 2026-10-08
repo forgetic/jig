@@ -278,6 +278,13 @@ fn grants(
 }
 
 fn writable(effect: &Effect, answer: &mut Answer, why: &mut Queue<Finding>) {
+    let mut unavailable = effect.access == EffectAccess::Unavailable;
+    for resource in &effect.additional {
+        unavailable |= resource.access == EffectAccess::Unavailable;
+    }
+    if unavailable {
+        find(answer, why, Answer::Refuse, Finding::ResourceUnavailable);
+    }
     let mut denied = match effect.access {
         EffectAccess::Owned | EffectAccess::Participant => false,
         EffectAccess::Context | EffectAccess::Unavailable => true,

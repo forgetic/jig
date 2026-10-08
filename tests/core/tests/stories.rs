@@ -514,6 +514,16 @@ fn resource_member(world: &World, id: u64, words: &[u8]) -> core::Delegate {
 }
 
 fn configure_resources(world: &mut World) {
+    for id in [1, 2] {
+        world.send(root::Event::Connector {
+            number: 1,
+            event: connector::Event::Adopt {
+                project: 1,
+                resource: jig_test_connector_world::path(1, id),
+                role: connector::ResourceRole::Owned,
+            },
+        });
+    }
     world.configure_holds(
         1,
         Box::new([
@@ -699,10 +709,6 @@ fn a_batch_waits_without_creating_a_task_or_reserving_funding_until_its_resource
     let mut world = plan_world(152);
     let parent = world.assignments[0];
     let resource = jig_test_connector_world::path(1, 1);
-    world.send(root::Event::Connector {
-        number: 1,
-        event: connector::Event::Adopt { project: 1, resource: resource.clone(), role: connector::ResourceRole::Owned },
-    });
     let before = match world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(parent.0)))) {
         Some(root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row)))) => row.numbers,
         row => panic!("parent row: {row:?}"),
@@ -737,6 +743,10 @@ fn a_batch_waits_without_creating_a_task_or_reserving_funding_until_its_resource
     assert!(matches!(row, root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row))) if row.numbers == before));
     world.send(root::Event::Connector {
         number: 1,
+        event: connector::Event::Adopt { project: 1, resource: resource.clone(), role: connector::ResourceRole::Owned },
+    });
+    world.send(root::Event::Connector {
+        number: 1,
         event: connector::Event::Names { task: 100, project: 1, resources: Box::new([resource]) },
     });
     assert!(world.store.rows.contains_key(&key), "a connector report resumes the whole batch");
@@ -744,4 +754,130 @@ fn a_batch_waits_without_creating_a_task_or_reserving_funding_until_its_resource
     let run = running(&world, 100);
     finish(&mut world, run, b"reported work done");
     finish(&mut world, parent, b"done");
+}
+
+#[test]
+fn re_adopting_a_resource_as_context_refuses_the_existing_tasks_next_effect() {
+    let mut world = World::new(153, false);
+    let resource = jig_test_connector_world::path(1, 1);
+    let task = world.call_key(1).task;
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::Adopt { project: 1, resource: resource.clone(), role: connector::ResourceRole::Owned },
+    });
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::Names { task, project: 1, resources: Box::new([resource.clone()]) },
+    });
+    world.send(root::Event::Core(core::Event::EffectConnector(core::connector::Event::Resource {
+        project: 2,
+        name: tasks::Name { connector: 1, path: resource.segments().into() },
+        role: core::connector::ResourceRole::Context,
+        hold: core::connector::HoldKind::Exclusive { wait: true },
+    })));
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::Adopt {
+            project: 1,
+            resource: resource.clone(),
+            role: connector::ResourceRole::Participating,
+        },
+    });
+    world.call(1, 8153);
+    assert_eq!(world.systems[0].observed().iter().filter(|entry| entry.applied).count(), 1);
+    let spent = world.spent();
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::Adopt { project: 1, resource, role: connector::ResourceRole::Context },
+    });
+    let mut context_effect = World::effect();
+    context_effect.purpose = 21;
+    world.send(root::Event::EffectCall {
+        to: ReplyTo::new(Token::new(8155)),
+        key: world.call_key(2),
+        number: 1,
+        effect: context_effect,
+        deadline: skein_lib::Wall::from_nanos(1_000_000_000),
+        proposal: None,
+    });
+    assert!(matches!(world.answers.last(), Some((_, _, core::CallPart::EffectDenied {
+        answer: authority::Answer::Refuse, findings,
+    })) if findings.contains(&authority::Finding::ResourceAccess)));
+    assert_eq!(world.systems[0].observed().iter().filter(|entry| entry.applied).count(), 1);
+    assert_eq!(world.spent(), spent);
+}
+
+#[test]
+fn a_resource_becoming_unavailable_holds_its_waiter_and_refuses_a_new_hold() {
+    let mut world = plan_world(154);
+    configure_resources(&mut world);
+    let parent = world.assignments[0];
+    let spec = resource_member(&world, 1, b"hold the resource");
+    let first = delegate(&mut world, parent, 1, spec);
+    let spec = resource_member(&world, 1, b"wait for the resource");
+    let waiting = delegate(&mut world, parent, 2, spec);
+    assert_eq!(world.assignments.len(), 2);
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::System(connector::SystemEvent::Unavailable {
+            project: 1,
+            resource: jig_test_connector_world::path(1, 1),
+        }),
+    });
+    for task in [first, waiting] {
+        assert!(matches!(world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(task)))),
+            Some(root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row))))
+                if matches!(row.phase, tasks::Phase::Held { why: tasks::Hold::ResourceUnavailable, .. })));
+    }
+    assert_eq!(world.assignments.len(), 2, "an unavailable waiter is not assigned");
+    let spec = resource_member(&world, 1, b"new hold on unavailable resource");
+    world.send(root::Event::Core(core::Event::DelegateValidated {
+        to: ReplyTo::new(Token::new(9155)),
+        key: core::CallKey { task: parent.0, attempt: parent.1, completion: 3, position: 0 },
+        batch: Box::new([spec]),
+        stubs: Box::new([]),
+    }));
+    assert!(matches!(world.answers.last().expect("unavailable batch answer").2,
+        core::CallPart::DelegationRefused(ref problem) if problem.why == tasks::Refusal::ResourceUnavailable));
+}
+
+#[test]
+fn re_adopting_a_running_workspace_as_context_stops_its_writer() {
+    let mut world = plan_world(155);
+    configure_resources(&mut world);
+    let parent = world.assignments[0];
+    let spec = resource_member(&world, 1, b"write this resource");
+    let child = delegate(&mut world, parent, 1, spec);
+    assert_eq!(world.assignments.len(), 2);
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::Adopt {
+            project: 1,
+            resource: jig_test_connector_world::path(1, 1),
+            role: connector::ResourceRole::Context,
+        },
+    });
+    assert!(matches!(world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(child)))),
+        Some(root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row))))
+            if matches!(row.phase, tasks::Phase::Held { why: tasks::Hold::ResourceAccess, .. })));
+    assert_eq!(world.assignments.len(), 2);
+}
+
+#[test]
+fn a_context_adoption_still_refuses_effects_after_a_cold_restart() {
+    let mut world = World::new(156, false);
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::Adopt {
+            project: 1,
+            resource: jig_test_connector_world::path(1, 1),
+            role: connector::ResourceRole::Context,
+        },
+    });
+    world.restart_with(fixture(156, false).0);
+    world.call(1, 8156);
+    assert!(matches!(world.answers.last(), Some((_, _, core::CallPart::EffectDenied {
+        answer: authority::Answer::Refuse, findings,
+    })) if findings.contains(&authority::Finding::ResourceAccess)));
+    assert!(world.systems[0].observed().is_empty());
 }

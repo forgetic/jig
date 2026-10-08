@@ -299,8 +299,8 @@ fn adoption_and_names_report_roles_and_holds_from_the_connector() {
         Box::from([Request::Unknown { task: 4, resource: service() }])
     );
     let adopted = run(&mut connector, Event::Adopt { project: 1, resource: service(), role: ResourceRole::Owned });
-    assert_eq!(adopted.len(), 2);
-    assert_eq!(adopted[1], Request::Adopted { project: 1, resource: service(), result: Adoption::Added });
+    assert_eq!(adopted.len(), 3);
+    assert_eq!(adopted[2], Request::Adopted { project: 1, resource: service(), result: Adoption::Added });
     let named = run(&mut connector, Event::Names { task: 4, project: 1, resources: Box::from([service()]) });
     assert_eq!(named.len(), 2);
     assert_eq!(
@@ -310,6 +310,7 @@ fn adoption_and_names_report_roles_and_holds_from_the_connector() {
     assert_eq!(
         named[1],
         Request::Named {
+            project: 1,
             task: 4,
             resources: Box::from([crate::Named {
                 path: service(),
@@ -345,7 +346,7 @@ fn context_resources_cannot_be_upgraded_to_a_write_role() {
     );
     assert_eq!(
         run(&mut connector, Event::Adopt { project: 1, resource: service(), role: ResourceRole::Context }).len(),
-        2
+        3
     );
     config.resources = Box::from([]);
     let mut other = Domain::new(config, &LIMITS);
@@ -407,7 +408,8 @@ fn restored_records_rebuild_adoptions_names_topics_and_pool_slots() {
         for request in run(&mut original, event) {
             match request {
                 Request::Save { record } => records.push(record).expect("four changes made four records"),
-                Request::Named { .. }
+                Request::Resource { .. }
+                | Request::Named { .. }
                 | Request::Described { .. }
                 | Request::EffectBusy { .. }
                 | Request::EffectRefused { .. }
@@ -436,7 +438,19 @@ fn restored_records_rebuild_adoptions_names_topics_and_pool_slots() {
     }
     let mut cold = domain();
     for record in &records {
-        assert!(run(&mut cold, Event::Restore { record: record.clone() }).is_empty());
+        let restored = run(&mut cold, Event::Restore { record: record.clone() });
+        if let Record::Adoption { project, path, role } = record {
+            match restored.as_ref() {
+                [Request::Resource { project: reported_project, resource }] => {
+                    assert_eq!(reported_project, project);
+                    assert_eq!(&resource.path, path);
+                    assert_eq!(&resource.role, role);
+                }
+                other => panic!("restored adoption report: {other:?}"),
+            }
+        } else {
+            assert!(restored.is_empty());
+        }
     }
     assert_eq!(cold.slots(&pool()), Some(1));
     assert_eq!(cold.live_tasks(), 1);

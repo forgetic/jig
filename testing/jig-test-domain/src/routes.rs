@@ -237,11 +237,12 @@ fn specification_holdings(
                         Some(connector::ResourceRole::Owned) => core::connector::ResourceRole::Owned,
                         Some(connector::ResourceRole::Participating) => core::connector::ResourceRole::Participant,
                         Some(connector::ResourceRole::Context) => core::connector::ResourceRole::Context,
-                        None => core::connector::ResourceRole::Unavailable,
+                        Some(connector::ResourceRole::Unavailable) | None => core::connector::ResourceRole::Unavailable,
                     };
                     let hold = report_hold(domain, number, &described.path, described.hold);
                     let name = tasks::Name { connector: number, path: name(described.path.clone()).segments };
                     work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Resource {
+                        project,
                         name: name.clone(),
                         role,
                         hold,
@@ -650,21 +651,11 @@ pub(super) fn route_connector(
                 let name = tasks::Name { connector: number, path: name(pool).segments };
                 work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::PoolSlots { name, slots })));
             }
-            connector::Request::Named { task: _, resources } => {
-                for resource in resources {
-                    let hold = report_hold(domain, number, &resource.path, resource.hold);
-                    let role = match resource.role {
-                        connector::ResourceRole::Owned => core::connector::ResourceRole::Owned,
-                        connector::ResourceRole::Participating => core::connector::ResourceRole::Participant,
-                        connector::ResourceRole::Context => core::connector::ResourceRole::Context,
-                    };
-                    let name = tasks::Name { connector: number, path: name(resource.path).segments };
-                    work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Resource {
-                        name,
-                        role,
-                        hold,
-                    })));
-                }
+            connector::Request::Named { task: _, project, resources } => {
+                resource_reports(domain, number, project, resources, work);
+            }
+            connector::Request::Resource { project, resource } => {
+                resource_reports(domain, number, project, Box::new([resource]), work);
             }
             connector::Request::Make { entry: _ }
             | connector::Request::Adopted { project: _, resource: _, result: _ }
@@ -850,5 +841,31 @@ fn report_hold(
                 connector::HoldMode::Refuse => false,
             },
         },
+    }
+}
+
+/// Translate current roles and holds together, scoped to the adopting project.
+fn resource_reports(
+    domain: &mut Domain,
+    number: u16,
+    project: u32,
+    resources: Box<[connector::Named]>,
+    work: &mut Queue<Work>,
+) {
+    for resource in resources {
+        let hold = report_hold(domain, number, &resource.path, resource.hold);
+        let role = match resource.role {
+            connector::ResourceRole::Owned => core::connector::ResourceRole::Owned,
+            connector::ResourceRole::Participating => core::connector::ResourceRole::Participant,
+            connector::ResourceRole::Context => core::connector::ResourceRole::Context,
+            connector::ResourceRole::Unavailable => core::connector::ResourceRole::Unavailable,
+        };
+        let name = tasks::Name { connector: number, path: name(resource.path).segments };
+        work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Resource {
+            project,
+            name,
+            role,
+            hold,
+        })));
     }
 }

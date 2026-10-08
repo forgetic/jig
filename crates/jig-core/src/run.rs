@@ -38,6 +38,14 @@ impl Core {
     pub fn run_admission(&self, task: &tasks::RunContext, wall: Wall, writes: Box<[authority::Write]>) -> RunAdmission {
         let mut findings =
             Queue::with_capacity(authority::max_out(self.authority.limits()).expect("authority check bound"));
+        let mut current = List::with_capacity(self.authority.limits().writes);
+        for mut write in writes {
+            write.effect = crate::resources::effect(self, task.project, write.effect);
+            if current.push(write).is_err() {
+                return RunAdmission::Hold(tasks::Hold::Effects);
+            }
+        }
+        let writes = current.into_boxed();
         let numbers = translate::authority_numbers(task.numbers);
         let checked = authority::check_run(
             &self.authority,
@@ -70,6 +78,19 @@ impl Core {
                                 hold = Some(tasks::Hold::Budget);
                             }
                         }
+                        authority::Finding::ResourceUnavailable => {
+                            if hold.is_none()
+                                || hold == Some(tasks::Hold::Effects)
+                                || hold == Some(tasks::Hold::ResourceAccess)
+                            {
+                                hold = Some(tasks::Hold::ResourceUnavailable);
+                            }
+                        }
+                        authority::Finding::ResourceAccess => {
+                            if hold.is_none() || hold == Some(tasks::Hold::Effects) {
+                                hold = Some(tasks::Hold::ResourceAccess);
+                            }
+                        }
                         authority::Finding::Oversized
                         | authority::Finding::UnknownProject
                         | authority::Finding::UnknownRole
@@ -79,7 +100,6 @@ impl Core {
                         | authority::Finding::Writer
                         | authority::Finding::Tool
                         | authority::Finding::Grant { .. }
-                        | authority::Finding::ResourceAccess
                         | authority::Finding::Reference
                         | authority::Finding::Scope { .. }
                         | authority::Finding::Required { .. }

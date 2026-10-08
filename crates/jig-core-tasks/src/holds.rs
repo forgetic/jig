@@ -262,7 +262,9 @@ pub(crate) fn writer_holder(domain: &Domain, resource: &Name) -> Option<u64> {
     None
 }
 
-pub(crate) fn valid_name(limits: &Limits, resource: &Name) -> bool {
+/// Whether an opaque resource name fits the configured hold bounds.
+#[must_use]
+pub fn valid_name(limits: &Limits, resource: &Name) -> bool {
     shape(limits, resource)
 }
 
@@ -292,6 +294,9 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batc
         for (index, needed) in new.holdings.iter().enumerate() {
             if !shape(limits, name(needed)) {
                 return Err(Problem::new(Some(new.number), Refusal::Holds));
+            }
+            if available_access(domain, new.project, name(needed)) == crate::ResourceAccess::Unavailable {
+                return Err(Problem::new(Some(new.number), Refusal::ResourceUnavailable));
             }
             let Some(rule) = rule(domain, needed) else {
                 return Err(Problem::new(Some(new.number), Refusal::HoldKind));
@@ -393,7 +398,9 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batc
 pub(crate) fn free(domain: &Domain, number: u64) -> bool {
     let row = record(domain, number).expect("waiting task live");
     for needed in &row.holdings {
-        if !available(domain, needed, 0) {
+        if available_access(domain, row.project, name(needed)) == crate::ResourceAccess::Unavailable
+            || !available(domain, needed, 0)
+        {
             return false;
         }
     }
@@ -648,5 +655,72 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>) {
             let due = env.now.saturating_add(skein_lib::Duration::from_nanos(remaining));
             domain.hold_alarms.arm(*number, due).expect("one restored alarm per waiting task");
         }
+    }
+}
+
+/// Project-local access key; holds themselves remain global by name.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(crate) struct ResourceKey {
+    project: u32,
+    name: Name,
+}
+
+pub(crate) fn available_access(domain: &Domain, project: u32, name: &Name) -> crate::ResourceAccess {
+    match domain.resource_access.get(&ResourceKey { project, name: name.clone() }) {
+        Some(access) => *access,
+        None if domain.resource_access_full => crate::ResourceAccess::Unavailable,
+        None => crate::ResourceAccess::Writable,
+    }
+}
+
+pub(crate) fn access(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    project: u32,
+    name: Name,
+    access: crate::ResourceAccess,
+    out: &mut Queue<Request>,
+) {
+    if !shape(&env.limits, &name) {
+        return;
+    }
+    let key = ResourceKey { project, name: name.clone() };
+    if access == crate::ResourceAccess::Writable && !domain.resource_access_full {
+        domain.resource_access.remove(&key);
+    } else if domain.resource_access.insert(key, access).is_err() {
+        domain.resource_access_full = true;
+    }
+    let mut stopped = List::with_capacity(env.limits.tasks);
+    for (number, _) in &domain.names {
+        let row = record(domain, *number).expect("live task");
+        if row.project != project {
+            continue;
+        }
+        let mut unavailable = false;
+        if access == crate::ResourceAccess::Unavailable {
+            for holding in &row.holdings {
+                unavailable |= self::name(holding) == &name;
+            }
+        }
+        let mut forbidden = false;
+        if access != crate::ResourceAccess::Writable
+            && let Some(slot) = domain.writers.get(&name)
+        {
+            match slot.writer {
+                crate::Writer::Run { task, .. } => forbidden = task == *number,
+                crate::Writer::Effect { .. } => {}
+            }
+        }
+        if unavailable || forbidden {
+            stopped
+                .push((
+                    *number,
+                    if unavailable { crate::Hold::ResourceUnavailable } else { crate::Hold::ResourceAccess },
+                ))
+                .expect("bounded live tasks");
+        }
+    }
+    for (number, why) in stopped.into_boxed() {
+        crate::run::hold(domain, env, number, why, out);
     }
 }

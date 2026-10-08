@@ -1828,6 +1828,7 @@ fn person_task_refusal(why: tasks::Refusal) -> people::Refusal {
     match why {
         tasks::Refusal::Busy | tasks::Refusal::NotReady => people::Refusal::Busy,
         tasks::Refusal::Unknown => people::Refusal::Ended,
+        tasks::Refusal::ResourceUnavailable => people::Refusal::ResourceUnavailable,
         tasks::Refusal::State | tasks::Refusal::Executor | tasks::Refusal::Reference => people::Refusal::Standing,
         tasks::Refusal::Funding | tasks::Refusal::AuthorityShape => people::Refusal::Authority,
         tasks::Refusal::Duplicate
@@ -2743,6 +2744,7 @@ fn person_move_refusal(why: tasks::Refusal) -> people::Refusal {
     match why {
         tasks::Refusal::Busy | tasks::Refusal::NotReady => people::Refusal::Busy,
         tasks::Refusal::Unknown => people::Refusal::Ended,
+        tasks::Refusal::ResourceUnavailable => people::Refusal::ResourceUnavailable,
         tasks::Refusal::Reference | tasks::Refusal::State => people::Refusal::Standing,
         tasks::Refusal::Funding => people::Refusal::Authority,
         tasks::Refusal::Duplicate
@@ -2776,6 +2778,7 @@ fn person_message_refusal(why: tasks::Refusal) -> people::Refusal {
     match why {
         tasks::Refusal::Busy | tasks::Refusal::NotReady => people::Refusal::Busy,
         tasks::Refusal::Unknown => people::Refusal::Unknown,
+        tasks::Refusal::ResourceUnavailable => people::Refusal::ResourceUnavailable,
         tasks::Refusal::State => people::Refusal::Standing,
         tasks::Refusal::Duplicate
         | tasks::Refusal::Empty
@@ -3523,8 +3526,13 @@ fn workspace_prepared(
         out.push(Request::Decided);
         return Requests::Out(out);
     };
-    if core.run_admission(&context, env.wall, writes) != crate::RunAdmission::Allow {
-        work.push(Event::Tasks(tasks::Event::Hold { task, why: tasks::Hold::Effects }));
+    let why = match core.run_admission(&context, env.wall, writes) {
+        crate::RunAdmission::Allow => None,
+        crate::RunAdmission::Account => Some(tasks::Hold::Effects),
+        crate::RunAdmission::Hold(why) => Some(why),
+    };
+    if let Some(why) = why {
+        work.push(Event::Tasks(tasks::Event::Hold { task, why }));
         out.push(Request::Now(Box::new(Now::RunPreparationFailed { task })));
         out.push(Request::Decided);
         return Requests::Out(out);

@@ -43,6 +43,8 @@ pub struct Domain {
     pub(crate) escalation_alarms: Deadlines<u64>,
     pub(crate) hold_alarms: Deadlines<u64>,
     pub(crate) hold_kinds: Map<crate::holds::KindKey, crate::HoldKind>,
+    pub(crate) resource_access: Map<crate::holds::ResourceKey, crate::ResourceAccess>,
+    pub(crate) resource_access_full: bool,
     pub(crate) resources: Map<crate::Name, crate::HoldKind>,
     pub(crate) pools: Map<crate::Name, crate::PoolSlots>,
     pub(crate) next_pool: u64,
@@ -130,6 +132,8 @@ impl Domain {
             escalation_alarms: Deadlines::with_capacity(limits.tasks),
             hold_alarms: Deadlines::with_capacity(limits.tasks),
             hold_kinds: Map::with_capacity(limits.hold_kinds),
+            resource_access: Map::with_capacity(limits.resource_reports),
+            resource_access_full: false,
             resources: Map::with_capacity(limits.resource_reports),
             pools: Map::with_capacity(limits.pools),
             next_pool: 0,
@@ -382,6 +386,9 @@ pub fn max_out(limits: &Limits) -> u32 {
 #[expect(clippy::too_many_lines, reason = "the closed task event vocabulary dispatches to focused handlers")]
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
+        Event::ResourceAccess { project, name, access } => {
+            crate::holds::access(domain, env, project, name, access, out);
+        }
         Event::Resource { name, hold } => crate::holds::resource(domain, &env.limits, name, hold),
         Event::Kinds { connector, kinds } => crate::holds::kinds(domain, &env.limits, connector, &kinds),
         Event::Slots { pool, slots } => crate::holds::slots(domain, &env.limits, pool, slots, out),

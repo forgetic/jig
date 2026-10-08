@@ -90,6 +90,7 @@ pub struct EffectDescription {
 #[derive(Debug)]
 pub enum Event {
     Resource {
+        project: u32,
         name: tasks::Name,
         role: ResourceRole,
         hold: HoldKind,
@@ -526,7 +527,14 @@ impl Core {
         if description.connector != description.effect.connector {
             return authority::Answer::Refuse;
         }
-        authority::check_projection(&self.authority, project, &description.effect, now, given, findings)
+        authority::check_projection(
+            &self.authority,
+            project,
+            &crate::resources::effect(self, project, description.effect.clone()),
+            now,
+            given,
+            findings,
+        )
     }
 
     /// Check the write named by a connector for a run being prepared.
@@ -547,7 +555,10 @@ impl Core {
                 budget: authority::left(numbers).min(self.authority.rules().maximum_run_spend),
                 wall: now,
                 accounts: Box::new([self.accounts.usable(self.settings.account)]),
-                writes: Box::new([authority::Write { effect, held: authority::Writer::Task }]),
+                writes: Box::new([authority::Write {
+                    effect: crate::resources::effect(self, context.project, effect),
+                    held: authority::Writer::Task,
+                }]),
             },
             findings,
         )
@@ -573,7 +584,7 @@ impl Core {
                 project: context.project,
                 authority: translate::authority_value(&context.authority),
                 numbers: translate::authority_numbers(context.numbers),
-                effect: description.effect.clone(),
+                effect: crate::resources::effect(self, context.project, description.effect.clone()),
                 now,
             },
             verdicts,

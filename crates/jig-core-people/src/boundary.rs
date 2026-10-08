@@ -339,6 +339,8 @@ pub enum EscalationChoice {
 /// completed key, while other decided refusals are retained. (domain/people.md, section 5.1).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Refusal {
+    /// A connector reports a required resource unavailable.
+    ResourceUnavailable,
     /// The requested operation has no offered core route.
     NotOffered,
     /// Final policy role cannot pass further; no state mutation.

@@ -223,6 +223,8 @@ pub struct Core {
     pub(crate) person_escalations: Map<Token, routing::PersonEscalation>,
     /// Person task creations waiting for connector-owned resource holdings.
     pub(crate) creating: Map<Token, routing::Creation>,
+    pub(crate) resource_roles: Map<resources::Key, connector::ResourceRole>,
+    pub(crate) resource_roles_full: bool,
     pub(crate) awaiting_resources: Map<Token, resources::Batch>,
     /// Named task delegation batches awaiting connector-owned holdings.
     pub(crate) creating_delegates: Map<Token, routing::DelegateCreation>,
@@ -472,6 +474,8 @@ impl Core {
             person_tasks: Map::with_capacity(limits.people.pending),
             person_escalations: Map::with_capacity(limits.people.pending),
             creating: Map::with_capacity(limits.people.pending),
+            resource_roles: Map::with_capacity(limits.tasks.resource_reports),
+            resource_roles_full: false,
             awaiting_resources: Map::with_capacity(limits.tasks.tasks),
             creating_delegates: Map::with_capacity(limits.call_records),
             creating_procedures: Map::with_capacity(limits.tasks.tasks),

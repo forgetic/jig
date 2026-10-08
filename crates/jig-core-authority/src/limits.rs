@@ -43,8 +43,8 @@ pub struct Limits {
 #[must_use]
 pub fn max_out(limits: &Limits) -> Option<u32> {
     let batch = limits.batch.checked_mul(9)?.checked_add(12)?;
-    let run = limits.writes.checked_mul(5)?.checked_add(limits.accounts)?.checked_add(12)?;
-    let effect = limits.requirements.checked_mul(4)?.checked_add(8)?;
+    let run = limits.writes.checked_mul(6)?.checked_add(limits.accounts)?.checked_add(12)?;
+    let effect = limits.requirements.checked_mul(4)?.checked_add(9)?;
     Some(batch.max(run).max(effect))
 }
 

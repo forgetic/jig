@@ -227,6 +227,8 @@ pub enum ResourceRole {
     Participating,
     /// The application may read it but not write it.
     Context,
+    /// The system no longer permits this resource to be used.
+    Unavailable,
 }
 
 /// A connector's hold shape for a resource kind.
@@ -468,6 +470,8 @@ pub enum Origin {
 pub enum SystemEvent {
     /// A fresh system read or hint for one resource.
     Fact { resource: Path, fact: Fact, origin: Origin },
+    /// The system withdrew access; re-adoption is required to restore it.
+    Unavailable { project: u32, resource: Path },
     /// A pool changed size; named allocations no longer present drift.
     Pool { path: Path, slots: u32, lost: Box<[u64]> },
     /// A hint on a topic, with importance on a configured scale.
@@ -624,6 +628,8 @@ impl Record {
 /// What the connector asks its root to route or commit.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Request {
+    /// Current adoption changed for a resource, including waiting tasks.
+    Resource { project: u32, resource: Named },
     /// All of this task's outbox entries have settled.
     Closed { task: u64 },
     /// An exact verdict, including the fact's observed time when met.
@@ -657,7 +663,7 @@ pub enum Request {
     /// A request to the fake system, held behind any accompanying save.
     System(SystemRequest),
     /// Roles and holds of one live task's named resources.
-    Named { task: u64, resources: Box<[Named]> },
+    Named { task: u64, project: u32, resources: Box<[Named]> },
     /// A name was unknown or not adopted by its project.
     Unknown { task: u64, resource: Path },
     /// A task's request exceeds a configured bound.

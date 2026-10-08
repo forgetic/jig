@@ -73,10 +73,14 @@ pub(crate) fn claim(
                 break;
             }
         }
-        if !crate::holds::valid_name(limits, resource)
-            || !covers(domain, task, resource, limits.depth.saturating_add(1))
-            || duplicate
-        {
+        if !crate::holds::valid_name(limits, resource) {
+            return Err(None);
+        }
+        let Some(row) = record(domain, task) else { return Err(None) };
+        if crate::holds::available_access(domain, row.project, resource) != crate::ResourceAccess::Writable {
+            return Err(None);
+        }
+        if !covers(domain, task, resource, limits.depth.saturating_add(1)) || duplicate {
             return Err(None);
         }
         if domain.writers.contains_key(resource) {

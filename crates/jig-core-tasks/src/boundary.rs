@@ -473,6 +473,10 @@ pub enum Hold {
     Deadline,
     /// A task waited beyond the bound for its required resource holds.
     HoldsWaited,
+    /// A connector reports that a named resource is no longer available.
+    ResourceUnavailable,
+    /// Current adoption forbids a running workspace write.
+    ResourceAccess,
     /// The numbered pool lost its allocation while this task held or awaited it.
     PoolLost { pool: u64 },
     /// A procedure asked its requester for a decision.
@@ -490,6 +494,8 @@ impl Hold {
             | Hold::Stalled
             | Hold::Stopped
             | Hold::Drift
+            | Hold::ResourceUnavailable
+            | Hold::ResourceAccess
             | Hold::Effects
             | Hold::EffectFailed
             | Hold::Budget
@@ -884,6 +890,8 @@ impl Stored {
 /// (domain/tasks.md, sections 4–5).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Refusal {
+    /// A required resource is unavailable in this project.
+    ResourceUnavailable,
     /// Startup is restoring or failed; no mutation is admitted.
     NotReady,
     /// Named creator/task is not in the live arena.
@@ -994,6 +1002,8 @@ pub enum Accepted {
 pub enum Event {
     /// Latest connector admission rule for this individual resource.
     Resource { name: Name, hold: HoldKind },
+    /// Current adoption access for a named resource in one project.
+    ResourceAccess { project: u32, name: Name, access: ResourceAccess },
     /// Root installs one connector's bounded resource-kind configuration.
     Kinds { connector: u16, kinds: Box<[Kind]> },
     /// Connector reports its current slot count for one opaque pool.
@@ -1554,4 +1564,15 @@ pub struct DelegationContext {
     pub authority: Authority,
     pub numbers: Numbers,
     pub tasks_left: u32,
+}
+
+/// Current connector access, independent of the resource's hold kind.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ResourceAccess {
+    /// Owned or participating writes can be checked against grants.
+    Writable,
+    /// Reads remain available, but writes are forbidden.
+    Context,
+    /// Neither effects nor holds are available.
+    Unavailable,
 }

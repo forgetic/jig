@@ -45,6 +45,14 @@ fn random_pool_sizes_shrink_and_grow_while_finishes_wait_for_their_commits() {
                     hold: tasks::HoldKind::Pooled { taken: tasks::Taken::Waits },
                 }]),
             );
+            world.send(root::Event::Connector {
+                number: 1,
+                event: connector::Event::Adopt {
+                    project: 1,
+                    resource: jig_test_connector_world::path(1, 2),
+                    role: connector::ResourceRole::Owned,
+                },
+            });
             let initial = u32::try_from(1 + rng.below(2)).expect("small pool");
             pool(&mut world, initial);
             let parent = world.assignments[0];

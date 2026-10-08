@@ -194,7 +194,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         }
         Event::Make { entry } => crate::outbox::make(domain, env, entry, out),
         Event::Withdraw { entry } => crate::outbox::withdraw(domain, entry, out),
-        Event::Restore { record } => restore(domain, record),
+        Event::Restore { record } => restore(domain, record, out),
         Event::System(system) => system_event(domain, env, system, out),
     }
     restart_complete(domain, out);
@@ -336,7 +336,7 @@ fn names(
     let previous = domain.tasks.insert(task, record.clone());
     assert!(previous.is_ok(), "task capacity checked before mutation");
     out.push(Request::Save { record });
-    out.push(Request::Named { task, resources: named.into_boxed() });
+    out.push(Request::Named { task, project, resources: named.into_boxed() });
 }
 
 fn unnamed(domain: &mut Domain, task: u64, out: &mut Queue<Request>) {
@@ -380,6 +380,9 @@ fn adopt(
             }
         }
     };
+    if result == Adoption::Added {
+        report_adoption(domain, project, &resource, out);
+    }
     out.push(Request::Adopted { project, resource, result });
 }
 
@@ -420,7 +423,7 @@ fn unsubscribe(domain: &mut Domain, task: u64, topic: u16, out: &mut Queue<Reque
     }
 }
 
-fn restore(domain: &mut Domain, record: Record) {
+fn restore(domain: &mut Domain, record: Record, out: &mut Queue<Request>) {
     match record {
         Record::Procedure(state) => {
             domain.procedures.insert(state.task, state).expect("restored procedure fits");
@@ -432,7 +435,8 @@ fn restore(domain: &mut Domain, record: Record) {
             domain.tasks.insert(task, Record::Task { task, project, resources }).expect("restored task fits");
         }
         Record::Adoption { project, path, role } => {
-            domain.adoptions.insert((project, path), role).expect("restored adoption fits");
+            domain.adoptions.insert((project, path.clone()), role).expect("restored adoption fits");
+            report_adoption(domain, project, &path, out);
         }
         Record::Subscription { topic, task, wake_at, keep_at } => {
             domain.subscriptions.insert((topic, task), (wake_at, keep_at)).expect("restored subscription fits");
@@ -450,6 +454,15 @@ fn restore(domain: &mut Domain, record: Record) {
 
 fn system_event(domain: &mut Domain, env: &Env<Limits>, event: SystemEvent, out: &mut Queue<Request>) {
     match event {
+        SystemEvent::Unavailable { project, resource } => {
+            if domain.adoptions.contains_key(&(project, resource.clone())) {
+                let _previous = domain.adoptions.insert((project, resource.clone()), ResourceRole::Unavailable);
+                out.push(Request::Save {
+                    record: Record::Adoption { project, path: resource.clone(), role: ResourceRole::Unavailable },
+                });
+                report_adoption(domain, project, &resource, out);
+            }
+        }
         SystemEvent::Fact { resource, fact, origin } => {
             crate::requirements::fact(domain, env, resource, fact, origin, out);
         }
@@ -498,4 +511,11 @@ fn system_event(domain: &mut Domain, env: &Env<Limits>, event: SystemEvent, out:
         SystemEvent::Applied { entry, attempt, result } => crate::outbox::applied(domain, entry, attempt, result, out),
         SystemEvent::Looked { entry, looked } => crate::outbox::looked(domain, env, entry, looked, out),
     }
+}
+
+/// One report updates the resource for every task in its project.
+fn report_adoption(domain: &Domain, project: u32, resource: &Path, out: &mut Queue<Request>) {
+    let Some(role) = domain.resource_role(project, resource) else { return };
+    let Some(spec) = resource_spec(&domain.config, resource) else { return };
+    out.push(Request::Resource { project, resource: Named { path: resource.clone(), role, hold: spec.hold } });
 }

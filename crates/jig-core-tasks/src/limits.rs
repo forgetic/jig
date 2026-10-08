@@ -208,9 +208,10 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Map::<crate::holds::KindKey, crate::HoldKind>::worst_case(limits.hold_kinds)?)?
+        .checked_add(Map::<crate::holds::ResourceKey, crate::ResourceAccess>::worst_case(limits.resource_reports)?)?
         .checked_add(Map::<crate::Name, crate::HoldKind>::worst_case(limits.resource_reports)?)?
         .checked_add(
-            u64::from(limits.resource_reports).checked_mul(
+            u64::from(limits.resource_reports).checked_mul(2)?.checked_mul(
                 u64::from(limits.hold_segments)
                     .checked_mul(u64::try_from(size_of::<Box<[u8]>>()).ok()?)?
                     .checked_add(u64::from(limits.hold_bytes))?,

@@ -101,8 +101,17 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         notes::worst_case(&limits.notes)?,
         views::worst_case(&limits.views)?,
     ];
-    let mut total =
-        crate::effect_worst_case(limits)?.checked_add(crate::conversation_worst_case(limits)?)?.checked_add(pending)?;
+    let roles =
+        Map::<crate::resources::Key, crate::connector::ResourceRole>::worst_case(limits.tasks.resource_reports)?
+            .checked_add(bytes(
+                limits.tasks.resource_reports,
+                bytes(limits.tasks.hold_segments, sizeof(size_of::<Box<[u8]>>())?)?
+                    .checked_add(u64::from(limits.tasks.hold_bytes))?,
+            )?)?;
+    let mut total = crate::effect_worst_case(limits)?
+        .checked_add(crate::conversation_worst_case(limits)?)?
+        .checked_add(pending)?
+        .checked_add(roles)?;
     for child in children {
         total = total.checked_add(child)?;
     }

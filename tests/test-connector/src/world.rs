@@ -160,6 +160,7 @@ impl World {
                 | Request::Make { .. }
                 | Request::Outcome { .. }
                 | Request::System(..)
+                | Request::Resource { .. }
                 | Request::Named { .. }
                 | Request::Unknown { .. }
                 | Request::Refused { .. }
@@ -234,6 +235,7 @@ impl World {
                 | Request::EffectBusy { .. }
                 | Request::EffectRefused { .. }
                 | Request::Outcome { .. }
+                | Request::Resource { .. }
                 | Request::Named { .. }
                 | Request::Unknown { .. }
                 | Request::Refused { .. }

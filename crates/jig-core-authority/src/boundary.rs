@@ -91,6 +91,8 @@ pub enum Finding {
     Price { source: Source },
     /// The adopted resource is context only or current access forbids a write.
     ResourceAccess,
+    /// A connector reports a resource unavailable in the project.
+    ResourceUnavailable,
     /// The caller has no verified standing to message the task.
     Reference,
     /// The note scope is absent from this source.

@@ -169,6 +169,14 @@ impl ScenarioApplication for Testing {
                 world.send(root::Event::Connector { number: 2, event: connector::Event::System(event) });
             }
             Action::FillPool => {
+                world.send(root::Event::Connector {
+                    number: 1,
+                    event: connector::Event::Adopt {
+                        project: 1,
+                        resource: jig_test_connector_world::path(1, 2),
+                        role: connector::ResourceRole::Owned,
+                    },
+                });
                 pool(world, 2);
                 world.drain()?;
                 for completion in 1..=3 {

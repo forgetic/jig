@@ -363,7 +363,10 @@ pub(crate) fn connector(
         connector::Event::Drift { task, resource: _ } => {
             work.push(Event::Tasks(tasks::Event::Hold { task, why: tasks::Hold::Drift }));
         }
-        connector::Event::Resource { name, role: _, hold } => {
+        connector::Event::Resource { project, name, role, hold } => {
+            crate::resources::role(core, &env.limits, project, name.clone(), role);
+            let access = crate::resources::task_access(role);
+            work.push(Event::Tasks(tasks::Event::ResourceAccess { project, name: name.clone(), access }));
             let hold = match hold {
                 connector::HoldKind::Shared => tasks::HoldKind::Shared,
                 connector::HoldKind::Exclusive { wait } => {
@@ -1042,7 +1045,7 @@ fn check(
                             project: proposal.project,
                             authority,
                             numbers: crate::translate::authority_numbers(pool),
-                            effect: description.effect.clone(),
+                            effect: crate::resources::effect(core, proposal.project, description.effect.clone()),
                             now: env.wall,
                         },
                         given,

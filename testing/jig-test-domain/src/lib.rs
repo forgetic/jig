@@ -869,35 +869,7 @@ pub fn restore_record(domain: &mut Domain, env: &Env<Limits>, record: Record) ->
             out.is_empty()
         }
         Record::Core(core::Record::Notes(_)) => true,
-        Record::Connector { number, record } => {
-            match &record {
-                connector::Record::Outbox(row) => {
-                    if domain.outbox_tasks.insert(row.number, row.task).is_err() {
-                        return false;
-                    }
-                    // The application encodes procedure purposes with attempt zero.
-                    if row.key.attempt == 0 && domain.outbox_procedures.insert(row.number, number).is_err() {
-                        return false;
-                    }
-                }
-                connector::Record::Proposal { .. }
-                | connector::Record::Procedure(_)
-                | connector::Record::Result { .. }
-                | connector::Record::Task { .. }
-                | connector::Record::Adoption { .. }
-                | connector::Record::Subscription { .. }
-                | connector::Record::Pool { .. }
-                | connector::Record::Made { .. } => {}
-            }
-            let mut out = Queue::with_capacity(connector::MAX_OUT);
-            connector::step(
-                numbered(domain, number),
-                &Env { now: env.now, wall: env.wall, limits: env.limits.connector },
-                connector::Event::Restore { record },
-                &mut out,
-            );
-            true
-        }
+        Record::Connector { number, record } => restore_connector(domain, env, number, record),
     }
 }
 
@@ -913,4 +885,80 @@ fn relay_message(domain: &mut Domain, task: u64, attempt: u64, previous: Option<
         attempt: Token::new(attempt),
         message: fleet::Message { name, sender: body, words: body },
     }))
+}
+
+/// Restore connector-owned rows and replay their current adoption reports.
+fn restore_connector(domain: &mut Domain, env: &Env<Limits>, number: u16, record: connector::Record) -> bool {
+    match &record {
+        connector::Record::Outbox(row) => {
+            if domain.outbox_tasks.insert(row.number, row.task).is_err() {
+                return false;
+            }
+            // The application encodes procedure purposes with attempt zero.
+            if row.key.attempt == 0 && domain.outbox_procedures.insert(row.number, number).is_err() {
+                return false;
+            }
+        }
+        connector::Record::Proposal { .. }
+        | connector::Record::Procedure(_)
+        | connector::Record::Result { .. }
+        | connector::Record::Task { .. }
+        | connector::Record::Adoption { .. }
+        | connector::Record::Subscription { .. }
+        | connector::Record::Pool { .. }
+        | connector::Record::Made { .. } => {}
+    }
+    let mut out = Queue::with_capacity(connector::MAX_OUT);
+    connector::step(
+        numbered(domain, number),
+        &Env { now: env.now, wall: env.wall, limits: env.limits.connector },
+        connector::Event::Restore { record },
+        &mut out,
+    );
+    for _ in 0..out.len() {
+        match out.pop().expect("restored connector output count") {
+            connector::Request::Resource { project, resource } => {
+                let role = match resource.role {
+                    connector::ResourceRole::Owned => core::connector::ResourceRole::Owned,
+                    connector::ResourceRole::Participating => core::connector::ResourceRole::Participant,
+                    connector::ResourceRole::Context => core::connector::ResourceRole::Context,
+                    connector::ResourceRole::Unavailable => core::connector::ResourceRole::Unavailable,
+                };
+                if !domain.core.restore_resource_role(
+                    &Env { now: env.now, wall: env.wall, limits: env.limits.core },
+                    project,
+                    tasks::Name { connector: number, path: resource.path.segments().into() },
+                    role,
+                ) {
+                    return false;
+                }
+            }
+            connector::Request::Closed { .. }
+            | connector::Request::Verdict { .. }
+            | connector::Request::Step { .. }
+            | connector::Request::Answer { .. }
+            | connector::Request::Ready { .. }
+            | connector::Request::Section { .. }
+            | connector::Request::Workspace { .. }
+            | connector::Request::DriftResource { .. }
+            | connector::Request::Changed { .. }
+            | connector::Request::Described { .. }
+            | connector::Request::EffectRefused { .. }
+            | connector::Request::EffectBusy { .. }
+            | connector::Request::Make { .. }
+            | connector::Request::Outcome { .. }
+            | connector::Request::Named { .. }
+            | connector::Request::Unknown { .. }
+            | connector::Request::Refused { .. }
+            | connector::Request::Adopted { .. }
+            | connector::Request::Slots { .. }
+            | connector::Request::Drift { .. }
+            | connector::Request::News { .. }
+            | connector::Request::Save { .. }
+            | connector::Request::Erase { .. }
+            | connector::Request::RestartDone
+            | connector::Request::System(_) => return false,
+        }
+    }
+    true
 }

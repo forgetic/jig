@@ -14,6 +14,10 @@ use std::collections::VecDeque;
 
 /// Root, store and separate systems, with an answer channel that may disappear.
 #[derive(Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "the script independently holds writes, lookups, fresh reads and answers"
+)]
 pub struct World {
     pub domain: root::Domain,
     pub store: Store,
@@ -29,9 +33,15 @@ pub struct World {
     pub pending_reads: Vec<(u16, connector::SystemRequest)>,
     pub lost_answers: u32,
     pub hold_writes: bool,
+    pub recovery: connector::Recovery,
+    pub hold_lookups: bool,
+    pub pending_lookups: Vec<(u16, connector::SystemRequest)>,
     pub pending_writes: Vec<(u16, connector::SystemRequest)>,
     pub lose_answer: bool,
     pub trace: Vec<String>,
+    pub restart_steps: Vec<core::RestartStep>,
+    pub hold_restart_reads: bool,
+    restart_reads: std::collections::BTreeMap<u16, core::RestartStep>,
     events: VecDeque<root::Event>,
     limits: root::Limits,
     wall: u64,
@@ -49,6 +59,7 @@ fn fixture(seed: u64, requirement: bool) -> (root::Config, root::Limits) {
     let mut limits = crate::world::limits();
     limits.core.authority.segments = 2;
     limits.core.people.requests = 16;
+    limits.connector.write_lifetime = Duration::from_secs(1);
     let mut configuration = crate::world::config(seed);
     let mut rules = configuration.core.authority.rules().clone();
     rules.ceiling.grants = Box::new([grant()]);
@@ -117,18 +128,23 @@ impl World {
             pending_reads: Vec::new(),
             lost_answers: 0,
             hold_writes: false,
+            recovery: connector::Recovery::Keyed,
+            hold_lookups: false,
+            pending_lookups: Vec::new(),
             pending_writes: Vec::new(),
             lose_answer: false,
             trace: Vec::new(),
+            restart_steps: Vec::new(),
+            hold_restart_reads: false,
+            restart_reads: std::collections::BTreeMap::new(),
             events: VecDeque::new(),
             limits,
             wall: 0,
         };
+        world.send(root::Event::Core(core::Event::People(people::Event::Roles { project: 1, holdings: Box::new([]) })));
+        world.domain = root::Domain::new(fixture(seed, requirement).0, &limits);
+        world.send(root::Event::RestartBegin);
         world.events.extend([
-            root::Event::Core(core::Event::People(people::Event::Roles { project: 1, holdings: Box::new([]) })),
-            root::Event::Core(core::Event::People(people::Event::Restored)),
-            root::Event::Core(core::Event::Tasks(tasks::Event::Restored)),
-            root::Event::Core(core::Event::Fleet(fleet::Event::Loaded)),
             root::Event::Core(core::Event::Account(accounts::Event::Add {
                 account: 1,
                 generation: 1,
@@ -154,6 +170,9 @@ impl World {
         ]);
         world.drain();
         assert!(world.assigned.is_some(), "the real task hub and fleet assigned the caller: {:?}", world.trace);
+        if requirement {
+            world.waiting_judge();
+        }
         world
     }
 
@@ -181,6 +200,7 @@ impl World {
                 let request = out.pop().expect("root output count");
                 self.trace.push(format!("output {request:?}"));
                 match request {
+                    root::Request::Restart(step) => self.restart_step(step),
                     root::Request::Commit { number, mut writes } => {
                         let mut rows = Vec::new();
                         while let Some(write) = writes.pop() {
@@ -239,8 +259,10 @@ impl World {
         panic!("effect world did not settle: {:?}", self.trace);
     }
 
+    #[expect(clippy::too_many_lines, reason = "one exhaustive delivery handler drives the script's independent peers")]
     fn delivered(&mut self, delivery: root::Delivery) {
         match delivery {
+            root::Delivery::Restart(step) => self.restart_step(step),
             root::Delivery::TypedAnswer { name, call, .. } => self.typed_answers.push((name, call)),
             root::Delivery::Core(core::Held::Inbound { word, .. }) => self.inbound.push(word),
             root::Delivery::Assigned { assignment, .. } => self.assigned = Some(assignment),
@@ -259,11 +281,25 @@ impl World {
             root::Delivery::System {
                 connector: number,
                 call: connector::SystemRequest::ReadFact { resource, observed },
-            } => self.pending_reads.push((number, connector::SystemRequest::ReadFact { resource, observed })),
+            } => {
+                let call = connector::SystemRequest::ReadFact { resource, observed };
+                if self.restart_reads.contains_key(&number) && !self.hold_restart_reads {
+                    let event = self.systems[usize::from(number - 1)].answer(call, Fault::None);
+                    self.events.push_back(root::Event::Connector { number, event: connector::Event::System(event) });
+                    let step = self.restart_reads.remove(&number).expect("restart read");
+                    self.events.push_back(root::Event::RestartDone(step));
+                } else {
+                    self.pending_reads.push((number, call));
+                }
+            }
             root::Delivery::System { connector: number, call } => {
                 if let connector::SystemRequest::Apply { entry, key, .. } = &call {
                     assert!(self.store.rows.values().any(|row| matches!(row, root::Record::Connector { number: owner, record: connector::Record::Outbox(row) } if *owner == number && row.number == *entry && row.key == *key)), "system sees only a committed outbox attempt");
                     assert_eq!(key.deployment, [31; 16]);
+                }
+                if self.hold_lookups && matches!(call, connector::SystemRequest::Look { .. }) {
+                    self.pending_lookups.push((number, call));
+                    return;
                 }
                 if self.hold_writes && matches!(call, connector::SystemRequest::Apply { .. }) {
                     self.pending_writes.push((number, call));
@@ -474,36 +510,99 @@ impl World {
     }
 
     /// Rebuild all live components from the fake store, preserving the systems.
-    pub fn restart(&mut self, seed: u64, requirement: bool) {
-        self.domain = root::Domain::new(fixture(seed, requirement).0, &self.limits);
-        self.events.clear();
-        let env = self.env();
-        for group in 0..4 {
-            for row in self.store.rows.values() {
-                let rank = match row {
-                    root::Record::Core(core::Record::Core(core::CoreRecord::Deployment(_))) => 0,
-                    root::Record::Core(core::Record::Core(core::CoreRecord::RunProof(_))) => 2,
-                    root::Record::Core(core::Record::Core(core::CoreRecord::Call(_))) => 3,
-                    root::Record::Core(
-                        core::Record::Core(
-                            core::CoreRecord::Turn(_)
-                            | core::CoreRecord::Terminal(_)
-                            | core::CoreRecord::ProposalDecision(_)
-                            | core::CoreRecord::EscalationDecision(_),
-                        )
-                        | core::Record::Tasks(tasks::Stored::History(_)),
-                    ) => continue,
-                    root::Record::Core(core::Record::Tasks(_) | core::Record::People(_) | core::Record::Notes(_))
-                    | root::Record::Connector { .. } => 1,
-                };
-                if group == rank {
-                    assert!(root::restore_record(&mut self.domain, &env, row.clone()), "restored {row:?}");
+    fn restart_step(&mut self, step: core::RestartStep) {
+        self.restart_steps.push(step);
+        match step {
+            core::RestartStep::LoadCore => {
+                let rows: Vec<_> = self.store.rows.values().cloned().collect();
+                let env = self.env();
+                for group in 0..4 {
+                    for row in &rows {
+                        let rank = match row {
+                            root::Record::Core(core::Record::Core(core::CoreRecord::Deployment(_))) => 0,
+                            root::Record::Core(core::Record::Core(core::CoreRecord::RunProof(_))) => 2,
+                            root::Record::Core(core::Record::Core(core::CoreRecord::Call(_))) => 3,
+                            root::Record::Core(
+                                core::Record::Core(
+                                    core::CoreRecord::Turn(_)
+                                    | core::CoreRecord::Terminal(_)
+                                    | core::CoreRecord::ProposalDecision(_)
+                                    | core::CoreRecord::EscalationDecision(_),
+                                )
+                                | core::Record::Tasks(tasks::Stored::History(_)),
+                            )
+                            | root::Record::Connector { .. } => continue,
+                            root::Record::Core(
+                                core::Record::Tasks(_) | core::Record::People(_) | core::Record::Notes(_),
+                            ) => 1,
+                        };
+                        if rank == group {
+                            assert!(root::restore_record(&mut self.domain, &env, row.clone()), "restored {row:?}");
+                        }
+                    }
                 }
+                self.events.push_back(root::Event::Core(core::Event::People(people::Event::Restored)));
+                self.events.push_back(root::Event::RestartDone(step));
+            }
+            core::RestartStep::RestoreConnector { connector: number } => {
+                let env = self.env();
+                for row in self.store.rows.values() {
+                    if matches!(row, root::Record::Connector { number: owner, .. } if *owner == number) {
+                        assert!(
+                            root::restore_record(&mut self.domain, &env, row.clone()),
+                            "connector restored {row:?}"
+                        );
+                    }
+                }
+                self.events.push_back(root::Event::RestartDone(step));
+            }
+            core::RestartStep::ReadAfresh { connector: number } => {
+                self.restart_reads.insert(number, step);
+                self.events.push_back(root::Event::Connector {
+                    number,
+                    event: connector::Event::Restart(connector::RestartStep::FreshRead {
+                        resource: jig_test_connector_world::path(1, 1),
+                    }),
+                });
+            }
+            core::RestartStep::SettleOutbox { connector: number } => {
+                self.events.push_back(root::Event::Connector {
+                    number,
+                    event: connector::Event::Restart(connector::RestartStep::SettleOutbox),
+                });
+            }
+            core::RestartStep::AdoptRuns | core::RestartStep::Open => panic!("root performs its synchronous step"),
+        }
+    }
+
+    pub fn finish_restart_reads(&mut self) {
+        let reads = std::mem::take(&mut self.pending_reads);
+        for (number, call) in reads {
+            let event = self.systems[usize::from(number - 1)].answer(call, Fault::None);
+            self.events.push_back(root::Event::Connector { number, event: connector::Event::System(event) });
+            if let Some(step) = self.restart_reads.remove(&number) {
+                self.events.push_back(root::Event::RestartDone(step));
             }
         }
-        self.send(root::Event::Core(core::Event::People(people::Event::Restored)));
-        self.send(root::Event::Core(core::Event::Tasks(tasks::Event::Restored)));
-        self.send(root::Event::Core(core::Event::Fleet(fleet::Event::Loaded)));
+        self.hold_restart_reads = false;
+        self.drain();
+    }
+
+    pub fn restart(&mut self, seed: u64, requirement: bool) {
+        let mut config = fixture(seed, requirement).0;
+        for kind in &mut config.first.kinds {
+            if kind.kind == 5 {
+                kind.recovery = self.recovery;
+            }
+        }
+        self.domain = root::Domain::new(config, &self.limits);
+        self.events.clear();
+        self.pending_reads.clear();
+        self.pending_writes.clear();
+        self.pending_lookups.clear();
+        self.restart_reads.clear();
+        self.restart_steps.clear();
+        self.send(root::Event::RestartBegin);
         self.lose_answer = false;
     }
 }
@@ -576,5 +675,32 @@ impl World {
     pub fn retry_due(&mut self) {
         self.wall += 1_000_000_000;
         self.send(root::Event::Timer(core::Timer::Tasks));
+    }
+}
+
+impl World {
+    #[must_use]
+    pub fn wall_time(&self) -> Wall {
+        Wall::from_nanos(self.wall)
+    }
+
+    pub fn finish_lookups(&mut self) {
+        self.hold_lookups = false;
+        for (number, call) in std::mem::take(&mut self.pending_lookups) {
+            let event = self.systems[usize::from(number - 1)].answer(call, Fault::None);
+            self.events.push_back(root::Event::Connector { number, event: connector::Event::System(event) });
+        }
+        self.drain();
+    }
+
+    pub fn waiting_judge(&mut self) {
+        self.send(root::Event::Connector {
+            number: 2,
+            event: connector::Event::System(connector::SystemEvent::Fact {
+                resource: jig_test_connector_world::path(1, 1),
+                fact: connector::Fact { state: None, observed: Wall::from_nanos(self.wall), pending: true },
+                origin: connector::Origin::Other,
+            }),
+        });
     }
 }

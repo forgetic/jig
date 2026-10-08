@@ -3473,9 +3473,7 @@ fn workspace_prepared(
     let transcript_from = if resume { transcript.from } else { attempt };
     let offered = if context.last_message == 0 { None } else { Some(context.last_message) };
     assert!(
-        core.proofs
-            .insert(task, RunProof { task, attempt, transcript_from, offered, turn: None, terminal: None })
-            .is_ok(),
+        core.proofs.insert(task, RunProof::claimed(task, attempt, transcript_from, offered)).is_ok(),
         "claim proof reserved before child mutation"
     );
     let turns = if resume { core.resumed_turns(transcript) } else { Box::new([]) };
@@ -5016,6 +5014,16 @@ fn tag_brief(core: &mut Core, env: &Env<Limits>, mut child: Queue<brief::GatherR
     Requests::Out(out)
 }
 
+fn record_host(core: &mut Core, out: &mut Queue<Request>, run: Token, attempt: Token, kind: fleet::HostKind) {
+    if let Some(proof) = core.proofs.get_mut(&run.raw())
+        && proof.attempt == attempt.raw()
+        && proof.host != kind
+    {
+        proof.host = kind;
+        out.push(Request::Write(Write::Save(Record::Core(CoreRecord::RunProof(proof.clone())))));
+    }
+}
+
 #[expect(clippy::too_many_lines, reason = "one exhaustive host vocabulary routes its bounded child decision")]
 fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request>, room: u32) -> Requests {
     let marked = room.checked_mul(4).expect("bounded fleet routes");
@@ -5026,7 +5034,8 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
     let mut out = Queue::with_capacity(total.checked_add(1).expect("fleet output room"));
     for _ in 0..child.len() {
         let request = match child.pop().expect("fleet output count") {
-            fleet::Request::Assign { channel, kind: _, run, attempt } => {
+            fleet::Request::Assign { channel, kind, run, attempt } => {
+                record_host(core, &mut out, run, attempt, kind);
                 out.push(Request::Held(Box::new(Held::ViewStart { run, attempt })));
                 Request::Held(Box::new(Held::Assign { channel, run, attempt }))
             }
@@ -5133,7 +5142,8 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                 }
                 continue;
             }
-            fleet::Request::AssignTyped { channel, kind: _, run, attempt, activation, assignment } => {
+            fleet::Request::AssignTyped { channel, kind, run, attempt, activation, assignment } => {
+                record_host(core, &mut out, run, attempt, kind);
                 out.push(Request::Held(Box::new(Held::ViewStart { run, attempt })));
                 Request::Held(Box::new(Held::AssignTyped { channel, run, attempt, activation, assignment }))
             }
@@ -5640,7 +5650,7 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
         Event::Activate { context, ready } => {
             let number = context.task;
             let mut out = Queue::with_capacity(2);
-            if !ready {
+            if !ready || core.restart_step().is_some() || core.restart_failure().is_some() {
                 remember_due(core, context);
             } else if core.tasks.recurring_template(number).is_none() {
                 match context.executor {

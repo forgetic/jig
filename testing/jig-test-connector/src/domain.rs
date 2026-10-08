@@ -24,6 +24,7 @@ pub struct Domain {
     pub(crate) results: Map<u64, u16>,
     pub(crate) values: Map<Token, crate::values::Payload>,
     pub(crate) outbox: Outbox,
+    restart_settling: bool,
 }
 
 impl Domain {
@@ -114,6 +115,7 @@ impl Domain {
             results: Map::with_capacity(limits.procedures),
             values: Map::with_capacity(limits.values),
             outbox: Outbox::new(limits),
+            restart_settling: false,
         }
     }
 
@@ -151,10 +153,8 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             out.push(Request::System(crate::SystemRequest::ReadFact { resource, observed: env.wall }));
         }
         Event::Restart(crate::RestartStep::SettleOutbox) => {
+            domain.restart_settling = true;
             crate::outbox::fire(domain, env, out);
-            if out.is_empty() {
-                out.push(Request::RestartDone);
-            }
         }
         Event::Names { task, project, resources } => names(domain, env, task, project, resources, out),
         Event::Unnamed { task } => unnamed(domain, task, out),
@@ -178,6 +178,14 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::Restore { record } => restore(domain, record),
         Event::System(system) => system_event(domain, env, system, out),
     }
+    restart_complete(domain, out);
+}
+
+fn restart_complete(domain: &mut Domain, out: &mut Queue<Request>) {
+    if domain.restart_settling && crate::outbox::restart_settled(domain) {
+        domain.restart_settling = false;
+        out.push(Request::RestartDone);
+    }
 }
 
 /// The earliest absolute retry deadline of an unsettled entry.
@@ -196,6 +204,7 @@ pub fn next_deadline(domain: &Domain) -> Option<Wall> {
 pub fn fire(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>) {
     assert!(out.room() >= MAX_OUT, "parent reserved the connector's maximum output");
     crate::outbox::fire(domain, env, out);
+    restart_complete(domain, out);
 }
 
 pub(crate) fn valid_path(path: &Path, limits: &Limits) -> bool {

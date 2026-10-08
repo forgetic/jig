@@ -114,10 +114,7 @@ fn late_copies_retries_and_each_recovery_class_keep_their_promise() {
     assert!(unrecoverable.fire().is_empty());
     assert_eq!(unrecoverable.system.observed().len(), 0);
     assert!(
-        unrecoverable
-            .trace()
-            .iter()
-            .any(|request| matches!(request, Request::Outcome { outcome: Outcome::Uncertain, .. }))
+        unrecoverable.trace().iter().any(|request| matches!(request, Request::Outcome { outcome: Outcome::Held, .. }))
     );
 }
 

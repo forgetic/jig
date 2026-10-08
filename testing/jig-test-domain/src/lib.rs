@@ -85,6 +85,8 @@ pub enum Write {
 /// What the journal releases after the associated commit.
 #[derive(Debug)]
 pub enum Delivery {
+    /// Perform this step of the core-owned restart script.
+    Restart(core::RestartStep),
     /// Core-held party, host, task or view output.
     Core(core::Held),
     /// A typed settled answer with its original opaque call name.
@@ -119,6 +121,8 @@ pub struct Assignment {
 /// What the root asks its surrounding world to do.
 #[derive(Debug)]
 pub enum Request {
+    /// First cold load, before the deployment counter is known.
+    Restart(core::RestartStep),
     /// Apply one numbered transaction as a whole.
     Commit { number: u64, writes: Queue<Write> },
     /// Release one output only after its prerequisite commit.
@@ -133,12 +137,17 @@ pub enum Request {
 #[derive(Debug)]
 #[expect(clippy::large_enum_variant, reason = "the testing root moves admitted core events by value")]
 pub enum Event {
+    RestartBegin,
+    RestartDone(core::RestartStep),
     /// Drive one due child timer through the same decision barrier.
     Timer(core::Timer),
     /// A party, host, account or other event in jig's vocabulary.
     Core(core::Event),
     /// One numbered connector's input from its system or a scripted peer.
-    Connector { number: u16, event: connector::Event },
+    Connector {
+        number: u16,
+        event: connector::Event,
+    },
     /// A decoded named effect call, whose payload stays with its connector.
     EffectCall {
         to: ReplyTo,
@@ -159,13 +168,27 @@ pub enum Event {
         transcript: Box<[u8]>,
     },
     /// A scripted worker's retained terminal answer.
-    Answer { channel: Token, task: u64, attempt: u64, cumulative: u64, end: tasks::End },
+    Answer {
+        channel: Token,
+        task: u64,
+        attempt: u64,
+        cumulative: u64,
+        end: tasks::End,
+    },
     /// A bounded store page of prior opaque turns; pages arrive oldest first.
-    TranscriptLoaded { task: u64, rows: Box<[core::TurnRecord]>, done: bool },
+    TranscriptLoaded {
+        task: u64,
+        rows: Box<[core::TurnRecord]>,
+        done: bool,
+    },
     /// Store acknowledgement of this exact commit number.
-    Committed { number: u64 },
+    Committed {
+        number: u64,
+    },
     /// A store failure of this exact commit number.
-    Failed { number: u64 },
+    Failed {
+        number: u64,
+    },
 }
 
 /// Finite room reserved before either child changes state.
@@ -211,6 +234,8 @@ pub struct Domain {
     next_payload: u64,
     decision_wrote: bool,
     stopped_reported: bool,
+    restart_active: bool,
+    restart_load: Option<core::RestartStep>,
 }
 
 impl Domain {
@@ -247,7 +272,14 @@ impl Domain {
             next_payload: 1,
             decision_wrote: false,
             stopped_reported: false,
+            restart_active: false,
+            restart_load: None,
         }
+    }
+
+    #[must_use]
+    pub fn ready(&self) -> bool {
+        !self.restart_active || self.core.restart_ready()
     }
 
     /// Release retired child slots after every complete application iteration.
@@ -258,12 +290,17 @@ impl Domain {
     /// Whether every accepted decision and output has settled.
     #[must_use]
     pub fn quiescent(&self) -> bool {
-        self.journal.idle() && self.now.is_empty() && self.core.due.is_empty() && self.assignments.is_empty()
+        self.journal.idle()
+            && self.now.is_empty()
+            && (!self.ready() || (self.core.due.is_empty() && self.assignments.is_empty()))
     }
 }
 
 #[expect(clippy::large_enum_variant, reason = "the bounded route queue owns complete core events")]
 enum Work {
+    Restart(core::RestartRequest),
+    AdoptRestored,
+    AdoptDone,
     Timer(core::Timer),
     Core(core::Event),
     ResumeFleet,
@@ -307,6 +344,17 @@ enum Payload {
 /// Admit one input and route all synchronous continuations inside one decision.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
     match event {
+        Event::RestartBegin => {
+            domain.restart_active = true;
+            match domain.core.restart_begin() {
+                core::RestartRequest::Step(step) => domain.restart_load = Some(step),
+                core::RestartRequest::Idle | core::RestartRequest::Refused { .. } => {}
+            }
+        }
+        Event::RestartDone(step) => {
+            let request = domain.core.restart_done(step);
+            decide(domain, env, Work::Restart(request));
+        }
         Event::TranscriptLoaded { task, rows, done } => {
             if !domain.core.transcripts.contains_key(&task) {
                 return;
@@ -341,10 +389,14 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one bounded decision routes the complete root work vocabulary")]
 fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
     let core_room = match &first {
         Work::Core(event) => core::room(&env.limits.core, event),
-        Work::Timer(_)
+        Work::Restart(_)
+        | Work::AdoptRestored
+        | Work::AdoptDone
+        | Work::Timer(_)
         | Work::ResumeFleet
         | Work::Connector { .. }
         | Work::EffectCall { .. }
@@ -364,6 +416,44 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
     for _ in 0..env.limits.routes {
         let Some(next) = work.pop() else { break };
         match next {
+            Work::Restart(request) => match request {
+                core::RestartRequest::Idle => {}
+                core::RestartRequest::Refused { .. } => domain.stopped_reported = false,
+                core::RestartRequest::Step(step) => match step {
+                    core::RestartStep::AdoptRuns => {
+                        work.push(Work::Core(core::Event::Tasks(tasks::Event::Restored)));
+                        work.push(Work::AdoptRestored);
+                    }
+                    core::RestartStep::Open => {
+                        let _request = domain.core.restart_done(step);
+                    }
+                    core::RestartStep::SettleOutbox { connector: number } => {
+                        work.push(Work::Connector {
+                            number,
+                            event: connector::Event::Restart(connector::RestartStep::SettleOutbox),
+                        });
+                    }
+                    core::RestartStep::LoadCore
+                    | core::RestartStep::RestoreConnector { .. }
+                    | core::RestartStep::ReadAfresh { .. } => hold(&mut decision, Delivery::Restart(step)),
+                },
+            },
+            Work::AdoptRestored => {
+                if domain.core.restart_admit_claims() {
+                    for _ in 0..domain.core.adopted.len() {
+                        work.push(Work::Core(core::Event::Fleet(
+                            domain.core.adopted.pop().expect("restored claim count"),
+                        )));
+                    }
+                    work.push(Work::Core(core::Event::Fleet(fleet::Event::Loaded)));
+                    work.push(Work::AdoptDone);
+                }
+            }
+            Work::AdoptDone => {
+                let request = domain.core.restart_done(core::RestartStep::AdoptRuns);
+                work.push(Work::Restart(request));
+            }
+
             Work::EffectCall { to, key, number, effect, deadline, proposal } => {
                 let owner = effect_payload(domain, effect);
                 let origin = match proposal {
@@ -431,7 +521,9 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
             Write::Save(Record::Core(core::Record::Core(core::CoreRecord::Deployment(header)))),
         );
     }
-    domain.journal.accept(decision);
+    if domain.core.restart_failure().is_none() {
+        domain.journal.accept(decision);
+    }
 }
 
 fn effect_payload(domain: &mut Domain, effect: connector::Effect) -> Token {
@@ -458,7 +550,11 @@ fn numbered(domain: &mut Domain, number: u16) -> &mut connector::Domain {
 
 /// Drain at most one commit and all currently durable outputs.
 pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>) {
-    if domain.journal.stopped() {
+    if let Some(step) = domain.restart_load.take() {
+        out.push(Request::Restart(step));
+        return;
+    }
+    if domain.journal.stopped() || domain.core.restart_failure().is_some() {
         if !domain.stopped_reported {
             domain.stopped_reported = true;
             out.push(Request::Stop);
@@ -524,7 +620,8 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
                     })),
                 );
             }
-            other @ (Delivery::TypedAnswer { .. }
+            other @ (Delivery::Restart(_)
+            | Delivery::TypedAnswer { .. }
             | Delivery::Core(_)
             | Delivery::Assigned { .. }
             | Delivery::System { .. }
@@ -535,7 +632,10 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
         let now = domain.now.pop().expect("bounded now count");
         out.push(Request::Now(now));
     }
-    if domain.journal.idle() {
+    if resume_restart_outbox(domain, env) {
+        return;
+    }
+    if domain.journal.idle() && (!domain.restart_active || domain.core.restart_ready()) {
         if domain.core.accounts.usable(domain.core.settings.account)
             && let Some(context) = domain.core.due.pop()
         {
@@ -544,6 +644,29 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
         }
         decide(domain, env, Work::ResumeFleet);
     }
+}
+
+fn resume_restart_outbox(domain: &mut Domain, env: &Env<Limits>) -> bool {
+    if !domain.journal.idle() {
+        return false;
+    }
+    let number = match domain.core.restart_step() {
+        Some(core::RestartStep::SettleOutbox { connector }) => connector,
+        Some(
+            core::RestartStep::LoadCore
+            | core::RestartStep::RestoreConnector { .. }
+            | core::RestartStep::AdoptRuns
+            | core::RestartStep::ReadAfresh { .. }
+            | core::RestartStep::Open,
+        )
+        | None => return false,
+    };
+    decide(
+        domain,
+        env,
+        Work::Connector { number, event: connector::Event::Restart(connector::RestartStep::SettleOutbox) },
+    );
+    true
 }
 
 fn write(domain: &mut Domain, decision: &mut Decision<Write, Delivery>, value: Write) {
@@ -560,9 +683,8 @@ fn hold(decision: &mut Decision<Write, Delivery>, value: Delivery) {
 mod routes;
 use routes::{route_connector, route_core};
 
-/// Load one already durable row before the scripted restored markers. The
-/// caller supplies header, children, proofs, then calls; the core validates
-/// their links. The ordered restart driver is added in the restart increment.
+/// Translate one durable row during the requested restart load. The root
+/// supplies header, children, proofs, then calls; the core validates their links.
 #[must_use]
 pub fn restore_record(domain: &mut Domain, env: &Env<Limits>, record: Record) -> bool {
     match record {
@@ -585,7 +707,7 @@ pub fn restore_record(domain: &mut Domain, env: &Env<Limits>, record: Record) ->
                 tasks::Event::Restore { record: row },
                 &mut out,
             );
-            true
+            out.is_empty()
         }
         Record::Core(core::Record::People(row)) => {
             let mut out = Queue::with_capacity(jig_core_people::max_out(&env.limits.core.people));
@@ -595,7 +717,7 @@ pub fn restore_record(domain: &mut Domain, env: &Env<Limits>, record: Record) ->
                 jig_core_people::Event::Restore { record: row },
                 &mut out,
             );
-            true
+            out.is_empty()
         }
         Record::Core(core::Record::Notes(_)) => true,
         Record::Connector { number, record } => {

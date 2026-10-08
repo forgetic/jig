@@ -143,6 +143,8 @@ pub enum Outcome {
     Failed,
     /// A write may still land; recovery continues or a person must decide.
     Uncertain,
+    /// Its uncertain outcome cannot be recovered; a person must resolve it.
+    Held,
     /// An unsent effect was cancelled.
     Withdrawn,
 }

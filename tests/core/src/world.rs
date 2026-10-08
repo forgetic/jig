@@ -459,6 +459,7 @@ impl World {
                     })));
                 }
                 root::Request::Now(_) => {}
+                root::Request::Restart(_) => panic!("walking fixture uses restored markers"),
                 root::Request::Stop => panic!("testing root stopped: {:?}", self.trace),
             }
         }
@@ -486,6 +487,7 @@ impl World {
     #[expect(clippy::too_many_lines, reason = "one script handles each externally observed delivery")]
     fn delivered(&mut self, delivery: root::Delivery) {
         match delivery {
+            root::Delivery::Restart(_) => panic!("walking fixture uses the restored-marker path"),
             root::Delivery::Core(core::Held::NotesLoad { owner, range }) => {
                 let mut rows = skein_lib::List::with_capacity(self.limits.core.notes.load_rows);
                 let mut more = false;

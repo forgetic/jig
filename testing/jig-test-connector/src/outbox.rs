@@ -407,7 +407,7 @@ fn hold_uncertain(domain: &mut Domain, number: u64, out: &mut Queue<Request>) {
     }
     entry.phase = EffectPhase::Held;
     out.push(Request::Save { record: Record::Outbox(entry.clone()) });
-    out.push(Request::Outcome { entry: number, outcome: Outcome::Uncertain });
+    out.push(Request::Outcome { entry: number, outcome: Outcome::Held });
 }
 
 fn settle_made(domain: &mut Domain, number: u64, state: u64, found: bool, out: &mut Queue<Request>) {
@@ -572,4 +572,22 @@ pub(crate) fn fire(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Reque
     if let Some(number) = chosen {
         progress(domain, env, number, out);
     }
+}
+
+/// Recovery has classified every live entry: a pending retry may keep its
+/// durable deadline, while a lookup or write still in flight prevents opening.
+pub(crate) fn restart_settled(domain: &Domain) -> bool {
+    for (number, entry) in &domain.outbox.entries {
+        let runtime = domain.outbox.runtime.get(number).expect("live outbox runtime");
+        match entry.phase {
+            EffectPhase::Kept | EffectPhase::Sent => return false,
+            EffectPhase::Retry | EffectPhase::Uncertain => {
+                if runtime.checking || runtime.needs_lookup {
+                    return false;
+                }
+            }
+            EffectPhase::Held => {}
+        }
+    }
+    true
 }

@@ -117,6 +117,7 @@ fn an_explicit_effect_proposal_is_kept_across_a_restart_and_checked_again_before
             .contains_key(&root::Key::Connector { number: 1, key: connector::RecordKey::Proposal(proposal) })
     );
     world.restart(85, true);
+    world.waiting_judge();
     let commits = world.store.applied;
     world.decide_proposal(proposal, true, 1);
     assert!(world.systems[0].observed().is_empty(), "acceptance cannot override an unknown judge");

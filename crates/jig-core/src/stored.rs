@@ -507,6 +507,8 @@ pub struct RunProof {
     pub attempt: u64,
     /// Earliest attempt whose turns belong to this usable conversation; zero keeps all.
     pub transcript_from: u64,
+    /// Host selected for this claim; engine claims cannot survive a restart.
+    pub host: jig_core_fleet::HostKind,
     /// Highest inbox message offered to this attempt in an assignment or committed relay.
     pub offered: Option<u64>,
     /// Latest accepted turn, or none before the first turn; no historical body is retained.
@@ -548,4 +550,18 @@ pub struct ProposalDecisionRecord {
     pub kind: jig_core_tasks::ProposalKind,
     pub by: u64,
     pub choice: jig_core_people::ProposalChoice,
+}
+
+impl RunProof {
+    pub(crate) fn claimed(task: u64, attempt: u64, transcript_from: u64, offered: Option<u64>) -> Self {
+        Self {
+            task,
+            attempt,
+            transcript_from,
+            host: jig_core_fleet::HostKind::Worker,
+            offered,
+            turn: None,
+            terminal: None,
+        }
+    }
 }

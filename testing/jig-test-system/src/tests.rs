@@ -255,7 +255,7 @@ fn an_idempotent_set_can_repeat_and_unrecoverable_uncertainty_holds() {
     let first = run(&mut held, 0, Event::Make { entry: 2 });
     let uncertain = another.answer(system_call(&first), Fault::AfterApply);
     let held_result = run(&mut held, 0, Event::System(uncertain));
-    assert!(matches!(held_result.last(), Some(Request::Outcome { outcome: Outcome::Uncertain, .. })));
+    assert!(matches!(held_result.last(), Some(Request::Outcome { outcome: Outcome::Held, .. })));
     assert!(fire(&mut held, Duration::from_secs(100).as_nanos()).is_empty());
     assert_eq!(another.observed().len(), 1);
 }

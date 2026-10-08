@@ -31,6 +31,8 @@ mod person_task;
 mod policy;
 mod proposals;
 mod reading;
+mod restart;
+pub use restart::{RestartRequest, RestartStep};
 mod roles;
 mod routing;
 mod run;
@@ -183,6 +185,8 @@ impl ToolFamilies {
 #[derive(Debug)]
 #[expect(clippy::partial_pub_fields, reason = "the keyed escalation route remains private to the core")]
 pub struct Core {
+    pub(crate) restart: restart::Restart,
+    pub(crate) restart_attempts: u32,
     /// Application connectors addressed only by number.
     pub connectors: Box<[u16]>,
     /// Live view watcher correlation.
@@ -284,6 +288,18 @@ pub struct Core {
     pub notes: notes::Domain,
     /// Live views.
     pub views: views::Domain,
+}
+
+fn assert_connector_registry(connectors: &[u16]) {
+    for connector in connectors {
+        let mut count = 0_u32;
+        for other in connectors {
+            if connector == other {
+                count = count.checked_add(1).expect("bounded connector registry");
+            }
+        }
+        assert_eq!(count, 1, "connector numbers are unique");
+    }
 }
 
 impl Core {
@@ -388,6 +404,7 @@ impl Core {
             config.connectors.len() <= usize::try_from(limits.connectors).expect("connector count fits usize"),
             "core prices every configured connector number"
         );
+        assert_connector_registry(&config.connectors);
         assert!(
             config.settings.resume_bytes > 0 && config.settings.resume_bytes <= limits.resume_bytes,
             "core prices its transcript retention"
@@ -414,6 +431,8 @@ impl Core {
             );
         }
         Core {
+            restart: restart::Restart::Cold,
+            restart_attempts: limits.fleet.attempts,
             counters: Counters::bootstrap(config.deployment),
             watching: Map::with_capacity(limits.views.watchers),
             view_phases: Map::with_capacity(limits.tasks.tasks),

@@ -153,9 +153,15 @@ impl Core {
             &mut view_out,
         );
         assert!(view_out.is_empty(), "restored run following has no external effect");
+        let mut worked = kept > 0;
+        for (key, _) in &self.call_parts {
+            if key.task == task && key.attempt == attempt {
+                worked = true;
+            }
+        }
         self.adopted.push(fleet::Event::Adopt {
-            kind: fleet::HostKind::Worker,
-            worked: kept > 0,
+            kind: self.proofs.get(&task).expect("restored claim has its proof").host,
+            worked,
             reply_to: skein_lib::ReplyTo::new(Token::new(task)),
             run: Token::new(task),
             attempt: Token::new(attempt),

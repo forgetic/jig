@@ -206,7 +206,9 @@ fn route_now(
     work: &mut Queue<Work>,
 ) {
     match now {
-        core::Now::Activate { context } => work.push(Work::Core(core::Event::Activate { context, ready: true })),
+        core::Now::Activate { context } => {
+            work.push(Work::Core(core::Event::Activate { context, ready: domain.ready() }));
+        }
         core::Now::PrepareAgent { context } => {
             let transcript_waiter = if context.ever_turned { Some(Token::new(context.task)) } else { None };
             work.push(Work::Core(core::Event::PreparedAgent { context, transcript_waiter, busy: false }));
@@ -353,6 +355,11 @@ pub(super) fn route_connector(
 ) {
     for _ in 0..requests.len() {
         match requests.pop().expect("connector request count") {
+            connector::Request::RestartDone => {
+                let step = core::RestartStep::SettleOutbox { connector: number };
+                let request = domain.core.restart_done(step);
+                work.push(Work::Restart(request));
+            }
             connector::Request::Save { record } => {
                 match &record {
                     connector::Record::Outbox(row) => {
@@ -452,16 +459,25 @@ pub(super) fn route_connector(
                 };
                 let made = match outcome {
                     connector::Outcome::Made { .. } => true,
-                    connector::Outcome::Failed | connector::Outcome::Uncertain | connector::Outcome::Withdrawn => false,
+                    connector::Outcome::Failed
+                    | connector::Outcome::Uncertain
+                    | connector::Outcome::Withdrawn
+                    | connector::Outcome::Held => false,
+                };
+                let settled = match outcome {
+                    connector::Outcome::Made { .. } | connector::Outcome::Failed | connector::Outcome::Withdrawn => {
+                        true
+                    }
+                    connector::Outcome::Uncertain | connector::Outcome::Held => false,
                 };
                 match domain.outbox_procedures.get(&entry) {
-                    Some(number) if outcome != connector::Outcome::Uncertain => work.push(Work::Connector {
+                    Some(number) if settled => work.push(Work::Connector {
                         number: *number,
                         event: connector::Event::EffectDecision { task, made },
                     }),
                     Some(_) | None => {}
                 }
-                if outcome != connector::Outcome::Uncertain {
+                if settled {
                     domain.outbox_tasks.remove(&entry);
                     domain.outbox_procedures.remove(&entry);
                 }
@@ -469,6 +485,7 @@ pub(super) fn route_connector(
                     connector::Outcome::Made { .. } => core::connector::OutboxOutcome::Made,
                     connector::Outcome::Failed => core::connector::OutboxOutcome::Failed,
                     connector::Outcome::Uncertain => core::connector::OutboxOutcome::Uncertain,
+                    connector::Outcome::Held => core::connector::OutboxOutcome::Held { entry },
                     connector::Outcome::Withdrawn => core::connector::OutboxOutcome::Withdrawn,
                 };
                 work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Outbox {
@@ -487,7 +504,6 @@ pub(super) fn route_connector(
             | connector::Request::News { topic: _, subscribers: _ }
             | connector::Request::DriftResource { tasks: _, resource: _ }
             | connector::Request::Changed { resource: _ }
-            | connector::Request::RestartDone
             | connector::Request::Answer { token: _, bytes: _ }
             | connector::Request::Ready { token: _, size: _ }
             | connector::Request::Section { token: _, bytes: _ }

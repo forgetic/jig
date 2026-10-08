@@ -129,6 +129,12 @@ impl Domain {
         self.config.resources.get(index)
     }
 
+    /// The project's current adopted role for a configured resource.
+    #[must_use]
+    pub fn resource_role(&self, project: u32, resource: &Path) -> Option<ResourceRole> {
+        self.adoptions.get(&(project, resource.clone())).copied()
+    }
+
     /// The last known count for a pool, including the configuration's first count.
     #[must_use]
     pub fn slots(&self, pool: &Path) -> Option<u32> {

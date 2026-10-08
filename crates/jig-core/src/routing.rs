@@ -5457,12 +5457,40 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
                     return tag_tasks(core, env, out, tasks::max_out(&env.limits.tasks), false, false, false);
                 }
             }
+            let event = if let tasks::Event::Make { reply_to, creator, batch } = event {
+                match crate::resources::defer(
+                    core,
+                    env,
+                    reply_to,
+                    crate::resources::Kind::Creation { creator },
+                    batch,
+                    &mut out,
+                ) {
+                    Some(event) => event,
+                    None => return tag_tasks(core, env, out, tasks::max_out(&env.limits.tasks), false, false, false),
+                }
+            } else if let tasks::Event::MakeResultFollowups { reply_to, proposer, proposal, batch } = event {
+                match crate::resources::defer(
+                    core,
+                    env,
+                    reply_to,
+                    crate::resources::Kind::Result { proposer, proposal },
+                    batch,
+                    &mut out,
+                ) {
+                    Some(event) => event,
+                    None => return tag_tasks(core, env, out, tasks::max_out(&env.limits.tasks), false, false, false),
+                }
+            } else {
+                event
+            };
             tasks::step(
                 &mut core.tasks,
                 &Env { now: env.now, wall: env.wall, limits: env.limits.tasks },
                 event,
                 &mut out,
             );
+            crate::resources::resume(core, work);
             tag_tasks(core, env, out, tasks::max_out(&env.limits.tasks), false, false, false)
         }
         Event::StartRecurring { project, authority, template } => {

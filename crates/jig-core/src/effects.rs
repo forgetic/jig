@@ -363,9 +363,23 @@ pub(crate) fn connector(
         connector::Event::Drift { task, resource: _ } => {
             work.push(Event::Tasks(tasks::Event::Hold { task, why: tasks::Hold::Drift }));
         }
-        connector::Event::Resource { .. }
-        | connector::Event::PoolSlots { .. }
-        | connector::Event::Procedure { .. }
+        connector::Event::Resource { name, role: _, hold } => {
+            let hold = match hold {
+                connector::HoldKind::Shared => tasks::HoldKind::Shared,
+                connector::HoldKind::Exclusive { wait } => {
+                    tasks::HoldKind::Exclusive { taken: if wait { tasks::Taken::Waits } else { tasks::Taken::Refuses } }
+                }
+                connector::HoldKind::Pooled { slots, wait } => {
+                    work.push(Event::Tasks(tasks::Event::Slots { pool: name.clone(), slots }));
+                    tasks::HoldKind::Pooled { taken: if wait { tasks::Taken::Waits } else { tasks::Taken::Refuses } }
+                }
+            };
+            work.push(Event::Tasks(tasks::Event::Resource { name, hold }));
+        }
+        connector::Event::PoolSlots { name, slots } => {
+            work.push(Event::Tasks(tasks::Event::Slots { pool: name, slots }));
+        }
+        connector::Event::Procedure { .. }
         | connector::Event::News { .. }
         | connector::Event::SectionReady { .. }
         | connector::Event::WorkspaceReady { .. }

@@ -36,6 +36,7 @@ pub use projections::{
 };
 mod proposals;
 mod reading;
+mod resources;
 mod restart;
 pub use restart::{RestartRequest, RestartStep};
 mod roles;
@@ -222,6 +223,7 @@ pub struct Core {
     pub(crate) person_escalations: Map<Token, routing::PersonEscalation>,
     /// Person task creations waiting for connector-owned resource holdings.
     pub(crate) creating: Map<Token, routing::Creation>,
+    pub(crate) awaiting_resources: Map<Token, resources::Batch>,
     /// Named task delegation batches awaiting connector-owned holdings.
     pub(crate) creating_delegates: Map<Token, routing::DelegateCreation>,
     /// Procedure batches awaiting connector-owned holdings.
@@ -470,6 +472,7 @@ impl Core {
             person_tasks: Map::with_capacity(limits.people.pending),
             person_escalations: Map::with_capacity(limits.people.pending),
             creating: Map::with_capacity(limits.people.pending),
+            awaiting_resources: Map::with_capacity(limits.tasks.tasks),
             creating_delegates: Map::with_capacity(limits.call_records),
             creating_procedures: Map::with_capacity(limits.tasks.tasks),
             relaying: None,
@@ -559,6 +562,7 @@ impl Core {
             && self.note_routes.is_empty()
             && self.pending_note_briefs.is_empty()
             && self.routing_people_proposals.is_empty()
+            && self.awaiting_resources.is_empty()
             && self.made.is_empty()
             && self.goal_routes.is_empty()
             && self.delegating.is_empty()

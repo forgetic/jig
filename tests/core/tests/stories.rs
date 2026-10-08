@@ -664,3 +664,84 @@ fn a_procedures_effect_writer_survives_a_cold_restart_and_frees_after_settlement
             if matches!(slot.writer, tasks::Writer::Effect { .. }))));
     assert!(world.store.rows.contains_key(&root::Key::Core(core::Key::Tasks(tasks::Key::Ended(procedure)))));
 }
+
+#[test]
+fn an_exclusive_resource_that_refuses_waiting_refuses_the_second_batch() {
+    let seed = 151;
+    let (mut configuration, limits) = jig_core_world::faults::plan_fixture(seed);
+    configuration.first.resources[0].hold = connector::Hold::Exclusive { mode: connector::HoldMode::Refuse };
+    let mut world = World::configured(seed, false, configuration, limits);
+    // The kind default waits: the individual connector report must override it.
+    configure_resources(&mut world);
+    let parent = world.assignments[0];
+    let child = resource_member(&world, 1, b"first holder");
+    let first = delegate(&mut world, parent, 1, child);
+    let before = world.assignments.len();
+    let child = resource_member(&world, 1, b"second holder");
+    world.send(root::Event::Core(core::Event::DelegateValidated {
+        to: ReplyTo::new(Token::new(9152)),
+        key: core::CallKey { task: parent.0, attempt: parent.1, completion: 2, position: 0 },
+        batch: Box::new([child]),
+        stubs: Box::new([]),
+    }));
+    assert_eq!(world.assignments.len(), before);
+    assert!(matches!(
+        world.answers.last().expect("second batch answer").2,
+        core::CallPart::DelegationRefused(ref problem) if problem.why == tasks::Refusal::HoldTaken && problem.blocked_by.as_deref() == Some(&[first])
+    ));
+    let run = running(&world, first);
+    finish(&mut world, run, b"first done");
+    finish(&mut world, parent, b"exclusive work done");
+}
+
+#[test]
+fn a_batch_waits_without_creating_a_task_or_reserving_funding_until_its_resource_is_reported() {
+    let mut world = plan_world(152);
+    let parent = world.assignments[0];
+    let resource = jig_test_connector_world::path(1, 1);
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::Adopt { project: 1, resource: resource.clone(), role: connector::ResourceRole::Owned },
+    });
+    let before = match world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(parent.0)))) {
+        Some(root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row)))) => row.numbers,
+        row => panic!("parent row: {row:?}"),
+    };
+    let member = resource_member(&world, 1, b"wait for its report");
+    world.send(root::Event::Core(core::Event::Tasks(tasks::Event::Make {
+        reply_to: ReplyTo::new(Token::new(u64::MAX - 3)),
+        creator: tasks::Party::Task(parent.0),
+        batch: Box::new([tasks::New {
+            number: 100,
+            project: 1,
+            executor: member.executor,
+            spec: member.spec,
+            contract: member.contract,
+            numbers: tasks::Numbers { budget: 10, spent: 0, spent_below: 0, reserved: 0 },
+            authority: member.authority,
+            funder: tasks::Funder::Task(parent.0),
+            dependencies: Box::new([]),
+            holdings: Box::new([tasks::Holding::Write {
+                resource: tasks::Name { connector: 1, path: resource.segments().into() },
+                kind: 1,
+            }]),
+            wake: tasks::WakePolicy::DEFAULT,
+            recurring: None,
+            tracked: None,
+        }]),
+    })));
+    let key = root::Key::Core(core::Key::Tasks(tasks::Key::Live(100)));
+    assert!(!world.store.rows.contains_key(&key));
+    assert_eq!(world.assignments.len(), 1);
+    let row = world.store.rows.get(&root::Key::Core(core::Key::Tasks(tasks::Key::Live(parent.0)))).expect("parent row");
+    assert!(matches!(row, root::Record::Core(core::Record::Tasks(tasks::Stored::Live(row))) if row.numbers == before));
+    world.send(root::Event::Connector {
+        number: 1,
+        event: connector::Event::Names { task: 100, project: 1, resources: Box::new([resource]) },
+    });
+    assert!(world.store.rows.contains_key(&key), "a connector report resumes the whole batch");
+    assert_eq!(world.assignments.len(), 2);
+    let run = running(&world, 100);
+    finish(&mut world, run, b"reported work done");
+    finish(&mut world, parent, b"done");
+}

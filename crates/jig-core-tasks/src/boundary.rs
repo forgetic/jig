@@ -612,6 +612,8 @@ pub enum Taken {
 /// Connector-configured admission rule for one resource kind.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum HoldKind {
+    /// The connector orders writes itself; no task hold is taken.
+    Shared,
     /// One task holds the resource.
     Exclusive { taken: Taken },
     /// Up to the connector's current number of slots hold the pool.
@@ -990,6 +992,8 @@ pub enum Accepted {
 /// notifications have no reply destination and may be ignored if stale. (domain/tasks.md, sections 4–5).
 #[derive(PartialEq, Eq, Debug)]
 pub enum Event {
+    /// Latest connector admission rule for this individual resource.
+    Resource { name: Name, hold: HoldKind },
     /// Root installs one connector's bounded resource-kind configuration.
     Kinds { connector: u16, kinds: Box<[Kind]> },
     /// Connector reports its current slot count for one opaque pool.

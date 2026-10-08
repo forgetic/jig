@@ -25,6 +25,7 @@ pub const LIMITS: Limits = Limits {
     dependencies: 8,
     holdings: 4,
     hold_kinds: 4,
+    resource_reports: 64,
     pools: 8,
     hold_segments: 4,
     hold_bytes: 64,
@@ -347,7 +348,8 @@ impl World {
         self.priced = match event {
             Event::Turn { task, cumulative, .. }
             | Event::Activation { task, cause: Cause::Priced { cumulative }, .. } => Some((*task, *cumulative)),
-            Event::Kinds { .. }
+            Event::Resource { .. }
+            | Event::Kinds { .. }
             | Event::Slots { .. }
             | Event::AllocationGone { .. }
             | Event::ReadAfresh { .. }
@@ -409,7 +411,8 @@ impl World {
             Event::Message { word, .. } | Event::DelegateResult { word, .. } | Event::Notice { word, .. } => {
                 self.message = self.message.max(word.number);
             }
-            Event::Kinds { .. }
+            Event::Resource { .. }
+            | Event::Kinds { .. }
             | Event::Slots { .. }
             | Event::AllocationGone { .. }
             | Event::ReadAfresh { .. }

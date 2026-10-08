@@ -43,6 +43,7 @@ pub struct Domain {
     pub(crate) escalation_alarms: Deadlines<u64>,
     pub(crate) hold_alarms: Deadlines<u64>,
     pub(crate) hold_kinds: Map<crate::holds::KindKey, crate::HoldKind>,
+    pub(crate) resources: Map<crate::Name, crate::HoldKind>,
     pub(crate) pools: Map<crate::Name, crate::PoolSlots>,
     pub(crate) next_pool: u64,
     pub(crate) writers: Map<crate::Name, crate::WriterSlot>,
@@ -129,6 +130,7 @@ impl Domain {
             escalation_alarms: Deadlines::with_capacity(limits.tasks),
             hold_alarms: Deadlines::with_capacity(limits.tasks),
             hold_kinds: Map::with_capacity(limits.hold_kinds),
+            resources: Map::with_capacity(limits.resource_reports),
             pools: Map::with_capacity(limits.pools),
             next_pool: 0,
             writers: Map::with_capacity(limits.tasks.checked_mul(limits.holdings).expect("writer room")),
@@ -172,6 +174,12 @@ impl Domain {
     #[must_use]
     pub fn task(&self, number: u64) -> Option<&TaskRecord> {
         record(self, number)
+    }
+
+    /// The latest connector report for admission of this individual resource.
+    #[must_use]
+    pub fn resource_hold(&self, name: &crate::Name) -> Option<crate::HoldKind> {
+        self.resources.get(name).copied()
     }
 
     /// Current authentic holder of an opaque exclusive resource.
@@ -374,6 +382,7 @@ pub fn max_out(limits: &Limits) -> u32 {
 #[expect(clippy::too_many_lines, reason = "the closed task event vocabulary dispatches to focused handlers")]
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
+        Event::Resource { name, hold } => crate::holds::resource(domain, &env.limits, name, hold),
         Event::Kinds { connector, kinds } => crate::holds::kinds(domain, &env.limits, connector, &kinds),
         Event::Slots { pool, slots } => crate::holds::slots(domain, &env.limits, pool, slots, out),
         Event::AllocationGone { pool, task } => crate::holds::allocation_gone(domain, env, &pool, task, out),

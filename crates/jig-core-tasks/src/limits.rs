@@ -36,6 +36,8 @@ pub struct Limits {
     pub holdings: u32,
     /// Maximum connector resource kinds installed in this deployment.
     pub hold_kinds: u32,
+    /// Maximum cached named connector admission reports.
+    pub resource_reports: u32,
     /// Maximum distinct pools whose latest connector slot counts are retained.
     pub pools: u32,
     /// Maximum literal segments in one resource name.
@@ -206,6 +208,14 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Deadlines::<u64>::worst_case(limits.tasks)?)?
         .checked_add(Map::<crate::holds::KindKey, crate::HoldKind>::worst_case(limits.hold_kinds)?)?
+        .checked_add(Map::<crate::Name, crate::HoldKind>::worst_case(limits.resource_reports)?)?
+        .checked_add(
+            u64::from(limits.resource_reports).checked_mul(
+                u64::from(limits.hold_segments)
+                    .checked_mul(u64::try_from(size_of::<Box<[u8]>>()).ok()?)?
+                    .checked_add(u64::from(limits.hold_bytes))?,
+            )?,
+        )?
         .checked_add(Map::<crate::Name, crate::PoolSlots>::worst_case(limits.pools)?)?
         .checked_add(
             u64::from(limits.pools).checked_mul(2)?.checked_mul(

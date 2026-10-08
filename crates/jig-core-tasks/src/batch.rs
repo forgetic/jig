@@ -478,3 +478,32 @@ fn batch_has(batch: &[New], number: u64) -> bool {
     }
     false
 }
+
+/// Shape bound for a batch retained before its resources have been reported.
+/// Structural and financial admission is still checked when the batch resumes.
+#[must_use]
+pub fn bounded_batch(limits: &Limits, batch: &[New]) -> bool {
+    if batch.is_empty() || batch.len() > usize::try_from(limits.batch).expect("u32 fits usize") {
+        return false;
+    }
+    for member in batch {
+        if !valid_spec(limits, &member.spec)
+            || !valid_contract(limits, &member.contract)
+            || !valid_authority(limits, &member.authority)
+            || member.dependencies.len() > usize::try_from(limits.dependencies).expect("u32 fits usize")
+            || member.holdings.len() > usize::try_from(limits.holdings).expect("u32 fits usize")
+        {
+            return false;
+        }
+        for holding in &member.holdings {
+            let name = match holding {
+                crate::Holding::Write { resource, .. } => resource,
+                crate::Holding::Slot { pool, .. } => pool,
+            };
+            if !crate::holds::valid_name(limits, name) {
+                return false;
+            }
+        }
+    }
+    true
+}

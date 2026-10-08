@@ -16,6 +16,39 @@ pub(crate) struct KindKey {
     pub kind: u16,
 }
 
+/// Cache a named report. Reports may arrive before task creation. At capacity,
+/// forget one report no live task names; admission always waits for a missing report.
+pub(crate) fn resource(domain: &mut Domain, limits: &Limits, name: Name, hold: HoldKind) {
+    if !shape(limits, &name) {
+        return;
+    }
+    if !domain.resources.contains_key(&name) && domain.resources.len() == domain.resources.capacity() {
+        let mut unused = None;
+        for (known, _) in &domain.resources {
+            let mut named = false;
+            for (number, _) in &domain.names {
+                let row = record(domain, *number).expect("live task");
+                for holding in &row.holdings {
+                    if self::name(holding) == known {
+                        named = true;
+                    }
+                }
+            }
+            if !named {
+                unused = Some(known.clone());
+                break;
+            }
+        }
+        match unused {
+            Some(unused) => {
+                domain.resources.remove(&unused);
+            }
+            None => return,
+        }
+    }
+    let _previous = domain.resources.insert(name, hold);
+}
+
 /// Install immutable connector configuration before admission.
 pub(crate) fn kinds(domain: &mut Domain, limits: &Limits, connector: u16, kinds: &[Kind]) {
     assert!(
@@ -36,7 +69,7 @@ pub(crate) fn kinds(domain: &mut Domain, limits: &Limits, connector: u16, kinds:
 /// Keep the latest connector count durable; a shrink changes admission but
 /// leaves all current holders in place.
 pub(crate) fn slots(domain: &mut Domain, limits: &Limits, pool: Name, slots: u32, out: &mut Queue<Request>) {
-    if !domain.ready() || !shape(limits, &pool) || !pooled_connector(domain, pool.connector) {
+    if !domain.ready() || !shape(limits, &pool) {
         return;
     }
     let number = match domain.pools.get(&pool) {
@@ -53,21 +86,9 @@ pub(crate) fn slots(domain: &mut Domain, limits: &Limits, pool: Name, slots: u32
     out.push(Request::Save { record: Stored::Pool(row) });
 }
 
-fn pooled_connector(domain: &Domain, connector: u16) -> bool {
-    for (key, kind) in &domain.hold_kinds {
-        if key.connector == connector
-            && let HoldKind::Pooled { .. } = kind
-        {
-            return true;
-        }
-    }
-    false
-}
-
 pub(crate) fn restore_pool(domain: &mut Domain, limits: &Limits, row: PoolSlots) -> bool {
     if row.number == 0
         || !shape(limits, &row.pool)
-        || !pooled_connector(domain, row.pool.connector)
         || domain.pools.contains_key(&row.pool)
         || domain.pools.len() == domain.pools.capacity()
     {
@@ -126,7 +147,23 @@ fn kind(holding: &Holding) -> u16 {
 
 fn rule(domain: &Domain, holding: &Holding) -> Option<HoldKind> {
     let key = KindKey { connector: name(holding).connector, kind: kind(holding) };
-    domain.hold_kinds.get(&key).copied()
+    match domain.resources.get(name(holding)) {
+        Some(rule) => Some(*rule),
+        None => domain.hold_kinds.get(&key).copied(),
+    }
+}
+
+fn matching(holding: &Holding, rule: HoldKind) -> bool {
+    match holding {
+        Holding::Write { .. } => match rule {
+            HoldKind::Exclusive { .. } | HoldKind::Shared => true,
+            HoldKind::Pooled { .. } => false,
+        },
+        Holding::Slot { .. } => match rule {
+            HoldKind::Pooled { .. } | HoldKind::Shared => true,
+            HoldKind::Exclusive { .. } => false,
+        },
+    }
 }
 
 fn shape(limits: &Limits, name: &Name) -> bool {
@@ -152,7 +189,7 @@ fn holder(domain: &Domain, holding: &Holding) -> Option<u64> {
         let row = record(domain, *number).expect("indexed live task");
         if row.holds_taken {
             for held in &row.holdings {
-                if same(held, holding) {
+                if same(held, holding) && rule(domain, held) != Some(HoldKind::Shared) {
                     return Some(*number);
                 }
             }
@@ -191,15 +228,17 @@ fn held_by(domain: &Domain, task: u64, holding: &Holding) -> bool {
 }
 
 fn available(domain: &Domain, holding: &Holding, extra: u32) -> bool {
-    match holding {
-        Holding::Write { .. } => holder(domain, holding).is_none() && extra == 0,
-        Holding::Slot { pool, .. } => {
-            let slots = match domain.pools.get(pool) {
+    match rule(domain, holding) {
+        Some(HoldKind::Shared) => true,
+        Some(HoldKind::Exclusive { .. }) => holder(domain, holding).is_none() && extra == 0,
+        Some(HoldKind::Pooled { .. }) => {
+            let slots = match domain.pools.get(name(holding)) {
                 Some(row) => row.slots,
                 None => 0,
             };
             holders(domain, holding).saturating_add(extra) < slots
         }
+        None => false,
     }
 }
 
@@ -209,8 +248,11 @@ pub(crate) fn writer_holder(domain: &Domain, resource: &Name) -> Option<u64> {
         let row = record(domain, *number).expect("indexed live task");
         if row.holds_taken {
             for held in &row.holdings {
-                if let Holding::Write { resource: name, .. } = held
-                    && name == resource
+                if name(held) == resource
+                    && match rule(domain, held) {
+                        Some(HoldKind::Exclusive { .. }) => true,
+                        Some(HoldKind::Pooled { .. } | HoldKind::Shared) | None => false,
+                    }
                 {
                     return Some(*number);
                 }
@@ -254,14 +296,13 @@ pub(crate) fn check_batch(domain: &Domain, limits: &Limits, creator: Party, batc
             let Some(rule) = rule(domain, needed) else {
                 return Err(Problem::new(Some(new.number), Refusal::HoldKind));
             };
-            let taken = match (needed, rule) {
-                (Holding::Write { .. }, HoldKind::Exclusive { taken })
-                | (Holding::Slot { .. }, HoldKind::Pooled { taken }) => taken,
-                (Holding::Write { .. }, HoldKind::Pooled { .. })
-                | (Holding::Slot { .. }, HoldKind::Exclusive { .. }) => {
-                    return Err(Problem::new(Some(new.number), Refusal::HoldKind));
-                }
+            let taken = match rule {
+                HoldKind::Shared => Taken::Waits,
+                HoldKind::Exclusive { taken } | HoldKind::Pooled { taken } => taken,
             };
+            if !domain.resources.contains_key(name(needed)) && !matching(needed, rule) {
+                return Err(Problem::new(Some(new.number), Refusal::HoldKind));
+            }
             for earlier in new.holdings.iter().take(index) {
                 if same(earlier, needed) {
                     return Err(Problem::new(Some(new.number), Refusal::Holds));
@@ -453,8 +494,14 @@ pub(crate) fn take(domain: &mut Domain, _env: &Env<Limits>, number: u64, out: &m
     row.record.holds_taken = true;
     row.record.hold_wait_since = None;
     domain.hold_alarms.cancel(number);
-    if !holdings.is_empty() {
-        out.push(Request::Taken { task: number, holdings });
+    let mut taken = List::with_capacity(u32::try_from(holdings.len()).expect("bounded task holdings"));
+    for holding in holdings {
+        if rule(domain, &holding) != Some(HoldKind::Shared) {
+            taken.push(holding).expect("bounded task holdings");
+        }
+    }
+    if !taken.is_empty() {
+        out.push(Request::Taken { task: number, holdings: taken.into_boxed() });
     }
 }
 
@@ -555,11 +602,9 @@ pub(crate) fn valid_record(domain: &Domain, limits: &Limits, row: &TaskRecord) -
         if !shape(limits, name(holding)) {
             return false;
         }
-        let valid_kind = match (holding, rule(domain, holding)) {
-            (Holding::Write { .. }, Some(HoldKind::Exclusive { .. }))
-            | (Holding::Slot { .. }, Some(HoldKind::Pooled { .. })) => true,
-            (Holding::Write { .. }, Some(HoldKind::Pooled { .. }) | None)
-            | (Holding::Slot { .. }, Some(HoldKind::Exclusive { .. }) | None) => false,
+        let valid_kind = match rule(domain, holding) {
+            Some(rule) => matching(holding, rule) || domain.resources.contains_key(name(holding)),
+            None => false,
         };
         if !valid_kind {
             return false;

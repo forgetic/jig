@@ -89,6 +89,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     {
         return None;
     }
+    let pending = bytes(limits.tasks.tasks.checked_mul(limits.tasks.batch)?, task_carrier(limits)?)?;
     let route = crate::routing::room_max(limits)?;
     let children = [
         tasks::worst_case(&limits.tasks)?,
@@ -100,7 +101,8 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         notes::worst_case(&limits.notes)?,
         views::worst_case(&limits.views)?,
     ];
-    let mut total = crate::effect_worst_case(limits)?.checked_add(crate::conversation_worst_case(limits)?)?;
+    let mut total =
+        crate::effect_worst_case(limits)?.checked_add(crate::conversation_worst_case(limits)?)?.checked_add(pending)?;
     for child in children {
         total = total.checked_add(child)?;
     }
@@ -141,6 +143,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         limits.people.pending,     // creations
         limits.call_records,       // delegate creations
         limits.tasks.tasks,        // procedure creations
+        limits.tasks.tasks,        // batches awaiting named resource reports
         limits.authority.projects, // permission roles
         limits.call_records,       // pending calls
         limits.call_records,       // answered calls

@@ -100,8 +100,8 @@ fn route_ask(
 ) {
     match ask {
         core::Ask::Effect(ask) => route_effect_ask(domain, number, ask, work),
-        core::Ask::TaskHoldings { request, spec, .. } => {
-            let holdings = specification_holdings(domain, env, number, &spec);
+        core::Ask::TaskHoldings { request, project, spec, .. } => {
+            let holdings = specification_holdings(domain, env, number, project, &spec, work);
             work.push(Work::Core(core::Event::Holdings { request, connector: number, holdings }));
         }
         core::Ask::DelegateHoldings { request, members, .. } => {
@@ -109,7 +109,7 @@ fn route_ask(
                 List::with_capacity(u32::try_from(members.len()).expect("bounded batch"));
             let mut valid = true;
             for member in members {
-                match specification_holdings(domain, env, number, &member.spec) {
+                match specification_holdings(domain, env, number, member.project, &member.spec, work) {
                     Some(named) => holdings.push(named).expect("batch room"),
                     None => valid = false,
                 }
@@ -125,7 +125,7 @@ fn route_ask(
                 List::with_capacity(u32::try_from(members.len()).expect("bounded batch"));
             let mut valid = true;
             for member in members {
-                match specification_holdings(domain, env, number, &member.spec) {
+                match specification_holdings(domain, env, number, member.project, &member.spec, work) {
                     Some(named) => holdings.push(named).expect("batch room"),
                     None => valid = false,
                 }
@@ -222,15 +222,30 @@ fn specification_holdings(
     domain: &mut Domain,
     env: &Env<Limits>,
     number: u16,
+    project: u32,
     spec: &tasks::Spec,
+    work: &mut Queue<Work>,
 ) -> Option<Box<[tasks::Holding]>> {
     let mut holdings = List::with_capacity(env.limits.core.tasks.holdings);
     for parameter in &spec.parameters {
         match parameter {
             tasks::Parameter::Resource { connector: owner, resource, .. } => {
                 if *owner == number {
-                    let described = crate::numbered(domain, number).specification_resource(*resource)?;
+                    let described = crate::numbered(domain, number).specification_resource(*resource)?.clone();
+                    let role = crate::numbered(domain, number).resource_role(project, &described.path);
+                    let role = match role {
+                        Some(connector::ResourceRole::Owned) => core::connector::ResourceRole::Owned,
+                        Some(connector::ResourceRole::Participating) => core::connector::ResourceRole::Participant,
+                        Some(connector::ResourceRole::Context) => core::connector::ResourceRole::Context,
+                        None => core::connector::ResourceRole::Unavailable,
+                    };
+                    let hold = report_hold(domain, number, &described.path, described.hold);
                     let name = tasks::Name { connector: number, path: name(described.path.clone()).segments };
+                    work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Resource {
+                        name: name.clone(),
+                        role,
+                        hold,
+                    })));
                     let holding = match described.hold {
                         connector::Hold::Exclusive { .. } => Some(tasks::Holding::Write { resource: name, kind: 1 }),
                         connector::Hold::Pooled { .. } => Some(tasks::Holding::Slot { pool: name, kind: 2 }),
@@ -316,7 +331,8 @@ fn route_now(
             let mut names = List::with_capacity(env.limits.core.tasks.holdings);
             let mut checks = List::with_capacity(env.limits.core.authority.writes);
             for number in [1, 2] {
-                let Some(holdings) = specification_holdings(domain, env, number, &context.spec) else {
+                let Some(holdings) = specification_holdings(domain, env, number, context.project, &context.spec, work)
+                else {
                     work.push(Work::Core(core::Event::WorkspacePrepared { task, attempt, writes: None }));
                     return;
                 };
@@ -631,12 +647,27 @@ pub(super) fn route_connector(
                 })));
             }
             connector::Request::Slots { pool, slots } => {
-                let pool = tasks::Name { connector: number, path: name(pool).segments };
-                work.push(Work::Core(core::Event::Tasks(tasks::Event::Slots { pool, slots })));
+                let name = tasks::Name { connector: number, path: name(pool).segments };
+                work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::PoolSlots { name, slots })));
+            }
+            connector::Request::Named { task: _, resources } => {
+                for resource in resources {
+                    let hold = report_hold(domain, number, &resource.path, resource.hold);
+                    let role = match resource.role {
+                        connector::ResourceRole::Owned => core::connector::ResourceRole::Owned,
+                        connector::ResourceRole::Participating => core::connector::ResourceRole::Participant,
+                        connector::ResourceRole::Context => core::connector::ResourceRole::Context,
+                    };
+                    let name = tasks::Name { connector: number, path: name(resource.path).segments };
+                    work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Resource {
+                        name,
+                        role,
+                        hold,
+                    })));
+                }
             }
             connector::Request::Make { entry: _ }
             | connector::Request::Adopted { project: _, resource: _, result: _ }
-            | connector::Request::Named { task: _, resources: _ }
             | connector::Request::Unknown { task: _, resource: _ }
             | connector::Request::Refused { task: _ }
             | connector::Request::News { topic: _, subscribers: _ }
@@ -795,4 +826,29 @@ fn state_pin(state: u64) -> [u8; 32] {
             *bytes.get(offset).expect("eight-byte integer");
     }
     pin
+}
+
+/// Hold modes and current pool facts are translated without choosing admission.
+fn report_hold(
+    domain: &mut Domain,
+    number: u16,
+    path: &connector::Path,
+    hold: connector::Hold,
+) -> core::connector::HoldKind {
+    match hold {
+        connector::Hold::None => core::connector::HoldKind::Shared,
+        connector::Hold::Exclusive { mode } => core::connector::HoldKind::Exclusive {
+            wait: match mode {
+                connector::HoldMode::Wait => true,
+                connector::HoldMode::Refuse => false,
+            },
+        },
+        connector::Hold::Pooled { mode } => core::connector::HoldKind::Pooled {
+            slots: crate::numbered(domain, number).slots(path).unwrap_or(0),
+            wait: match mode {
+                connector::HoldMode::Wait => true,
+                connector::HoldMode::Refuse => false,
+            },
+        },
+    }
 }

@@ -241,9 +241,14 @@ which it keeps. What the core gets is its **description:**
     environment; rolling back to a version; merging at a head);
   - a projection's: its goal and what it writes;
   - a release's: the closing task and the resource.
-- **The deployment's,** too: every key carries the deployment's id, so
-  two deployments on one system, or a store made anew, never find each
-  other's objects.
+- **The deployment's,** too: every key carries the deployment's
+  identity, so two deployments on one system, or a store made anew, never
+  find each other's objects. A key the connector writes itself (a marker
+  in a body, an operation's id) carries the deployment's id. A key that
+  is a name the system keeps (a branch, an environment's name) carries
+  the deployment's prefix (section 12), which is the deployment's alone
+  on that system, so the name stays readable and the grants that name it
+  by pattern (authority.md, section 4) stay as they are.
 - **Carried on what it creates,** where the system keeps it, so that a
   creation can be found by its key alone. The connector records every
   object it made, by key, in the store: the ownership of section 11.
@@ -534,7 +539,10 @@ procedure, but a mechanism of the connector's, keyed to the goal.
   never a step of adoption.
 - **One deployment's.** The prefix under which a connector names what it
   creates is the deployment's; adoption refuses a resource where another
-  deployment's objects already live under that prefix.
+  deployment's objects already live under that prefix. Objects under the
+  prefix that the store records no making of are another deployment's,
+  or those of a store made anew's predecessor: the resource is refused,
+  saying which, until a person chooses another prefix or clears them.
 - **What may be done is read again** when the system refuses something
   the connector believed it could, and the project's ceiling narrows
   with it, for every later decision, existing tasks' included

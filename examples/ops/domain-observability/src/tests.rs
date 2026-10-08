@@ -81,13 +81,25 @@ fn a_watch_emits_one_triage_per_committed_batch() {
     assert_eq!(
         started.pop(),
         Some(Request::Save {
-            record: Record::Subscription { topic: Topic::Alerts(service()), task: 7, wake_at: 1, keep_at: 0 }
+            record: Record::Subscription {
+                topic: Topic::Alerts(service()),
+                task: 7,
+                subscription: 7,
+                wake_at: 1,
+                keep_at: 0
+            }
         })
     );
     assert_eq!(
         started.pop(),
         Some(Request::Save {
-            record: Record::Watch(Watch { task: 7, services: Box::from([service()]), template: 3, last_batch: None })
+            record: Record::Watch(Watch {
+                task: 7,
+                services: Box::from([service()]),
+                template: 3,
+                last_batch: None,
+                pending: Box::new([])
+            })
         })
     );
     let wake = Event::WakeWatch { task: 7, batch: 99, alerts: Box::from([1, 2]) };
@@ -100,10 +112,14 @@ fn a_watch_emits_one_triage_per_committed_batch() {
                 services: Box::from([service()]),
                 template: 3,
                 last_batch: Some(99),
+                pending: Box::new([]),
             })
         })
     );
-    assert_eq!(first.pop(), Some(Request::Triage { watch: 7, template: 3, batch: 99, alerts: Box::from([1, 2]) }));
+    assert_eq!(
+        first.pop(),
+        Some(Request::Triage { watch: 7, template: 3, batch: 99, alerts: Box::from([1, 2]), delegate: Box::new([]) })
+    );
     assert!(event(&mut domain, 2, wake).is_empty(), "same batch makes no second task");
 }
 
@@ -111,15 +127,22 @@ fn a_watch_emits_one_triage_per_committed_batch() {
 fn a_silence_is_saved_before_its_system_call_and_found_after_uncertainty() {
     let mut domain = Domain::new(&limits());
     let token = Token::new(5);
-    let key = Key { deployment: 1, task: 7, purpose: 3 };
+    let key = Key::procedure([1; 16], 7, 3);
     let effect = Effect { rule: Box::from(*b"checkout-errors"), until: 100 };
     let mut described = event(&mut domain, 1, Event::Describe { token, effect: effect.clone() });
     assert_eq!(described.pop(), Some(Request::Described { token, effect: effect.clone() }));
-    let mut kept = event(&mut domain, 1, Event::Keep { token, key });
+    let mut kept = event(&mut domain, 1, Event::Keep { entry: 3, token, key });
     assert_eq!(
         kept.pop(),
         Some(Request::Save {
-            record: Record::Outbox(Entry { key, effect: effect.clone(), attempt: 0, deadline: 0, phase: Phase::Kept })
+            record: Record::Outbox(Entry {
+                number: 3,
+                key,
+                effect: effect.clone(),
+                attempt: 0,
+                deadline: 0,
+                phase: Phase::Kept
+            })
         })
     );
     assert_eq!(kept.pop(), Some(Request::Make { key }));
@@ -127,7 +150,14 @@ fn a_silence_is_saved_before_its_system_call_and_found_after_uncertainty() {
     assert_eq!(
         made.pop(),
         Some(Request::Save {
-            record: Record::Outbox(Entry { key, effect: effect.clone(), attempt: 1, deadline: 31, phase: Phase::Sent })
+            record: Record::Outbox(Entry {
+                number: 3,
+                key,
+                effect: effect.clone(),
+                attempt: 1,
+                deadline: 31,
+                phase: Phase::Sent
+            })
         })
     );
     assert_eq!(made.pop(), Some(Request::System(SystemRequest::Silence { key, attempt: 1, effect: effect.clone() })));
@@ -137,6 +167,7 @@ fn a_silence_is_saved_before_its_system_call_and_found_after_uncertainty() {
         uncertain.pop(),
         Some(Request::Save {
             record: Record::Outbox(Entry {
+                number: 3,
                 key,
                 effect: effect.clone(),
                 attempt: 1,
@@ -148,17 +179,17 @@ fn a_silence_is_saved_before_its_system_call_and_found_after_uncertainty() {
     assert_eq!(uncertain.pop(), Some(Request::System(SystemRequest::FindSilence { key, rule: effect.rule })));
     let mut found = event(&mut domain, 1, Event::System(SystemEvent::Found { key, found: true }));
     assert_eq!(found.pop(), Some(Request::Erase { key: RecordKey::Outbox(key) }));
-    assert_eq!(found.pop(), Some(Request::Outcome { key, outcome: Outcome::Made }));
+    assert_eq!(found.pop(), Some(Request::Outcome { entry: 3, key, outcome: Outcome::Made }));
 }
 
 #[test]
 fn an_uncertain_silence_waits_for_its_durable_deadline_before_retry() {
     let mut domain = Domain::new(&limits());
     let token = Token::new(5);
-    let key = Key { deployment: 1, task: 7, purpose: 3 };
+    let key = Key::procedure([1; 16], 7, 3);
     let effect = Effect { rule: Box::from(*b"checkout-errors"), until: 100 };
     event(&mut domain, 1, Event::Describe { token, effect: effect.clone() });
-    event(&mut domain, 1, Event::Keep { token, key });
+    event(&mut domain, 1, Event::Keep { entry: 3, token, key });
     event(&mut domain, 1, Event::Make { key });
     event(&mut domain, 1, Event::System(SystemEvent::Applied { key, attempt: 1, outcome: Outcome::Uncertain }));
     assert_eq!(next_deadline(&domain), Some(Time::from_nanos(31_000_000_000)));
@@ -167,6 +198,7 @@ fn an_uncertain_silence_waits_for_its_durable_deadline_before_retry() {
         early.pop(),
         Some(Request::Save {
             record: Record::Outbox(Entry {
+                number: 3,
                 key,
                 effect: effect.clone(),
                 attempt: 1,
@@ -184,7 +216,14 @@ fn an_uncertain_silence_waits_for_its_durable_deadline_before_retry() {
     assert_eq!(
         after.pop(),
         Some(Request::Save {
-            record: Record::Outbox(Entry { key, effect: effect.clone(), attempt: 1, deadline: 31, phase: Phase::Kept })
+            record: Record::Outbox(Entry {
+                number: 3,
+                key,
+                effect: effect.clone(),
+                attempt: 1,
+                deadline: 31,
+                phase: Phase::Kept
+            })
         })
     );
     assert_eq!(after.pop(), Some(Request::Make { key }));
@@ -192,7 +231,7 @@ fn an_uncertain_silence_waits_for_its_durable_deadline_before_retry() {
     let mut late =
         event(&mut domain, 31, Event::System(SystemEvent::Applied { key, attempt: 1, outcome: Outcome::Made }));
     assert_eq!(late.pop(), Some(Request::Erase { key: RecordKey::Outbox(key) }));
-    assert_eq!(late.pop(), Some(Request::Outcome { key, outcome: Outcome::Made }));
+    assert_eq!(late.pop(), Some(Request::Outcome { entry: 3, key, outcome: Outcome::Made }));
 }
 
 #[test]

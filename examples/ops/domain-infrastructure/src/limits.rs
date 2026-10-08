@@ -41,7 +41,13 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         return None;
     }
     let name = u64::from(limits.name_bytes);
+    let refresh = limits.tasks.checked_mul(limits.resources_per_task)?.checked_add(limits.procedures)?;
     Map::<Service, ServiceFact>::worst_case(limits.services)?
+        .checked_add(Map::<u64, bool>::worst_case(
+            limits.tasks.checked_add(limits.procedures)?.checked_add(limits.effects)?,
+        )?)?
+        .checked_add(Map::<Resource, bool>::worst_case(refresh)?)?
+        .checked_add(u64::from(refresh).checked_mul(u64::from(limits.name_bytes).checked_mul(2)?)?)?
         .checked_add(Map::<Environment, Option<EnvironmentFact>>::worst_case(limits.environments)?)?
         .checked_add(Map::<Pool, (u32, u32)>::worst_case(limits.pools)?)?
         .checked_add(Map::<u64, Box<[Resource]>>::worst_case(limits.tasks)?)?

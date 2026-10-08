@@ -4,13 +4,13 @@ use jig_ops_world::{InfrastructureWorld, infra_environment, infra_service};
 use skein_lib::Token;
 
 fn key() -> infra::Key {
-    infra::Key { deployment: 1, task: 7, purpose: 3 }
+    infra::Key::procedure([1; 16], 7, 3)
 }
 
 fn make(world: &mut InfrastructureWorld, effect: infra::Effect) -> Vec<infra::Request> {
     let described = world.event(infra::Event::Describe { token: Token::new(1), effect });
     assert!(matches!(described[0], infra::Request::Described { .. }));
-    let kept = world.event(infra::Event::Keep { token: Token::new(1), key: key() });
+    let kept = world.event(infra::Event::Keep { entry: 3, token: Token::new(1), key: key() });
     world.release(&kept)
 }
 
@@ -19,7 +19,7 @@ fn an_uncertain_keyed_restart_is_found_once() {
     let mut world = InfrastructureWorld::new(0, infra::Backend::OperationIds);
     world.production.queue_fault(production::Fault::LostAnswer);
     let requests = make(&mut world, infra::Effect::Restart { service: infra_service(), operation: 88 });
-    assert!(requests.contains(&infra::Request::Outcome { key: key(), outcome: infra::Outcome::Made }));
+    assert!(requests.contains(&infra::Request::Outcome { entry: 3, key: key(), outcome: infra::Outcome::Made }));
     assert_eq!(world.production.observed().len(), 1);
     world.restart();
     assert_eq!(world.production.observed().len(), 1);
@@ -30,7 +30,7 @@ fn an_uncertain_restart_without_operation_ids_is_held() {
     let mut world = InfrastructureWorld::new(0, infra::Backend::NoOperationIds);
     world.production.queue_fault(production::Fault::LostAnswer);
     let requests = make(&mut world, infra::Effect::Restart { service: infra_service(), operation: 88 });
-    assert!(requests.contains(&infra::Request::Outcome { key: key(), outcome: infra::Outcome::Uncertain }));
+    assert!(requests.contains(&infra::Request::Outcome { entry: 3, key: key(), outcome: infra::Outcome::Uncertain }));
     world.restart();
     assert_eq!(world.production.observed().len(), 1);
 }
@@ -44,7 +44,7 @@ fn creation_survives_a_lost_answer_and_pool_shrink_retains_its_holder() {
     world.production.queue_fault(production::Fault::LostAnswer);
     let requests =
         make(&mut world, infra::Effect::CreateEnvironment { environment: infra_environment(), until: 100, price: 40 });
-    assert!(requests.contains(&infra::Request::Outcome { key: key(), outcome: infra::Outcome::Made }));
+    assert!(requests.contains(&infra::Request::Outcome { entry: 3, key: key(), outcome: infra::Outcome::Made }));
     assert_eq!(world.production.used_slots("staging"), 1);
     world.restart();
     assert_eq!(world.production.used_slots("staging"), 1);
@@ -103,7 +103,7 @@ fn provision_waits_for_readiness_and_tears_down_on_release() {
     }));
     let created =
         make(&mut world, infra::Effect::CreateEnvironment { environment: environment.clone(), until: 100, price: 40 });
-    assert!(created.contains(&infra::Request::Outcome { key: key(), outcome: infra::Outcome::Made }));
+    assert!(created.contains(&infra::Request::Outcome { entry: 3, key: key(), outcome: infra::Outcome::Made }));
     world.event(infra::Event::Procedure { task: 7, signal: infra::ProcedureSignal::EffectMade });
     world.production.advance(5);
     world.now = 5;
@@ -123,7 +123,7 @@ fn provision_waits_for_readiness_and_tears_down_on_release() {
         }),
     }));
     let deleted = make(&mut world, infra::Effect::TearDown { environment, created_by: key() });
-    assert!(deleted.contains(&infra::Request::Outcome { key: key(), outcome: infra::Outcome::Made }));
+    assert!(deleted.contains(&infra::Request::Outcome { entry: 3, key: key(), outcome: infra::Outcome::Made }));
     assert_eq!(world.production.used_slots("staging"), 0);
 }
 
@@ -143,7 +143,7 @@ fn a_proposed_restart_survives_restart_and_is_made_after_acceptance() {
     assert!(world.production.observed().is_empty(), "a proposal grants no permission to make it");
     let accepted = world.event(infra::Event::DescribeProposal { token, number: 9 });
     assert!(accepted.iter().any(|request| matches!(request, infra::Request::Described { .. })));
-    let kept = world.event(infra::Event::Keep { token, key: key() });
+    let kept = world.event(infra::Event::Keep { entry: 3, token, key: key() });
     world.event(infra::Event::DropProposal { number: 9 });
     assert!(world.production.observed().is_empty(), "the outbox waits for its commit's release");
     world.production.queue_fault(production::Fault::LostAnswer);

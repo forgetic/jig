@@ -41,15 +41,36 @@ impl EnvironmentName {
     }
 }
 
-/// An operation's deployment-scoped identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// The origin that fixes an effect's purpose across retries.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Purpose {
+    /// One activation-qualified agent call.
+    Call { attempt: u64, completion: u32, position: u32 },
+    /// One stable procedure purpose.
+    Procedure { purpose: u64 },
+    /// One stable goal projection purpose.
+    Projection { purpose: u64 },
+}
+
+/// Full deployment identity and the owner's stable effect purpose.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Key {
-    /// Deployment making the effect.
-    pub deployment: u64,
-    /// Task owning the effect.
+    /// Deployment that owns the operation.
+    pub deployment: [u8; 16],
+    /// Asking task.
     pub task: u64,
-    /// Purpose within the task.
+    /// The call, procedure or projection that asked.
+    pub origin: Purpose,
+    /// Stable purpose within that owner.
     pub purpose: u64,
+}
+
+impl Key {
+    /// A procedure's stable purpose in one deployment.
+    #[must_use]
+    pub const fn procedure(deployment: [u8; 16], task: u64, purpose: u64) -> Self {
+        Self { deployment, task, origin: Purpose::Procedure { purpose }, purpose }
+    }
 }
 
 /// The recovery behavior of the infrastructure backend.

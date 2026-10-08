@@ -3,7 +3,7 @@ use jig_ops_fake_production as production;
 use jig_ops_world::{World, service};
 
 fn key() -> obs::Key {
-    obs::Key { deployment: 1, task: 7, purpose: 3 }
+    obs::Key::procedure([1; 16], 7, 3)
 }
 
 #[test]
@@ -22,8 +22,8 @@ fn an_alert_is_classified_for_each_subscriber_and_its_echo_is_dropped() {
         vec![obs::Request::News {
             alert: alert.clone(),
             subscribers: Box::from([
-                obs::Classed { task: 1, class: obs::Class::Wake },
-                obs::Classed { task: 2, class: obs::Class::Keep },
+                obs::Classed { task: 1, subscription: 1, class: obs::Class::Wake },
+                obs::Classed { task: 2, subscription: 2, class: obs::Class::Keep },
             ]),
         }]
     );
@@ -115,11 +115,11 @@ fn a_lost_silence_answer_is_found_once_after_restart() {
     let mut world = World::new(0);
     let effect = obs::Effect { rule: Box::from(*b"checkout-errors"), until: 100 };
     world.event(obs::Event::Describe { token: World::token(1), effect });
-    let kept = world.event(obs::Event::Keep { token: World::token(1), key: key() });
+    let kept = world.event(obs::Event::Keep { entry: 3, token: World::token(1), key: key() });
     assert_eq!(world.commits, 1);
     world.production.queue_fault(production::Fault::LostAnswer);
     let made = world.release(&kept);
-    assert!(made.contains(&obs::Request::Outcome { key: key(), outcome: obs::Outcome::Made }));
+    assert!(made.contains(&obs::Request::Outcome { entry: 3, key: key(), outcome: obs::Outcome::Made }));
     world.restart();
     assert_eq!(
         world
@@ -138,7 +138,13 @@ fn a_watch_keeps_its_last_batch_across_a_restart() {
     world.event(obs::Event::StartWatch { task: 8, services: Box::from([service()]), template: 2 });
     let wake = obs::Event::WakeWatch { task: 8, batch: 9, alerts: Box::from([3, 4]) };
     let first = world.event(wake.clone());
-    assert!(first.contains(&obs::Request::Triage { watch: 8, template: 2, batch: 9, alerts: Box::from([3, 4]) }));
+    assert!(first.contains(&obs::Request::Triage {
+        watch: 8,
+        template: 2,
+        batch: 9,
+        alerts: Box::from([3, 4]),
+        delegate: Box::new([])
+    }));
     world.restart();
     assert!(world.event(wake).is_empty());
 }
@@ -148,17 +154,26 @@ fn a_watch_subscribes_to_its_services_and_cancellation_erases_its_interest() {
     let mut world = World::new(0);
     let started = world.event(obs::Event::StartWatch { task: 8, services: Box::from([service()]), template: 2 });
     assert!(started.contains(&obs::Request::Save {
-        record: obs::Record::Subscription { topic: obs::Topic::Alerts(service()), task: 8, wake_at: 1, keep_at: 0 }
+        record: obs::Record::Subscription {
+            topic: obs::Topic::Alerts(service()),
+            task: 8,
+            subscription: 8,
+            wake_at: 1,
+            keep_at: 0
+        }
     }));
     let alert = obs::Alert { number: 1, service: service(), severity: 5 };
     let news = world.event(obs::Event::System(obs::SystemEvent::Alert { alert: alert.clone(), own: false }));
-    assert_eq!(
-        news,
-        vec![obs::Request::News {
-            alert: alert.clone(),
-            subscribers: Box::from([obs::Classed { task: 8, class: obs::Class::Wake },])
-        }]
+    assert!(
+        news.iter().any(|request| matches!(request,
+            obs::Request::Save { record: obs::Record::Watch(watch) } if watch.task == 8 && watch.pending.as_ref() == [1]
+        )),
+        "the wake batch is retained across a restart"
     );
+    assert!(news.contains(&obs::Request::News {
+        alert: alert.clone(),
+        subscribers: Box::from([obs::Classed { task: 8, subscription: 8, class: obs::Class::Wake },])
+    }));
     world.event(obs::Event::StopWatch { task: 8 });
     assert!(world.event(obs::Event::System(obs::SystemEvent::Alert { alert, own: false })).is_empty());
 }
@@ -183,7 +198,7 @@ fn health_topic_reaches_subscribers_when_health_changes() {
     assert!(changed.contains(&obs::Request::Health {
         service: service(),
         healthy: false,
-        subscribers: Box::from([obs::Classed { task: 3, class: obs::Class::Wake }]),
+        subscribers: Box::from([obs::Classed { task: 3, subscription: 3, class: obs::Class::Wake }]),
     }));
 }
 

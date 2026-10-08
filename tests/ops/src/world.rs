@@ -40,7 +40,18 @@ fn production_name(name: &obs::Service) -> production::ServiceName {
 }
 
 fn production_key(key: obs::Key) -> production::Key {
-    production::Key { deployment: key.deployment, task: key.task, purpose: key.purpose }
+    production::Key {
+        deployment: key.deployment,
+        task: key.task,
+        purpose: key.purpose,
+        origin: match key.origin {
+            obs::Purpose::Call { attempt, completion, position } => {
+                production::Purpose::Call { attempt, completion, position }
+            }
+            obs::Purpose::Procedure { purpose } => production::Purpose::Procedure { purpose },
+            obs::Purpose::Projection { purpose } => production::Purpose::Projection { purpose },
+        },
+    }
 }
 
 /// One connector under a scripted root and above the shared production.
@@ -96,7 +107,10 @@ impl World {
                     self.records.remove(key);
                     written = true;
                 }
-                obs::Request::Verdict { .. }
+                obs::Request::Closed { .. }
+                | obs::Request::Released { .. }
+                | obs::Request::Restarted { .. }
+                | obs::Request::Verdict { .. }
                 | obs::Request::Answer { .. }
                 | obs::Request::News { .. }
                 | obs::Request::Health { .. }
@@ -125,6 +139,9 @@ impl World {
             turns = turns.checked_add(1).expect("turn count fits");
             assert!(turns < 100, "connector cascade is finite");
             let generated = match request {
+                obs::Request::Closed { .. } | obs::Request::Released { .. } | obs::Request::Restarted { .. } => {
+                    Vec::new()
+                }
                 obs::Request::Make { key } => self.event(obs::Event::Make { key }),
                 obs::Request::System(call) => {
                     let result = self.system(call);

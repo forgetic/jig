@@ -95,15 +95,36 @@ pub struct Named {
     pub hold: Hold,
 }
 
-/// A stable deployment-scoped effect key.
+/// The origin that fixes an effect's purpose across retries.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Purpose {
+    /// One activation-qualified agent call.
+    Call { attempt: u64, completion: u32, position: u32 },
+    /// One stable procedure purpose.
+    Procedure { purpose: u64 },
+    /// One stable goal projection purpose.
+    Projection { purpose: u64 },
+}
+
+/// Full deployment identity and the owner's stable effect purpose.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Key {
     /// Deployment that owns the operation.
-    pub deployment: u64,
+    pub deployment: [u8; 16],
     /// Asking task.
     pub task: u64,
-    /// Stable purpose within the task.
+    /// The call, procedure or projection that asked.
+    pub origin: Purpose,
+    /// Stable purpose within that owner.
     pub purpose: u64,
+}
+
+impl Key {
+    /// A procedure's stable purpose in one deployment.
+    #[must_use]
+    pub const fn procedure(deployment: [u8; 16], task: u64, purpose: u64) -> Self {
+        Self { deployment, task, origin: Purpose::Procedure { purpose }, purpose }
+    }
 }
 
 /// Whether the infrastructure backend accepts restart operation IDs.
@@ -226,6 +247,8 @@ pub enum Phase {
 /// One durable entry in the connector's outbox.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Entry {
+    /// Core-owned outbox number, separate from the stable effect key.
+    pub number: u64,
     /// Deployment-scoped key.
     pub key: Key,
     /// Connector-owned effect.
@@ -386,6 +409,10 @@ impl Record {
 /// Root-to-connector events.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Event {
+    /// Settle this task before acknowledging its closing barrier.
+    Close { task: u64 },
+    /// Release this task's connector-owned live state.
+    Release { task: u64 },
     /// A live task names resources and needs their holds.
     Names { task: u64, resources: Box<[Resource]> },
     /// A task no longer relies on its named resources.
@@ -403,14 +430,18 @@ pub enum Event {
     /// Drop a terminal proposal payload.
     DropProposal { number: u64 },
     /// Keep an approved effect under its key.
-    Keep { token: Token, key: Key },
+    Keep { token: Token, entry: u64, key: Key },
     /// Drop a staged effect after refusal.
     Drop { token: Token },
     /// The journal released this kept entry.
     Make { key: Key },
+    /// Make the entry named by the core after its commit.
+    MakeEntry { entry: u64 },
     /// Restore one committed record.
     Restore { record: Record },
-    /// Refresh live resources, then settle outbox entries.
+    /// Refresh the resources restored by the preceding live load.
+    ReadAfresh,
+    /// Settle restored entries after all live reads have answered.
     Restart,
     /// A system fact or answer.
     System(SystemEvent),
@@ -449,6 +480,12 @@ pub enum SystemEvent {
 /// Requests to the root and its journal.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Request {
+    /// This task has no unsettled entries.
+    Closed { task: u64 },
+    /// This task's live state was released.
+    Released { task: u64 },
+    /// The connector finished its selected restart stage.
+    Restarted { stage: RestartStage },
     /// Resources and holds a task must take atomically.
     Named { task: u64, resources: Box<[Named]> },
     /// Updated pool capacity; existing holders are retained.
@@ -464,7 +501,7 @@ pub enum Request {
     /// A committed outbox entry ready to make after release.
     Make { key: Key },
     /// An outbox result.
-    Outcome { key: Key, outcome: Outcome },
+    Outcome { entry: u64, key: Key, outcome: Outcome },
     /// One procedure decision.
     Step { task: u64, decision: StepDecision },
     /// Save a connector-owned record.
@@ -473,4 +510,13 @@ pub enum Request {
     Erase { key: RecordKey },
     /// System call held behind the decision's commit.
     System(SystemRequest),
+}
+
+/// The connector-owned completion of a core-selected restart hand-off.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum RestartStage {
+    /// Every live resource has been read afresh.
+    ReadAfresh,
+    /// Every outbox entry is settled or explicitly held.
+    Outbox,
 }

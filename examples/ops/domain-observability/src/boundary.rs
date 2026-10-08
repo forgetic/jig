@@ -97,15 +97,36 @@ pub struct Effect {
     pub until: u64,
 }
 
-/// A durable effect key, unique to one task's purpose in one deployment.
+/// The origin that fixes an effect's purpose across retries.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub enum Purpose {
+    /// One activation-qualified agent call.
+    Call { attempt: u64, completion: u32, position: u32 },
+    /// One stable procedure purpose.
+    Procedure { purpose: u64 },
+    /// One stable goal projection purpose.
+    Projection { purpose: u64 },
+}
+
+/// Full deployment identity and the owner's stable effect purpose.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Key {
-    /// Deployment that owns the silence.
-    pub deployment: u64,
-    /// Task that asked for it.
+    /// Deployment that owns the operation.
+    pub deployment: [u8; 16],
+    /// Asking task.
     pub task: u64,
-    /// Purpose within that task.
+    /// The call, procedure or projection that asked.
+    pub origin: Purpose,
+    /// Stable purpose within that owner.
     pub purpose: u64,
+}
+
+impl Key {
+    /// A procedure's stable purpose in one deployment.
+    #[must_use]
+    pub const fn procedure(deployment: [u8; 16], task: u64, purpose: u64) -> Self {
+        Self { deployment, task, origin: Purpose::Procedure { purpose }, purpose }
+    }
 }
 
 /// One sample used to judge sustained load.
@@ -157,6 +178,8 @@ pub enum Class {
 /// One subscriber's independent classification.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Classed {
+    /// Durable core subscription that owns this interest.
+    pub subscription: u64,
     /// Subscribed task.
     pub task: u64,
     /// What that task receives.
@@ -174,6 +197,8 @@ pub struct Watch {
     pub template: u16,
     /// Last wake batch for which a triage was asked.
     pub last_batch: Option<u64>,
+    /// Alert identities retained until their batched wake is delegated.
+    pub pending: Box<[u64]>,
 }
 
 /// Whether a requirement holds on fresh facts.
@@ -214,6 +239,8 @@ pub enum Phase {
 /// One durable outbox entry.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Entry {
+    /// Core-owned outbox number, separate from the stable effect key.
+    pub number: u64,
     /// Stable effect key.
     pub key: Key,
     /// The silence's value kept by this connector.
@@ -241,7 +268,7 @@ pub enum RecordKey {
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Record {
     /// A subscriber's thresholds.
-    Subscription { topic: Topic, task: u64, wake_at: u8, keep_at: u8 },
+    Subscription { topic: Topic, task: u64, subscription: u64, wake_at: u8, keep_at: u8 },
     /// A standing watch's progress.
     Watch(Watch),
     /// An unsettled keyed silence.
@@ -263,12 +290,18 @@ impl Record {
 /// An event routed to the observability connector.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Event {
+    /// Settle this task before acknowledging its closing barrier.
+    Close { task: u64 },
+    /// Release this task's connector-owned live state.
+    Release { task: u64 },
     /// Ask for an observed verdict within the stated freshness in seconds.
     Judge { token: Token, requirement: Requirement, service: Service, freshness: u64 },
     /// Serve a bounded agent read.
     Read { token: Token, read: Read },
     /// Subscribe one task to a topic, with its own thresholds.
     Subscribe { task: u64, topic: Topic, wake_at: u8, keep_at: u8 },
+    /// Bind the watch's alert interests to its creator-authorized core subscription.
+    LinkWatch { task: u64, subscription: u64 },
     /// Stop delivering a topic to one task.
     Unsubscribe { task: u64, topic: Topic },
     /// Activate a standing watch subscribed to these services.
@@ -280,14 +313,18 @@ pub enum Event {
     /// Describe and stage a silence pending the core's authority check.
     Describe { token: Token, effect: Effect },
     /// Keep an approved silence in the outbox.
-    Keep { token: Token, key: Key },
+    Keep { token: Token, entry: u64, key: Key },
     /// Discard a refused staged silence.
     Drop { token: Token },
     /// The journal released the kept entry.
     Make { key: Key },
+    /// Make the entry named by the core after its commit.
+    MakeEntry { entry: u64 },
     /// Restore a committed record during restart.
     Restore { record: Record },
-    /// Finish the ordered restart after fresh reads.
+    /// Refresh the services named by restored subscriptions and watches.
+    ReadAfresh,
+    /// Settle restored entries after all live reads have answered.
     Restart,
     /// A system result or hint.
     System(SystemEvent),
@@ -324,6 +361,12 @@ pub enum SystemRequest {
 /// What the connector asks its root to route or commit.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Request {
+    /// This task has no unsettled entries.
+    Closed { task: u64 },
+    /// This task's live state was released.
+    Released { task: u64 },
+    /// The connector finished its selected restart stage.
+    Restarted { stage: RestartStage },
     /// An observed requirement verdict.
     Verdict { token: Token, verdict: Verdict },
     /// A read answer for a tool, bounded by the requested size.
@@ -333,7 +376,7 @@ pub enum Request {
     /// A health change classified per subscriber.
     Health { service: Service, healthy: bool, subscribers: Box<[Classed]> },
     /// A watch asks for a triage task from its template and wake batch.
-    Triage { watch: u64, template: u16, batch: u64, alerts: Box<[u64]> },
+    Triage { watch: u64, template: u16, batch: u64, alerts: Box<[u64]>, delegate: Box<[u8]> },
     /// A description for the core's authority check.
     Described { token: Token, effect: Effect },
     /// A refused staged effect or invalid read.
@@ -341,7 +384,7 @@ pub enum Request {
     /// A committed outbox entry ready for journal release.
     Make { key: Key },
     /// Outcome of a silence for its asking task.
-    Outcome { key: Key, outcome: Outcome },
+    Outcome { entry: u64, key: Key, outcome: Outcome },
     /// One durable record to commit.
     Save { record: Record },
     /// One durable record to erase.
@@ -350,4 +393,23 @@ pub enum Request {
     System(SystemRequest),
     /// A changed fact may wake procedures that read it.
     Changed { service: Service },
+}
+
+/// The connector-owned completion of a core-selected restart hand-off.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum RestartStage {
+    /// Every live resource has been read afresh.
+    ReadAfresh,
+    /// Every outbox entry is settled or explicitly held.
+    Outbox,
+}
+
+/// The watch's configured delegate request, encoded in the application's tool vocabulary.
+/// The connector chooses the template; the root only decodes its hand-off.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TriageTemplate {
+    /// Identity named by a watch.
+    pub number: u16,
+    /// One bounded delegate tool input.
+    pub delegate: Box<[u8]>,
 }

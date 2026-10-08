@@ -12,8 +12,8 @@ fn observability(seed: u64) -> (Vec<obs::Request>, Vec<production::ObservedEffec
         token: Token::new(1),
         effect: obs::Effect { rule: Box::from(*b"checkout-errors"), until: 100 },
     });
-    let key = obs::Key { deployment: 1, task: seed, purpose: 3 };
-    let kept = world.event(obs::Event::Keep { token: Token::new(1), key });
+    let key = obs::Key::procedure([1; 16], seed, 3);
+    let kept = world.event(obs::Event::Keep { entry: 3, token: Token::new(1), key });
     match seed % 4 {
         0 => {
             world.restart();
@@ -59,8 +59,8 @@ fn infrastructure(seed: u64) -> (Vec<infra::Request>, Vec<production::ObservedEf
         _ => unreachable!(),
     };
     world.event(infra::Event::Describe { token: Token::new(1), effect });
-    let key = infra::Key { deployment: 1, task: seed, purpose: 3 };
-    let kept = world.event(infra::Event::Keep { token: Token::new(1), key });
+    let key = infra::Key::procedure([1; 16], seed, 3);
+    let kept = world.event(infra::Event::Keep { entry: 3, token: Token::new(1), key });
     match seed % 5 {
         0 => {
             world.restart();

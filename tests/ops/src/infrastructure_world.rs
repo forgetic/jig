@@ -51,11 +51,33 @@ fn environment_name(environment: &infra::Environment) -> production::Environment
 }
 
 fn production_key(key: infra::Key) -> production::Key {
-    production::Key { deployment: key.deployment, task: key.task, purpose: key.purpose }
+    production::Key {
+        deployment: key.deployment,
+        task: key.task,
+        purpose: key.purpose,
+        origin: match key.origin {
+            infra::Purpose::Call { attempt, completion, position } => {
+                production::Purpose::Call { attempt, completion, position }
+            }
+            infra::Purpose::Procedure { purpose } => production::Purpose::Procedure { purpose },
+            infra::Purpose::Projection { purpose } => production::Purpose::Projection { purpose },
+        },
+    }
 }
 
 fn infra_key(key: production::Key) -> infra::Key {
-    infra::Key { deployment: key.deployment, task: key.task, purpose: key.purpose }
+    infra::Key {
+        deployment: key.deployment,
+        task: key.task,
+        purpose: key.purpose,
+        origin: match key.origin {
+            production::Purpose::Call { attempt, completion, position } => {
+                infra::Purpose::Call { attempt, completion, position }
+            }
+            production::Purpose::Procedure { purpose } => infra::Purpose::Procedure { purpose },
+            production::Purpose::Projection { purpose } => infra::Purpose::Projection { purpose },
+        },
+    }
 }
 
 /// Infrastructure beneath a scripted root, on the same production as observability.
@@ -118,7 +140,10 @@ impl InfrastructureWorld {
                     self.records.remove(key);
                     written = true;
                 }
-                infra::Request::Named { .. }
+                infra::Request::Closed { .. }
+                | infra::Request::Released { .. }
+                | infra::Request::Restarted { .. }
+                | infra::Request::Named { .. }
                 | infra::Request::Slots { .. }
                 | infra::Request::Drift { .. }
                 | infra::Request::Changed { .. }
@@ -146,6 +171,9 @@ impl InfrastructureWorld {
             turns = turns.checked_add(1).expect("turn count fits");
             assert!(turns < 100, "scripted root's cascade is finite");
             let generated = match request {
+                infra::Request::Closed { .. } | infra::Request::Released { .. } | infra::Request::Restarted { .. } => {
+                    Vec::new()
+                }
                 infra::Request::Make { key } => self.event(infra::Event::Make { key }),
                 infra::Request::System(call) => {
                     let reply = self.system(call);

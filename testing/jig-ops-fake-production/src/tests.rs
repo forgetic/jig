@@ -1,7 +1,7 @@
 use super::*;
 
 fn key(n: u64) -> Key {
-    Key { deployment: 1, task: 2, purpose: n }
+    Key::procedure([1; 16], 2, n)
 }
 
 #[test]

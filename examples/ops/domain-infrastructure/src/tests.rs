@@ -28,7 +28,7 @@ fn environment() -> Environment {
     Environment::new(Box::from(*b"staging"), Box::from(*b"payments"))
 }
 fn key() -> Key {
-    Key { deployment: 1, task: 7, purpose: 3 }
+    Key::procedure([1; 16], 7, 3)
 }
 
 fn event(domain: &mut Domain, seconds: u64, input: Event) -> Queue<Request> {
@@ -122,7 +122,7 @@ fn an_uncertain_restart_without_ids_is_held_and_not_resent() {
     let mut domain = Domain::new(Backend::NoOperationIds, &limits());
     let token = Token::new(1);
     event(&mut domain, 1, Event::Describe { token, effect: Effect::Restart { service: service(), operation: 9 } });
-    event(&mut domain, 1, Event::Keep { token, key: key() });
+    event(&mut domain, 1, Event::Keep { entry: 3, token, key: key() });
     event(&mut domain, 1, Event::Make { key: key() });
     let mut uncertain = event(
         &mut domain,
@@ -133,6 +133,7 @@ fn an_uncertain_restart_without_ids_is_held_and_not_resent() {
         uncertain.pop(),
         Some(Request::Save {
             record: Record::Outbox(Entry {
+                number: 3,
                 key: key(),
                 effect: Effect::Restart { service: service(), operation: 9 },
                 attempt: 1,
@@ -141,8 +142,10 @@ fn an_uncertain_restart_without_ids_is_held_and_not_resent() {
             })
         })
     );
-    assert_eq!(uncertain.pop(), Some(Request::Outcome { key: key(), outcome: Outcome::Uncertain }));
-    assert!(event(&mut domain, 31, Event::Restart).is_empty(), "held restart is not retried");
+    assert_eq!(uncertain.pop(), Some(Request::Outcome { entry: 3, key: key(), outcome: Outcome::Uncertain }));
+    let mut restarted = event(&mut domain, 31, Event::Restart);
+    assert_eq!(restarted.pop(), Some(Request::Restarted { stage: RestartStage::Outbox }));
+    assert!(restarted.is_empty(), "held restart is not retried");
 }
 
 #[test]

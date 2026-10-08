@@ -13,6 +13,9 @@ pub const MAX_OUT: u32 = 40;
 /// Infrastructure's bounded working set and durable records.
 #[derive(Debug)]
 pub struct Domain {
+    restart: Option<crate::RestartStage>,
+    closing: Map<u64, bool>,
+    refresh: Map<Resource, bool>,
     backend: Backend,
     services: Map<Service, ServiceFact>,
     environments: Map<Environment, Option<EnvironmentFact>>,
@@ -35,6 +38,23 @@ impl Domain {
             "MAX_OUT covers one step"
         );
         Self {
+            restart: None,
+            closing: Map::with_capacity(
+                limits
+                    .tasks
+                    .checked_add(limits.procedures)
+                    .expect("owners")
+                    .checked_add(limits.effects)
+                    .expect("outbox owners"),
+            ),
+            refresh: Map::with_capacity(
+                limits
+                    .tasks
+                    .checked_mul(limits.resources_per_task)
+                    .expect("live resources")
+                    .checked_add(limits.procedures)
+                    .expect("procedure resources"),
+            ),
             backend,
             services: Map::with_capacity(limits.services),
             environments: Map::with_capacity(limits.environments),
@@ -185,6 +205,7 @@ fn fresh_service(
     {
         return;
     }
+    domain.refresh.remove(&Resource::Service(service.clone()));
     let old = domain.services.insert(service.clone(), fact.clone()).expect("service capacity checked");
     let mut ready = List::with_capacity(env.limits.procedures);
     for (task, state) in &domain.procedures {
@@ -227,6 +248,7 @@ fn fresh_environment(
     {
         return;
     }
+    domain.refresh.remove(&Resource::Environment(environment.clone()));
     let old = domain.environments.insert(environment.clone(), fact).expect("environment capacity checked");
     if old != Some(fact) {
         out.push(Request::Changed { resource: Resource::Environment(environment.clone()) });
@@ -242,6 +264,8 @@ fn fresh_pool(domain: &mut Domain, env: &Env<Limits>, pool: Pool, quota: u32, us
     {
         return;
     }
+    domain.refresh.remove(&Resource::Pool(pool.clone()));
+    domain.refresh.remove(&Resource::Quota(pool.clone()));
     let old = domain.pools.insert(pool.clone(), (quota, used)).expect("pool capacity checked");
     if old != Some((quota, used)) {
         out.push(Request::Slots { pool: pool.clone(), quota, used });
@@ -299,7 +323,7 @@ fn settled(domain: &mut Domain, key: Key, outcome: Outcome, out: &mut Queue<Requ
             Effect::Restart { .. } | Effect::Scale { .. } | Effect::Rollback { .. } => {}
         }
     }
-    out.push(Request::Outcome { key, outcome });
+    out.push(Request::Outcome { entry: entry.number, key, outcome });
 }
 
 fn applied(domain: &mut Domain, key: Key, attempt: u32, result: ApplyResult, out: &mut Queue<Request>) {
@@ -322,7 +346,7 @@ fn applied(domain: &mut Domain, key: Key, attempt: u32, result: ApplyResult, out
                 if recovery == Recovery::Unrecoverable {
                     entry.phase = Phase::Held;
                     out.push(Request::Save { record: Record::Outbox(entry.clone()) });
-                    out.push(Request::Outcome { key, outcome: Outcome::Uncertain });
+                    out.push(Request::Outcome { entry: entry.number, key, outcome: Outcome::Uncertain });
                 } else {
                     entry.phase = Phase::Uncertain;
                     out.push(Request::Save { record: Record::Outbox(entry.clone()) });
@@ -345,14 +369,14 @@ fn looked(domain: &mut Domain, env: &Env<Limits>, key: Key, result: Looked, out:
         Looked::Ambiguous => {
             entry.phase = Phase::Held;
             out.push(Request::Save { record: Record::Outbox(entry.clone()) });
-            out.push(Request::Outcome { key, outcome: Outcome::Uncertain });
+            out.push(Request::Outcome { entry: entry.number, key, outcome: Outcome::Uncertain });
         }
         Looked::CanRetry => {
             if wall_seconds(env) >= entry.deadline {
                 if entry.attempt >= env.limits.max_attempts {
                     entry.phase = Phase::Held;
                     out.push(Request::Save { record: Record::Outbox(entry.clone()) });
-                    out.push(Request::Outcome { key, outcome: Outcome::Uncertain });
+                    out.push(Request::Outcome { entry: entry.number, key, outcome: Outcome::Uncertain });
                 } else {
                     entry.phase = Phase::Kept;
                     out.push(Request::Save { record: Record::Outbox(entry.clone()) });
@@ -367,7 +391,7 @@ fn looked(domain: &mut Domain, env: &Env<Limits>, key: Key, result: Looked, out:
 }
 
 fn start_procedure(domain: &mut Domain, env: &Env<Limits>, task: u64, procedure: Procedure, out: &mut Queue<Request>) {
-    if domain.procedures.len() >= env.limits.procedures {
+    if domain.procedures.contains_key(&task) || domain.procedures.len() >= env.limits.procedures {
         return;
     }
     let state = ProcedureState { task, procedure, phase: ProcedurePhase::Active };
@@ -607,9 +631,24 @@ fn stage(domain: &mut Domain, env: &Env<Limits>, token: Token, effect: Effect, o
 }
 
 /// Routes one event with room reserved for its worst case.
+#[expect(clippy::too_many_lines, reason = "one exhaustive dispatcher routes the complete connector vocabulary")]
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     assert!(out.room() >= MAX_OUT, "the root reserves MAX_OUT slots");
     match event {
+        Event::Close { task } => {
+            domain.closing.insert(task, true).expect("live owner capacity");
+        }
+        Event::Release { task } => {
+            if domain.reliance.remove(&task).is_some() {
+                out.push(Request::Erase { key: RecordKey::Rely(task) });
+            }
+            if domain.procedures.remove(&task).is_some() {
+                out.push(Request::Erase { key: RecordKey::Procedure(task) });
+            }
+
+            out.push(Request::Released { task });
+        }
+
         Event::Names { task, resources } => names(domain, env, task, resources, out),
         Event::Unnamed { task } => {
             if domain.reliance.remove(&task).is_some() {
@@ -636,7 +675,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
                 out.push(Request::Erase { key: RecordKey::Proposal(number) });
             }
         }
-        Event::Keep { token, key } => {
+        Event::Keep { token, entry: number, key } => {
             if let Some(effect) = domain.staged.remove(&token) {
                 let owner_room = match &effect {
                     Effect::CreateEnvironment { environment, .. } => {
@@ -648,7 +687,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
                     | Effect::TearDown { .. } => true,
                 };
                 if domain.effects.len() < env.limits.effects && !domain.effects.contains_key(&key) && owner_room {
-                    let entry = Entry { key, effect, attempt: 0, deadline: 0, phase: Phase::Kept };
+                    let entry = Entry { number, key, effect, attempt: 0, deadline: 0, phase: Phase::Kept };
                     domain.effects.insert(key, entry.clone()).expect("outbox capacity checked");
                     out.push(Request::Save { record: Record::Outbox(entry) });
                     out.push(Request::Make { key });
@@ -661,8 +700,21 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             domain.staged.remove(&token);
         }
         Event::Make { key } => make(domain, env, key, out),
+        Event::MakeEntry { entry: number } => {
+            let mut key = None;
+            for (_, entry) in &domain.effects {
+                if entry.number == number {
+                    key = Some(entry.key);
+                }
+            }
+            if let Some(key) = key {
+                make(domain, env, key, out);
+            }
+        }
         Event::Restore { record } => restore(domain, record),
+        Event::ReadAfresh => read_afresh(domain),
         Event::Restart => {
+            domain.restart = Some(crate::RestartStage::Outbox);
             for (key, entry) in &domain.effects {
                 match entry.phase {
                     Phase::Kept => out.push(Request::Make { key: *key }),
@@ -685,6 +737,8 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             SystemEvent::Looked { key, result } => looked(domain, env, key, result, out),
         },
     }
+    closing_complete(domain, out);
+    restart_complete(domain, out);
 }
 
 /// Rechecks uncertain entries once their absolute retry deadline passes.
@@ -714,5 +768,100 @@ pub fn next_deadline(domain: &Domain) -> Option<Time> {
     match soonest {
         Some(at) => Some(Time::from_nanos(at)),
         None => None,
+    }
+}
+
+fn read_afresh(domain: &mut Domain) {
+    domain.restart = Some(crate::RestartStage::ReadAfresh);
+    for (_, resources) in &domain.reliance {
+        for resource in resources {
+            domain.refresh.insert(resource.clone(), false).expect("restored live resources fit");
+        }
+    }
+    for (_, state) in &domain.procedures {
+        let resource = match &state.procedure {
+            Procedure::Scale { service, .. } | Procedure::Remediate { service, .. } => {
+                Resource::Service(service.clone())
+            }
+            Procedure::Provision { environment, .. } | Procedure::TearDown { environment, .. } => {
+                Resource::Environment(environment.clone())
+            }
+        };
+        domain.refresh.insert(resource, false).expect("restored procedure resources fit");
+    }
+}
+
+fn restart_complete(domain: &mut Domain, out: &mut Queue<Request>) {
+    let mut sent = List::with_capacity(MAX_OUT);
+    for (resource, requested) in &domain.refresh {
+        if !*requested && out.room() > 1 {
+            let request = match resource {
+                Resource::Service(service) => SystemRequest::Service { service: service.clone() },
+                Resource::Environment(environment) => SystemRequest::Environment { environment: environment.clone() },
+                Resource::Pool(pool) | Resource::Quota(pool) => SystemRequest::Pool { pool: pool.clone() },
+            };
+            out.push(Request::System(request));
+            sent.push(resource.clone()).expect("output bound");
+        }
+    }
+    for resource in &sent {
+        *domain.refresh.get_mut(resource).expect("live refresh") = true;
+    }
+    let complete = match domain.restart {
+        None => false,
+        Some(crate::RestartStage::ReadAfresh) => domain.refresh.is_empty(),
+        Some(crate::RestartStage::Outbox) => {
+            let mut settled = true;
+            for (_, entry) in &domain.effects {
+                match entry.phase {
+                    Phase::Held => {}
+                    Phase::Kept | Phase::Sent | Phase::Uncertain => settled = false,
+                }
+            }
+            settled
+        }
+    };
+    if complete {
+        let stage = domain.restart.take().expect("completed restart stage");
+        out.push(Request::Restarted { stage });
+    }
+}
+
+impl Domain {
+    /// Procedures whose own facts depend on this resource.
+    #[must_use]
+    pub fn readers(&self, resource: &Resource) -> Box<[u64]> {
+        let mut tasks = List::with_capacity(self.procedures.len());
+        for (task, state) in &self.procedures {
+            let named = match &state.procedure {
+                Procedure::Scale { service, .. } | Procedure::Remediate { service, .. } => {
+                    Resource::Service(service.clone())
+                }
+                Procedure::Provision { environment, .. } | Procedure::TearDown { environment, .. } => {
+                    Resource::Environment(environment.clone())
+                }
+            };
+            if &named == resource {
+                tasks.push(*task).expect("procedure count");
+            }
+        }
+        tasks.into_boxed()
+    }
+}
+
+fn closing_complete(domain: &mut Domain, out: &mut Queue<Request>) {
+    let mut ready = List::with_capacity(MAX_OUT);
+    for (task, _) in &domain.closing {
+        let mut pending = false;
+        for (key, _) in &domain.effects {
+            pending |= key.task == *task;
+        }
+        if !pending && out.room() > 1 {
+            ready.push(*task).expect("output bound");
+            out.push(Request::Closed { task: *task });
+        }
+    }
+    for task in &ready {
+        domain.closing.remove(task);
     }
 }

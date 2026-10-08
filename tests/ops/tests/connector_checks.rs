@@ -5,11 +5,11 @@ use jig_ops_world::{InfrastructureWorld, World, infra_environment, infra_service
 use skein_lib::Token;
 
 fn infra_key() -> infra::Key {
-    infra::Key { deployment: 1, task: 7, purpose: 3 }
+    infra::Key::procedure([1; 16], 7, 3)
 }
 
 fn obs_key() -> obs::Key {
-    obs::Key { deployment: 1, task: 7, purpose: 3 }
+    obs::Key::procedure([1; 16], 7, 3)
 }
 
 #[test]
@@ -40,7 +40,7 @@ fn observability_keyed_silence_survives_each_commit_cut() {
             token,
             effect: obs::Effect { rule: Box::from(*b"checkout-errors"), until: 90 },
         });
-        let kept = world.event(obs::Event::Keep { token, key: obs_key() });
+        let kept = world.event(obs::Event::Keep { entry: 3, token, key: obs_key() });
         match cut {
             0 => {
                 world.restart();
@@ -89,7 +89,7 @@ fn infrastructure_retries_only_after_the_saved_deadline_and_ignores_late_copies(
         token,
         effect: infra::Effect::CreateEnvironment { environment: infra_environment(), until: 100, price: 30 },
     });
-    world.event(infra::Event::Keep { token, key: infra_key() });
+    world.event(infra::Event::Keep { entry: 3, token, key: infra_key() });
     let prepared = world.event(infra::Event::Make { key: infra_key() });
     assert!(
         prepared
@@ -109,7 +109,7 @@ fn infrastructure_retries_only_after_the_saved_deadline_and_ignores_late_copies(
     assert_eq!(world.production.observed().len(), 0);
     world.now = 30;
     let made = world.fire();
-    assert!(made.contains(&infra::Request::Outcome { key: infra_key(), outcome: infra::Outcome::Made }));
+    assert!(made.contains(&infra::Request::Outcome { entry: 3, key: infra_key(), outcome: infra::Outcome::Made }));
     assert_eq!(world.production.used_slots("staging"), 1);
     assert!(
         world
@@ -140,7 +140,7 @@ fn a_hand_reaching_a_conditional_target_is_ambiguous() {
         token,
         effect: infra::Effect::Scale { service: infra_service(), from: 3, to: 4 },
     });
-    world.event(infra::Event::Keep { token, key: infra_key() });
+    world.event(infra::Event::Keep { entry: 3, token, key: infra_key() });
     world.event(infra::Event::Make { key: infra_key() });
     world.production.other_hand(production::Fault::HandScale { service: service_name, replicas: 4 });
     let uncertain = world.event(infra::Event::System(infra::SystemEvent::Applied {
@@ -149,7 +149,11 @@ fn a_hand_reaching_a_conditional_target_is_ambiguous() {
         result: infra::ApplyResult::Uncertain,
     }));
     let settled = world.release(&uncertain);
-    assert!(settled.contains(&infra::Request::Outcome { key: infra_key(), outcome: infra::Outcome::Uncertain }));
+    assert!(settled.contains(&infra::Request::Outcome {
+        entry: 3,
+        key: infra_key(),
+        outcome: infra::Outcome::Uncertain
+    }));
     world.now = 40;
     world.fire();
     world.restart();
@@ -216,13 +220,13 @@ fn a_conditional_effect_fails_when_facts_change_after_decision() {
         token,
         effect: infra::Effect::Scale { service: infra_service(), from: 3, to: 4 },
     });
-    let kept = world.event(infra::Event::Keep { token, key: infra_key() });
+    let kept = world.event(infra::Event::Keep { entry: 3, token, key: infra_key() });
     world.production.other_hand(production::Fault::HandScale {
         service: production::ServiceName::new("production", "checkout"),
         replicas: 5,
     });
     let refused = world.release(&kept);
-    assert!(refused.contains(&infra::Request::Outcome { key: infra_key(), outcome: infra::Outcome::Failed }));
+    assert!(refused.contains(&infra::Request::Outcome { entry: 3, key: infra_key(), outcome: infra::Outcome::Failed }));
     assert_eq!(
         world
             .production
@@ -246,7 +250,7 @@ fn a_hand_deleting_an_owned_environment_reports_drift() {
         token: Token::new(1),
         effect: infra::Effect::CreateEnvironment { environment: environment.clone(), until: 100, price: 20 },
     });
-    let kept = world.event(infra::Event::Keep { token: Token::new(1), key: infra_key() });
+    let kept = world.event(infra::Event::Keep { entry: 3, token: Token::new(1), key: infra_key() });
     world.release(&kept);
     world.release(&[infra::Request::System(infra::SystemRequest::Environment { environment: environment.clone() })]);
     world.production.other_hand(production::Fault::HandDelete {
@@ -265,7 +269,7 @@ fn infrastructure_creation_is_made_once_across_each_restart_cut() {
             token: Token::new(1),
             effect: infra::Effect::CreateEnvironment { environment: infra_environment(), until: 100, price: 20 },
         });
-        let kept = world.event(infra::Event::Keep { token: Token::new(1), key: infra_key() });
+        let kept = world.event(infra::Event::Keep { entry: 3, token: Token::new(1), key: infra_key() });
         match cut {
             0 => {
                 world.restart();
@@ -306,7 +310,7 @@ fn dropping_a_staged_silence_discards_its_value() {
         effect: obs::Effect { rule: Box::from(*b"checkout-errors"), until: 100 },
     });
     world.event(obs::Event::Drop { token });
-    assert!(world.event(obs::Event::Keep { token, key: obs_key() }).is_empty());
+    assert!(world.event(obs::Event::Keep { entry: 3, token, key: obs_key() }).is_empty());
     world.restart();
     assert!(world.production.observed().is_empty());
 }
@@ -346,9 +350,13 @@ fn conditional_scale_and_rollback_find_their_own_lost_answers() {
         let mut world = InfrastructureWorld::new(0, infra::Backend::OperationIds);
         world.event(infra::Event::Describe { token: Token::new(1), effect });
         world.production.queue_fault(production::Fault::LostAnswer);
-        let kept = world.event(infra::Event::Keep { token: Token::new(1), key: infra_key() });
+        let kept = world.event(infra::Event::Keep { entry: 3, token: Token::new(1), key: infra_key() });
         let settled = world.release(&kept);
-        assert!(settled.contains(&infra::Request::Outcome { key: infra_key(), outcome: infra::Outcome::Made }));
+        assert!(settled.contains(&infra::Request::Outcome {
+            entry: 3,
+            key: infra_key(),
+            outcome: infra::Outcome::Made
+        }));
         world.restart();
         assert_eq!(
             world

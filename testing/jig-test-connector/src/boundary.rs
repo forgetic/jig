@@ -481,6 +481,8 @@ pub enum SystemEvent {
 /// What the root tells the connector for this part of its contract.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Event {
+    /// Settle sent effects and withdraw unsent entries before acknowledging closure.
+    Close { task: u64 },
     /// The core refused this step's effect, or its outbox settled.
     EffectDecision { task: u64, made: bool },
     /// Ask the connector to judge the named state on its facts.
@@ -622,6 +624,8 @@ impl Record {
 /// What the connector asks its root to route or commit.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Request {
+    /// All of this task's outbox entries have settled.
+    Closed { task: u64 },
     /// An exact verdict, including the fact's observed time when met.
     Verdict { token: Token, verdict: Verdict },
     /// One bounded procedure decision.

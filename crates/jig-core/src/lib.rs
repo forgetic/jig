@@ -244,6 +244,8 @@ pub struct Core {
     pub(crate) effect_flights: Map<Token, Box<effects::Flight>>,
     /// Live reply rights waiting for a committed effect or its answer deadline.
     pub(crate) effect_replies: Map<u64, effects::Waiting>,
+    /// Connectors whose outboxes must finish before a task closes.
+    pub(crate) closing_connectors: Map<(u64, u16), ()>,
     /// Connector payloads awaiting the task hub's proposal admission.
     pub(crate) proposing_effects: Map<Token, (u16, Token)>,
     /// Correlations while the notes child loads a page for a caller.
@@ -315,6 +317,9 @@ impl Core {
     /// Retain the canonical terminal of an unpriced attempt before the task
     /// child makes its next lifecycle decision.
     pub fn remember_unpriced_terminal(&mut self, run: Token, attempt: Token, end: tasks::End) {
+        if self.committed_terminal(run.raw(), attempt.raw()).is_some() {
+            return;
+        }
         let proof = self.proofs.get_mut(&run.raw()).expect("current fleet terminal has pre-reserved proof");
         assert!(proof.attempt == attempt.raw(), "fleet terminal belongs to current proof");
         let cumulative = match proof.turn {
@@ -322,6 +327,17 @@ impl Core {
             None => 0,
         };
         proof.terminal = Some(TerminalRecord { task: run.raw(), attempt: attempt.raw(), cumulative, end });
+    }
+
+    pub(crate) fn committed_terminal(&self, task: u64, attempt: u64) -> Option<TerminalRecord> {
+        if self.tasks.task(task)?.last_answer != Some(attempt) {
+            return None;
+        }
+        let proof = self.proofs.get(&task)?;
+        if proof.attempt != attempt {
+            return None;
+        }
+        proof.terminal.clone()
     }
 
     /// Retain one newly accepted named call decision. The application saves
@@ -468,6 +484,9 @@ impl Core {
                     .expect("effect flights"),
             ),
             effect_replies: Map::with_capacity(limits.call_records),
+            closing_connectors: Map::with_capacity(
+                limits.tasks.tasks.checked_mul(limits.connectors).expect("bounded closing connectors"),
+            ),
             proposing_effects: Map::with_capacity(limits.call_records),
             note_routes: Map::with_capacity(2),
             pending_note_briefs: Map::with_capacity(limits.brief.briefs),

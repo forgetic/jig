@@ -282,6 +282,14 @@ impl Domain {
         !self.restart_active || self.core.restart_ready()
     }
 
+    /// The client's current held-task context, admitted by the core's visibility rule.
+    #[must_use]
+    pub fn escalation(&self, person: u64, task: u64) -> Option<Box<tasks::EscalationContext>> {
+        let context = self.core.tasks.escalation(task)?;
+        let role = self.core.people.role(person, context.project);
+        if self.core.escalation_visible(&context, person, role) { Some(context) } else { None }
+    }
+
     /// Release retired child slots after every complete application iteration.
     pub fn reclaim(&mut self) {
         self.core.reclaim();
@@ -298,6 +306,9 @@ impl Domain {
 
 #[expect(clippy::large_enum_variant, reason = "the bounded route queue owns complete core events")]
 enum Work {
+    ConnectorResume {
+        number: u16,
+    },
     Restart(core::RestartRequest),
     AdoptRestored,
     AdoptDone,
@@ -399,6 +410,7 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
         | Work::Timer(_)
         | Work::ResumeFleet
         | Work::Connector { .. }
+        | Work::ConnectorResume { .. }
         | Work::EffectCall { .. }
         | Work::Turn { .. }
         | Work::Answer { .. } => core::room_max(&env.limits.core),
@@ -488,6 +500,11 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
                     event,
                     &mut requests,
                 );
+                route_connector(domain, env, &mut decision, number, &mut requests, &mut work);
+            }
+            Work::ConnectorResume { number } => {
+                let mut requests = Queue::with_capacity(connector::MAX_OUT);
+                connector::resume(numbered(domain, number), &mut requests);
                 route_connector(domain, env, &mut decision, number, &mut requests, &mut work);
             }
             Work::Turn { channel, task, attempt, turn, cumulative, read, transcript } => {
@@ -636,6 +653,10 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
         return;
     }
     if domain.journal.idle() && (!domain.restart_active || domain.core.restart_ready()) {
+        if let Some(number) = closing_connector(domain) {
+            decide(domain, env, Work::ConnectorResume { number });
+            return;
+        }
         if domain.core.accounts.usable(domain.core.settings.account)
             && let Some(context) = domain.core.due.pop()
         {
@@ -643,6 +664,16 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
             return;
         }
         decide(domain, env, Work::ResumeFleet);
+    }
+}
+
+fn closing_connector(domain: &Domain) -> Option<u16> {
+    if connector::closing_ready(&domain.first) {
+        Some(1)
+    } else if connector::closing_ready(&domain.second) {
+        Some(2)
+    } else {
+        None
     }
 }
 

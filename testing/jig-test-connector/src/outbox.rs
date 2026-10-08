@@ -202,6 +202,39 @@ pub(crate) fn make(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mu
     progress(domain, env, number, out);
 }
 
+/// Withdraw one never-sent entry; sent entries must produce their outcomes.
+pub(crate) fn close(domain: &mut Domain, task: u64, out: &mut Queue<Request>) -> bool {
+    let mut unsent = None;
+    for (number, entry) in &domain.outbox.entries {
+        if entry.task == task && entry.attempt.is_none() {
+            unsent = Some(*number);
+            break;
+        }
+    }
+    if let Some(number) = unsent {
+        withdraw(domain, number, out);
+    }
+    for (_, entry) in &domain.outbox.entries {
+        if entry.task == task {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn close_ready(domain: &Domain, task: u64) -> bool {
+    let mut found = false;
+    for (_, entry) in &domain.outbox.entries {
+        if entry.task == task {
+            found = true;
+            if entry.attempt.is_none() {
+                return true;
+            }
+        }
+    }
+    !found
+}
+
 pub(crate) fn withdraw(domain: &mut Domain, number: u64, out: &mut Queue<Request>) {
     let Some(entry) = domain.outbox.entries.get(&number) else {
         return;

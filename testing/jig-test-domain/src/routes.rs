@@ -1,6 +1,6 @@
-//! Total boundary translations for the testing application's current walking
-//! routes (`domain/root.md`, sections 3 and 11). The later effect and restart
-//! scripts extend the same root in `domain/engine.md`, sections 6–7.
+//! Total boundary translations for the testing application's tools, effects
+//! and restart script (`domain/root.md`, sections 3 and 11;
+//! `domain/engine.md`, sections 6–7).
 
 use alloc::boxed::Box;
 use jig_core as core;
@@ -144,9 +144,7 @@ fn route_ask(
             }
         }
         core::Ask::Close { task, .. } => {
-            if number == 1 {
-                work.push(Work::Core(core::Event::Tasks(tasks::Event::EffectsSettled { task })));
-            }
+            work.push(Work::Connector { number, event: connector::Event::Close { task } });
         }
         core::Ask::Release { task, .. } => {
             work.push(Work::Connector { number, event: connector::Event::Unnamed { task } });
@@ -355,6 +353,22 @@ pub(super) fn route_connector(
 ) {
     for _ in 0..requests.len() {
         match requests.pop().expect("connector request count") {
+            connector::Request::Closed { task } => {
+                work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Closed {
+                    task,
+                    connector: number,
+                })));
+            }
+            connector::Request::Drift { pool: resource, tasks }
+            | connector::Request::DriftResource { tasks, resource } => {
+                let resource = name(resource);
+                for task in tasks {
+                    work.push(Work::Core(core::Event::EffectConnector(core::connector::Event::Drift {
+                        task,
+                        resource: tasks::Name { connector: number, path: resource.segments.clone() },
+                    })));
+                }
+            }
             connector::Request::RestartDone => {
                 let step = core::RestartStep::SettleOutbox { connector: number };
                 let request = domain.core.restart_done(step);
@@ -500,9 +514,7 @@ pub(super) fn route_connector(
             | connector::Request::Unknown { task: _, resource: _ }
             | connector::Request::Refused { task: _ }
             | connector::Request::Slots { pool: _, slots: _ }
-            | connector::Request::Drift { pool: _, tasks: _ }
             | connector::Request::News { topic: _, subscribers: _ }
-            | connector::Request::DriftResource { tasks: _, resource: _ }
             | connector::Request::Changed { resource: _ }
             | connector::Request::Answer { token: _, bytes: _ }
             | connector::Request::Ready { token: _, size: _ }

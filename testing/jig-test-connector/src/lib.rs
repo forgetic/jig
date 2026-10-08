@@ -42,7 +42,7 @@ pub use boundary::{
     RequirementSpec, ResourceRole, ResourceSpec, RestartStep, StepDecision, SystemEvent, SystemRequest, TopicSpec,
     Verdict,
 };
-pub use domain::{Domain, MAX_OUT, fire, next_deadline, step};
+pub use domain::{Domain, MAX_OUT, closing_ready, fire, next_deadline, resume, step};
 pub use limits::{Limits, worst_case};
 
 #[cfg(test)]

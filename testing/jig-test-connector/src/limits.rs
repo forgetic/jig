@@ -69,6 +69,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     let task_paths =
         u64::from(limits.tasks).checked_mul(u64::from(limits.resources_per_task))?.checked_mul(path_bytes)?;
     Map::<u64, Record>::worst_case(limits.tasks)?
+        .checked_add(Map::<u64, ()>::worst_case(limits.tasks)?)?
         .checked_add(Map::<(u32, Path), ResourceRole>::worst_case(limits.adoptions)?)?
         .checked_add(Map::<(u16, u64), (u16, u16)>::worst_case(limits.subscriptions)?)?
         .checked_add(Map::<Path, u32>::worst_case(limits.pools)?)?

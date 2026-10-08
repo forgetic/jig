@@ -25,6 +25,7 @@ pub struct Domain {
     pub(crate) values: Map<Token, crate::values::Payload>,
     pub(crate) outbox: Outbox,
     restart_settling: bool,
+    closing: Map<u64, ()>,
 }
 
 impl Domain {
@@ -105,6 +106,7 @@ impl Domain {
         }
         Domain {
             config,
+            closing: Map::with_capacity(limits.tasks),
             tasks: Map::with_capacity(limits.tasks),
             adoptions: Map::with_capacity(limits.adoptions),
             subscriptions: Map::with_capacity(limits.subscriptions),
@@ -136,6 +138,9 @@ impl Domain {
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     assert!(out.room() >= MAX_OUT, "parent reserved the connector's maximum output");
     match event {
+        Event::Close { task } => {
+            domain.closing.insert(task, ()).expect("one closing slot per task");
+        }
         Event::EffectDecision { task, made } => crate::procedures::effect_decided(domain, task, made, out),
         Event::Judge { token, requirement, resources, state } => {
             crate::requirements::judge(domain, env, token, requirement, &resources, state, out);
@@ -179,6 +184,40 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         Event::System(system) => system_event(domain, env, system, out),
     }
     restart_complete(domain, out);
+    close_complete(domain, out);
+}
+
+/// A closing task can withdraw an unsent entry or finish its acknowledgement.
+#[must_use]
+pub fn closing_ready(domain: &Domain) -> bool {
+    for (task, ()) in &domain.closing {
+        if crate::outbox::close_ready(domain, *task) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Finish at most one ready closing task after reserving the normal output room.
+pub fn resume(domain: &mut Domain, out: &mut Queue<Request>) {
+    assert!(out.room() >= MAX_OUT, "parent reserved closing output room");
+    close_complete(domain, out);
+}
+
+fn close_complete(domain: &mut Domain, out: &mut Queue<Request>) {
+    let mut ready = None;
+    for (task, ()) in &domain.closing {
+        if crate::outbox::close_ready(domain, *task) {
+            ready = Some(*task);
+            break;
+        }
+    }
+    if let Some(task) = ready
+        && crate::outbox::close(domain, task, out)
+    {
+        domain.closing.remove(&task);
+        out.push(Request::Closed { task });
+    }
 }
 
 fn restart_complete(domain: &mut Domain, out: &mut Queue<Request>) {

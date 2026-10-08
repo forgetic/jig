@@ -166,7 +166,8 @@ impl World {
                 | Request::Adopted { .. }
                 | Request::Slots { .. }
                 | Request::Drift { .. }
-                | Request::News { .. } => {}
+                | Request::News { .. }
+                | Request::Closed { .. } => {}
             }
         }
     }
@@ -241,7 +242,8 @@ impl World {
                 | Request::Drift { .. }
                 | Request::News { .. }
                 | Request::Save { .. }
-                | Request::Erase { .. } => Vec::new(),
+                | Request::Erase { .. }
+                | Request::Closed { .. } => Vec::new(),
             };
             pending.extend(generated.iter().cloned());
             all.extend(generated);

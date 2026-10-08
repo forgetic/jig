@@ -1711,6 +1711,7 @@ fn tag_tasks(
             tasks::Request::Close { task, ending } => {
                 let ancestor_number = core.tasks.root(task).unwrap_or(task);
                 for &connector in core.connectors.as_ref() {
+                    core.closing_connectors.insert((task, connector), ()).expect("bounded closing connectors");
                     out.push(Request::Ask {
                         connector,
                         ask: Ask::Close { task, root: ancestor_number, ending: ending.clone() },
@@ -5567,8 +5568,16 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
         }
         Event::AnswerPayload { run, attempt, payload, cumulative, end, saved, invalid_saved } => {
             assert!(core.current_proof(run.raw(), attempt.raw()), "actual current answer has reserved proof");
-            let (end, saved) =
-                if invalid_saved { (tasks::End::Failed(tasks::Class::Invalid), None) } else { (end, saved) };
+            let (cumulative, end, saved) = match core.committed_terminal(run.raw(), attempt.raw()) {
+                Some(terminal) => (terminal.cumulative, terminal.end, None),
+                None => {
+                    if invalid_saved {
+                        (cumulative, tasks::End::Failed(tasks::Class::Invalid), None)
+                    } else {
+                        (cumulative, end, saved)
+                    }
+                }
+            };
             let proof = core.proofs.get_mut(&run.raw()).expect("terminal proof pre-reserved");
             proof.terminal =
                 Some(crate::TerminalRecord { task: run.raw(), attempt: attempt.raw(), cumulative, end: end.clone() });
@@ -5621,7 +5630,14 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
                         turn,
                     }));
                 }
-                Some(PayloadRefusal::Answer { task, attempt }) if problem.task == Some(task) => {
+                Some(PayloadRefusal::Answer { task, attempt })
+                    if problem.task == Some(task) && core.current_proof(task, attempt) =>
+                {
+                    if core.committed_terminal(task, attempt).is_some() {
+                        let mut out = Queue::with_capacity(1);
+                        out.push(Request::Decided);
+                        return Requests::Out(out);
+                    }
                     let proof = core.proofs.get_mut(&task).expect("answer proof reserved");
                     proof.terminal = Some(crate::TerminalRecord {
                         task,

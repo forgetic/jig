@@ -160,6 +160,8 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     total = total.checked_add(Map::<skein_lib::Token, crate::routing::NoteRoute>::worst_case(2)?)?;
     total = total.checked_add(Map::<u64, bool>::worst_case(limits.brief.briefs)?)?;
     total = total.checked_add(bytes(limits.connectors, sizeof(size_of::<u16>())?)?)?;
+    total =
+        total.checked_add(Map::<(u64, u16), ()>::worst_case(limits.tasks.tasks.checked_mul(limits.connectors)?)?)?;
     total = total.checked_add(Queue::<Box<tasks::RunContext>>::worst_case(limits.tasks.tasks)?)?;
     total = total.checked_add(Queue::<fleet::Event>::worst_case(limits.tasks.tasks.checked_mul(2)?)?)?;
 

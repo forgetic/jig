@@ -27,6 +27,9 @@ pub struct World {
     pub inbound: Vec<tasks::Word>,
     pub answers: Vec<(Token, core::CallKey, core::CallPart)>,
     pub assigned: Option<root::Assignment>,
+    pub assignments: Vec<(u64, u64)>,
+    pub cancellations: Vec<(u64, u64)>,
+    pub commits: Vec<Vec<root::Write>>,
     pub sign_in: Option<u64>,
     pub people_answers: Vec<people::Reply>,
     pub procedure: Option<u64>,
@@ -55,7 +58,8 @@ fn grant() -> authority::Grant {
     }
 }
 
-fn fixture(seed: u64, requirement: bool) -> (root::Config, root::Limits) {
+#[must_use]
+pub fn fixture(seed: u64, requirement: bool) -> (root::Config, root::Limits) {
     let mut limits = crate::world::limits();
     limits.core.authority.segments = 2;
     limits.core.people.requests = 16;
@@ -113,8 +117,14 @@ impl World {
     pub fn with_entries(seed: u64, requirement: bool, entries: u32) -> World {
         let (configuration, mut limits) = fixture(seed, requirement);
         limits.connector.entries = entries;
+        Self::configured(seed, requirement, configuration, limits)
+    }
+
+    /// A story may configure its programs, policy and worker capacity.
+    #[must_use]
+    pub fn configured(seed: u64, requirement: bool, configuration: root::Config, limits: root::Limits) -> World {
         let mut world = World {
-            domain: root::Domain::new(configuration, &limits),
+            domain: root::Domain::new(fixture(seed, requirement).0, &limits),
             store: Store::new(),
             systems: [System::new(), System::new()],
             typed_calls: Vec::new(),
@@ -122,6 +132,9 @@ impl World {
             inbound: Vec::new(),
             answers: Vec::new(),
             assigned: None,
+            assignments: Vec::new(),
+            cancellations: Vec::new(),
+            commits: Vec::new(),
             sign_in: None,
             people_answers: Vec::new(),
             procedure: None,
@@ -142,7 +155,7 @@ impl World {
             wall: 0,
         };
         world.send(root::Event::Core(core::Event::People(people::Event::Roles { project: 1, holdings: Box::new([]) })));
-        world.domain = root::Domain::new(fixture(seed, requirement).0, &limits);
+        world.domain = root::Domain::new(configuration, &limits);
         world.send(root::Event::RestartBegin);
         world.events.extend([
             root::Event::Core(core::Event::Account(accounts::Event::Add {
@@ -154,7 +167,7 @@ impl World {
                 channel: Token::new(7),
                 hello: fleet::Hello {
                     stop_bound: Duration::from_millis(100),
-                    slots: 1,
+                    slots: limits.core.fleet.slots,
                     workstreams: Box::new([]),
                     hosting: Box::new([]),
                 },
@@ -206,6 +219,7 @@ impl World {
                         while let Some(write) = writes.pop() {
                             rows.push(write);
                         }
+                        self.commits.push(rows.clone());
                         self.store.submit(number, rows.into_boxed_slice(), 0);
                         let number = self.store.tick(false).expect("store stays available").expect("ready commit");
                         self.events.push_front(root::Event::Committed { number });
@@ -265,7 +279,13 @@ impl World {
             root::Delivery::Restart(step) => self.restart_step(step),
             root::Delivery::TypedAnswer { name, call, .. } => self.typed_answers.push((name, call)),
             root::Delivery::Core(core::Held::Inbound { word, .. }) => self.inbound.push(word),
-            root::Delivery::Assigned { assignment, .. } => self.assigned = Some(assignment),
+            root::Delivery::Assigned { assignment, .. } => {
+                self.assignments.push((assignment.task, assignment.attempt));
+                self.assigned = Some(assignment);
+            }
+            root::Delivery::Core(core::Held::Cancel { run, attempt, .. }) => {
+                self.cancellations.push((run.raw(), attempt.raw()));
+            }
             root::Delivery::Procedure { task, connector: number, code, .. } => {
                 self.procedure = Some(task);
                 self.events.push_back(root::Event::Connector {
@@ -321,11 +341,28 @@ impl World {
                     ask: people::Ask::StartChat { project: 1, words: b"make an effect".as_slice().into() },
                 })));
             }
-            root::Delivery::Core(core::Held::NotesLoad { owner, .. }) => {
+            root::Delivery::Core(core::Held::NotesLoad { owner, range }) => {
+                let mut records = List::with_capacity(self.limits.core.notes.load_rows);
+                let mut more = false;
+                for row in self.store.rows.values() {
+                    let root::Record::Core(core::Record::Notes(record)) = row else { continue };
+                    let selected = match (&range, record) {
+                        (jig_core_notes::Range::Entry { name }, jig_core_notes::Record::Entry(entry)) => {
+                            *name == entry.name
+                        }
+                        (jig_core_notes::Range::Lines { scope, after }, jig_core_notes::Record::Line(line)) => {
+                            *scope == line.scope && after.is_none_or(|previous| line.name > previous)
+                        }
+                        _ => false,
+                    };
+                    if selected && records.push(record.clone()).is_err() {
+                        more = true;
+                    }
+                }
                 self.events.push_back(root::Event::Core(core::Event::Notes(jig_core_notes::Event::Loaded {
                     owner,
-                    rows: jig_core_notes::Rows { records: List::with_capacity(1) },
-                    more: false,
+                    rows: jig_core_notes::Rows { records },
+                    more,
                 })));
             }
             root::Delivery::Core(core::Held::CallAnswer { to, key, part }) => {
@@ -360,7 +397,6 @@ impl World {
                 | core::Held::TurnBusy { .. }
                 | core::Held::Relayed { .. }
                 | core::Held::StopRun { .. }
-                | core::Held::Cancel { .. }
                 | core::Held::Refuse { .. }
                 | core::Held::Assign { .. }
                 | core::Held::MakeEffect { .. },

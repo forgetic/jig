@@ -150,6 +150,11 @@ pub enum Event {
         task: u64,
         resource: tasks::Name,
     },
+    /// This connector has settled every effect of a closing task.
+    Closed {
+        task: u64,
+        connector: u16,
+    },
     RestartDone {
         stage: RestartStage,
     },

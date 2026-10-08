@@ -1079,6 +1079,32 @@ fn tag_tasks(
             }
             tasks::Request::Made { reply_to, tasks } => {
                 let request = reply_to.into_token();
+                if person_proposal {
+                    match core.routing_people_proposals.get(&request) {
+                        Some(PersonProposalRoute::Accepting { person, proposer, proposal, .. }) => {
+                            let first = *tasks.first().expect("an accepted batch made tasks");
+                            let last = *tasks.last().expect("an accepted batch made tasks");
+                            let count = match last.checked_sub(first) {
+                                Some(count) => count.checked_add(1),
+                                None => None,
+                            };
+                            assert_eq!(count, u64::try_from(tasks.len()).ok(), "batch numbers are consecutive");
+                            let project = core.tasks.task(*proposer).expect("accepted proposer").project;
+                            out.push(Request::Write(Write::Save(Record::Core(CoreRecord::ProposalDecision(
+                                crate::ProposalDecisionRecord {
+                                    project,
+                                    proposer: tasks::Party::Task(*proposer),
+                                    proposal: *proposal,
+                                    kind: tasks::ProposalKind::Batch,
+                                    by: *person,
+                                    choice: people::ProposalChoice::Accepted,
+                                    created: Some((first, last)),
+                                },
+                            )))));
+                        }
+                        Some(PersonProposalRoute::Deciding { .. }) | None => {}
+                    }
+                }
                 match core.made(request, tasks, person_proposal) {
                     crate::MadeRoute::Internal => {}
                     crate::MadeRoute::Tasks(event) | crate::MadeRoute::PersonProposal(event) => {
@@ -1341,7 +1367,18 @@ fn tag_tasks(
             }
             tasks::Request::Save { record } => {
                 if let Some(archive) = crate::proposals::decision_record(&record) {
-                    out.push(Request::Write(Write::Save(Record::Core(CoreRecord::ProposalDecision(archive)))));
+                    // Accepted task batches already saved their member numbers
+                    // with Made; the history row must not replace that evidence.
+                    let by_task = match archive.proposer {
+                        tasks::Party::Task(_) => true,
+                        tasks::Party::Person(_) | tasks::Party::Deployment { .. } => false,
+                    };
+                    let made = archive.kind == tasks::ProposalKind::Batch
+                        && archive.choice == people::ProposalChoice::Accepted
+                        && by_task;
+                    if !made {
+                        out.push(Request::Write(Write::Save(Record::Core(CoreRecord::ProposalDecision(archive)))));
+                    }
                 }
                 let record = match record {
                     tasks::Stored::Ended(mut task) => {

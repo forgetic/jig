@@ -686,6 +686,17 @@ impl Observer {
             }
         }
         for accepted in decisions {
+            if let Some((first, last)) = accepted.created {
+                for task in first..=last {
+                    if snapshot.tasks.get(&task).is_some_and(|row| row.source == source(accepted.proposer)) {
+                        snapshot.accepted_tasks.insert(
+                            task,
+                            r::Acceptance { proposal: accepted.proposal, by: r::Source::Person(accepted.by) },
+                        );
+                    }
+                }
+            }
+
             if let Some((connector, effect)) = self.proposals.get(&accepted.proposal) {
                 for decision in &mut snapshot.decisions {
                     if decision.connector == *connector

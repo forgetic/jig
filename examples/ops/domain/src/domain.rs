@@ -163,6 +163,16 @@ impl Domain {
         !self.restarting || self.core.restart_ready()
     }
 
+    /// The iterate adapter may park once the journal and immediate work settle.
+    #[must_use]
+    pub fn quiescent(&self) -> bool {
+        self.journal.idle()
+            && (!self.ready()
+                || (!self.host.is_ready()
+                    && !self.agents.is_ready()
+                    && (self.core.due.is_empty() || !self.core.accounts.usable(self.core.settings.account))))
+    }
+
     /// Reclaim child-retired slots after an iteration.
     pub fn reclaim(&mut self) {
         self.core.reclaim();

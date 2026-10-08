@@ -595,3 +595,60 @@ fn projections_need_project_grants_and_a_tracked_goal_and_charge_no_task() {
         }
     }
 }
+
+fn proposed_batch() -> Snapshot {
+    let mut rows = snapshot();
+    rows.decisions.clear();
+    let parent = rows.tasks.get_mut(&1).expect("proposer");
+    parent.scope.grants.clear();
+    parent.scope.budget = 20;
+    parent.budget = 20;
+    parent.proposal = Some((9, Source::Person(1)));
+    rows
+}
+
+fn accepted_batch() -> Snapshot {
+    let mut rows = proposed_batch();
+    let parent = rows.tasks.get_mut(&1).expect("proposer");
+    parent.proposal = None;
+    parent.delegates.push(2);
+    let mut child = task(2);
+    child.source = Source::Task(1);
+    rows.tasks.insert(2, child);
+    rows.receipts.insert(Receipt::Task(2));
+    rows.accepted_tasks.insert(2, Acceptance { proposal: 9, by: Source::Person(1) });
+    rows
+}
+
+#[test]
+fn an_accepted_batch_uses_the_persons_authority_and_keeps_the_proposer_as_requester() {
+    let mut fake = Fake::new(Recovery::Keyed);
+    fake.commit(1, proposed_batch()).expect("proposal waits for its covered person");
+    let mut rows = accepted_batch();
+    fake.commit(2, rows.clone()).expect("the person authorizes a wider delegate");
+    rows.tasks.get_mut(&2).expect("delegate").phase = Phase::Done;
+    fake.commit(3, rows).expect("delegate ended");
+    fake.send(Observed::Result { task: 2, to: Source::Task(1) }).expect("result reaches its proposer");
+}
+
+#[test]
+fn a_batch_member_without_its_covered_acceptance_is_rejected() {
+    for fault in 0..3 {
+        let mut fake = Fake::new(Recovery::Keyed);
+        fake.commit(1, proposed_batch()).expect("pending proposal");
+        let mut rows = accepted_batch();
+        match fault {
+            0 => {
+                rows.accepted_tasks.clear();
+            }
+            1 => {
+                rows.accepted_tasks.get_mut(&2).expect("acceptance").proposal = 10;
+            }
+            2 => {
+                rows.accepted_tasks.get_mut(&2).expect("acceptance").by = Source::Person(2);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(fake.commit(2, rows).expect_err("the fake forged batch permission").promise, Promise::Authority);
+    }
+}

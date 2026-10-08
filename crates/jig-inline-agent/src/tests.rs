@@ -100,3 +100,57 @@ fn inline_spawn_routes_admission_and_provider_request_then_grace_settles() {
     }
     assert!(faulted, "grace expiration reports a charter fault");
 }
+
+#[test]
+fn deferred_smith_work_is_ready_after_reclaim_and_resumed_before_parking() {
+    let (mut agent, limits, start) = fixture();
+    let env = Env { now: Time::ZERO, wall: Wall::EPOCH, limits };
+    let mut out = Queue::with_capacity(max_out(&limits));
+    let client = Token::new(7);
+    assert!(!agent.is_ready());
+    step(&mut agent, &env, host::Event::Spawn { client, start }, &mut out);
+    let mut owner = None;
+    while let Some(item) = out.pop() {
+        if let Request::Lower { request: smith::Request::Complete { owner: name, .. }, .. } = item {
+            owner = Some(name);
+        }
+    }
+    assert!(!agent.is_ready(), "a provider completion is external work");
+    crate::terminal(
+        &mut agent,
+        &env,
+        client,
+        crate::Completion::Completed {
+            owner: owner.expect("spawn requested a completion"),
+            completion: smith::llm::Completion {
+                content: Box::new([smith::llm::Said::ToolCall {
+                    id: Box::from(&b"wait-1"[..]),
+                    name: Box::from(&b"wait"[..]),
+                    input: Box::from(&b"{}"[..]),
+                    call: smith::llm::Decoded::Served { ask: smith::run::Ask::Wait },
+                    replay: None,
+                }]),
+                stop: smith::llm::Stop::ToolUse,
+                usage: smith::llm::Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                },
+            },
+        },
+        &mut out,
+    );
+    assert!(!agent.is_ready(), "handoffs wait for the iteration boundary");
+    crate::reclaim(&mut agent);
+    assert!(agent.is_ready(), "deferred Smith work keeps the adapter running");
+    crate::resume(&mut agent, &env, &mut out);
+    let mut completed = false;
+    for item in &out {
+        if let Request::Lower { request: smith::Request::Complete { .. }, .. } = item {
+            completed = true;
+        }
+    }
+    assert!(completed, "resuming reaches the provider boundary");
+    assert!(!agent.is_ready(), "waiting for a provider completion permits parking");
+}

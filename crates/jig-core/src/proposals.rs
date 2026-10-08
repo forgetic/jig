@@ -320,6 +320,7 @@ pub(crate) fn decision_record(row: &tasks::Stored) -> Option<ProposalDecisionRec
                 kind: tasks::ProposalKind::Batch,
                 by,
                 choice,
+                created: None,
             })
         }
         tasks::Stored::History(history) => {
@@ -345,6 +346,7 @@ pub(crate) fn decision_record(row: &tasks::Stored) -> Option<ProposalDecisionRec
                 kind: kind(&proposal.action).0,
                 by,
                 choice,
+                created: None,
             })
         }
         tasks::Stored::Live(_)

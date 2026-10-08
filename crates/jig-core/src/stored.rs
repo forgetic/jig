@@ -560,6 +560,8 @@ pub struct ProposalDecisionRecord {
     pub kind: jig_core_tasks::ProposalKind,
     pub by: u64,
     pub choice: jig_core_people::ProposalChoice,
+    /// Inclusive task-number range created by this accepted batch, in the same commit.
+    pub created: Option<(u64, u64)>,
 }
 
 impl RunProof {

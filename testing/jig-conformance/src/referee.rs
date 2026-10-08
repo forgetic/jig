@@ -220,6 +220,8 @@ pub struct Snapshot {
     /// Last attempt number and absolute retry deadline for each durable key.
     pub attempts: BTreeMap<(u16, SystemKey), (u32, u64)>,
     pub acceptances: BTreeMap<(u16, SystemKey), Acceptance>,
+    /// Durable covered-holder acceptance for each member of a proposed batch.
+    pub accepted_tasks: BTreeMap<u64, Acceptance>,
     pub held_effects: BTreeSet<(u16, SystemKey)>,
     pub settled_effects: BTreeSet<(u16, SystemKey)>,
     pub batches: Vec<Vec<u64>>,
@@ -408,7 +410,8 @@ impl Referee {
     }
 
     fn source<'a>(&'a self, snapshot: &'a Snapshot, task: &Task) -> Option<&'a Scope> {
-        match task.source {
+        let source = snapshot.accepted_tasks.get(&task.number).map_or(task.source, |accepted| accepted.by);
+        match source {
             Source::Task(parent) => snapshot.tasks.get(&parent).map(|task| &task.scope),
             Source::Person(person) => self.policy.people.get(&(task.project, person)),
             Source::Deployment => Some(&self.policy.deployment),
@@ -422,6 +425,39 @@ impl Referee {
     fn durable(&mut self, number: u64, snapshot: Snapshot, now: u64) -> Result<(), Violation> {
         require(number == self.commit + 1, Promise::Commit, "commits apply whole in number order")?;
         for task in snapshot.tasks.values() {
+            require(
+                self.last
+                    .accepted_tasks
+                    .get(&task.number)
+                    .is_none_or(|accepted| snapshot.accepted_tasks.get(&task.number) == Some(accepted)),
+                Promise::Authority,
+                "durable batch acceptance disappeared or changed",
+            )?;
+            if let Some(accepted) = snapshot.accepted_tasks.get(&task.number) {
+                let proposer = match task.source {
+                    Source::Task(parent) => snapshot.tasks.get(&parent),
+                    Source::Person(_) | Source::Deployment => None,
+                };
+                let prior =
+                    proposer.and_then(|parent| self.last.tasks.get(&parent.number)).and_then(|parent| parent.proposal);
+                let known = self.last.accepted_tasks.get(&task.number) == Some(accepted);
+                require(
+                    known
+                        || prior.is_some_and(|(proposal, holder)| {
+                            proposal == accepted.proposal
+                                && (holder == accepted.by
+                                    || (holder == Source::Deployment
+                                        && match accepted.by {
+                                            Source::Person(person) => {
+                                                self.policy.effect_accepters.contains(&(task.project, person))
+                                            }
+                                            Source::Task(_) | Source::Deployment => false,
+                                        }))
+                        }),
+                    Promise::Authority,
+                    "batch member lacks a durable covered-holder acceptance",
+                )?;
+            }
             if !self
                 .last
                 .tasks
@@ -438,7 +474,9 @@ impl Referee {
                     format!("task {} exceeds policy or its authority source", task.number),
                 )?;
                 if !self.first.contains_key(&task.number) {
-                    if let Source::Task(parent) = task.source {
+                    let authority_source =
+                        snapshot.accepted_tasks.get(&task.number).map_or(task.source, |accepted| accepted.by);
+                    if let Source::Task(parent) = authority_source {
                         let scope = &snapshot.tasks[&parent].scope;
                         require(
                             scope.executors.contains(&task.executor) && scope.depth > 0 && scope.descendants > 0,
@@ -446,7 +484,7 @@ impl Referee {
                             "child's executor or delegation is outside its parent",
                         )?;
                     }
-                    let mut source = task.source;
+                    let mut source = authority_source;
                     let mut depth = 1;
                     while let Source::Task(parent) = source {
                         let ancestor = &snapshot.tasks[&parent];
@@ -457,7 +495,7 @@ impl Referee {
                             Promise::Authority,
                             "lifetime descendants or depth exceed an ancestor grant",
                         )?;
-                        source = ancestor.source;
+                        source = snapshot.accepted_tasks.get(&parent).map_or(ancestor.source, |accepted| accepted.by);
                         depth += 1;
                         require(
                             usize::try_from(depth).expect("depth fits") <= snapshot.tasks.len() + 1,

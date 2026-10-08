@@ -77,6 +77,19 @@ impl Agent {
         self.runs.len()
     }
 
+    /// Whether a hosted Smith domain has deferred work for [`resume`].
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        for (_, run) in &self.runs {
+            if let Some(smith) = &run.smith
+                && smith.is_ready()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Drain one content-free observation from a live Smith domain.
     pub fn pop_fact(&mut self, client: Token) -> Option<smith::Fact> {
         self.runs.get_mut(&client)?.smith.as_mut()?.pop_fact()

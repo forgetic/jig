@@ -207,7 +207,9 @@ which it keeps. What the core gets is its **description:**
   - *conditional:* the system applies the effect only from the state it
     was decided against (a rollback only from the version decided on, a
     merge only at the head decided on), and the state it leads to can be
-    told from any other's. An uncertain entry is looked for by that
+    told from any other's, from what the system keeps, which no other
+    hand can erase (a pull request closed is still found; a branch
+    deleted is not). An uncertain entry is looked for by that
     state, and tried again under the same condition; a late copy fails
     its condition. **At most once in effect.**
   - *idempotent:* a set, which may be applied twice to the same final
@@ -229,6 +231,12 @@ which it keeps. What the core gets is its **description:**
   own start, so restarting never postpones an entry for ever. A clock
   that moved back only delays a retry; the margin covers a clock that
   moved forward by as much as the deployment configures.
+- **A copy lands within its write's lifetime, or never.** Every class's
+  promise rests on it: an attempt is retried only once the lifetime of
+  the one before has passed, so no copy of an earlier attempt lands after
+  a later one is sent. A fake system that delivers copies later breaks
+  this assumption, not the connector. A system whose writes cannot be
+  bounded so has no class but unrecoverable.
 
 ### 4.4 Keys
 

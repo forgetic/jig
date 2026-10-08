@@ -153,6 +153,7 @@ impl CallPart {
 pub struct CallRecord {
     pub key: CallKey,
     pub part: CallPart,
+    pub settled: Option<crate::SettledCall>,
 }
 
 /// Core-owned durable rows before the application's store wrapper assigns
@@ -325,9 +326,29 @@ impl Core {
                 Restored::Deployment { commits: deployment.commits }
             }
             CoreRecord::Call(record) => {
-                if record.part.valid(&self.counters.deployment(), limits, self.authority.limits())
+                let mut valid_settled = match &record.settled {
+                    Some(call) => {
+                        call.serial != 0 && call.serial <= self.counters.deployment().calls && call.valid(limits)
+                    }
+                    None => true,
+                };
+                if let Some(call) = &record.settled {
+                    for (_, previous) in &self.call_settled {
+                        if call.serial == previous.serial {
+                            valid_settled = false;
+                        }
+                    }
+                }
+                if valid_settled
+                    && record.part.valid(&self.counters.deployment(), limits, self.authority.limits())
                     && self.restore_call(record.key, record.part)
                 {
+                    if let Some(call) = record.settled {
+                        assert!(
+                            self.call_settled.insert(record.key, call).is_ok(),
+                            "restored settled names share the call bound"
+                        );
+                    }
                     Restored::Live
                 } else {
                     Restored::Rejected
@@ -484,6 +505,8 @@ pub struct RunProof {
     pub task: u64,
     /// Positive current claim identity allocated by root.
     pub attempt: u64,
+    /// Earliest attempt whose turns belong to this usable conversation; zero keeps all.
+    pub transcript_from: u64,
     /// Highest inbox message offered to this attempt in an assignment or committed relay.
     pub offered: Option<u64>,
     /// Latest accepted turn, or none before the first turn; no historical body is retained.

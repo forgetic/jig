@@ -108,6 +108,7 @@ pub fn limits() -> root::Limits {
             escalation_reason_bytes: 128,
             load_slots: 2,
             call_records: 2,
+            call_answer_bytes: 256,
             tasks,
             authority: authority_limits(),
             people,
@@ -461,6 +462,7 @@ impl World {
                 root::Request::Stop => panic!("testing root stopped: {:?}", self.trace),
             }
         }
+        self.domain.reclaim();
         if self.scenario == Scenario::Goal
             && self.delegated
             && !self.goal_answer_sent
@@ -474,6 +476,7 @@ impl World {
                 task: assignment.task,
                 attempt: assignment.attempt,
                 turn: 1,
+                read: None,
                 cumulative: 3,
                 transcript: b"procedure finished".as_slice().into(),
             });
@@ -563,6 +566,7 @@ impl World {
                         task,
                         attempt,
                         turn: 1,
+                        read: None,
                         cumulative: 3,
                         transcript: b"answer".as_slice().into(),
                     }),
@@ -681,7 +685,10 @@ impl World {
                 | core::Held::ViewTaskPhase { .. }
                 | core::Held::ViewTurn { .. },
             ) => {}
-            other @ (root::Delivery::Core(_) | root::Delivery::Fleet(_) | root::Delivery::System { .. }) => {
+            other @ (root::Delivery::TypedAnswer { .. }
+            | root::Delivery::Core(_)
+            | root::Delivery::Fleet(_)
+            | root::Delivery::System { .. }) => {
                 panic!("unhandled walking delivery {other:?}: {:?}", self.trace)
             }
         }

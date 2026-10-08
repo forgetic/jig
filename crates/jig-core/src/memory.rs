@@ -84,6 +84,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     if limits.resume_bytes == 0
         || limits.run_bytes == 0
         || limits.call_records == 0
+        || limits.call_answer_bytes == 0
         || limits.notes.scopes < 3_u32.checked_add(limits.authority.grants)?
     {
         return None;
@@ -99,7 +100,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         notes::worst_case(&limits.notes)?,
         views::worst_case(&limits.views)?,
     ];
-    let mut total = crate::effect_worst_case(limits)?;
+    let mut total = crate::effect_worst_case(limits)?.checked_add(crate::typed_worst_case(limits)?)?;
     for child in children {
         total = total.checked_add(child)?;
     }

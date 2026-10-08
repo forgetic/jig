@@ -113,6 +113,14 @@ pub enum Write {
 pub enum Held {
     /// A connector may make this entry only after its keeping decision commits.
     MakeEffect { connector: u16, entry: u64 },
+    /// A rendered answer and all opaque evidence have reached the store.
+    SettledCall { to: ReplyTo, key: CallKey, call: crate::SettledCall },
+    /// A claimed host receives the parent's typed conversation references.
+    AssignTyped { channel: Token, run: Token, attempt: Token, activation: u64, assignment: fleet::TypedAssignment },
+    /// The host receives an answer under its original opaque call name.
+    RelayedTyped { channel: Token, run: Token, attempt: Token, call: Box<[u8]>, answer: Token },
+    /// The host receives the same named label and words the root supplied.
+    InboundTyped { channel: Token, run: Token, attempt: Token, message: fleet::TypedMessage },
     /// A saved word relayed to its fenced live attempt after commit.
     Relay { task: u64, attempt: u64, previous: Option<u64>, word: tasks::Word },
     /// A party's keyed terminal, released after its decision is durable.
@@ -164,6 +172,14 @@ pub enum Held {
 pub enum Now {
     /// An effect wait or capacity refusal changed no durable state.
     EffectAnswer { to: ReplyTo, key: CallKey, part: CallPart },
+    /// A settled answer exceeded its bounded record or no retained call owns it.
+    SettledCallRefused { to: ReplyTo, key: CallKey, name: Box<[u8]>, tool: Box<[u8]> },
+    /// The protocol layer decodes this attested tool and input at the root boundary.
+    CallTyped { to: ReplyTo, run: Token, attempt: Token, call: fleet::TypedCall },
+    /// A fenced or over-capacity typed call changed nothing.
+    DropTyped { call: fleet::TypedCall },
+    /// The host did not take this typed message; its durable inbox word remains unread.
+    UndeliveredTyped { run: Token, attempt: Token, message: fleet::TypedMessage },
     /// A sign-in whose core-owned person or session counter is exhausted.
     SignInRefused { to: ReplyTo },
     /// A volatile watch refused before any durable decision.
@@ -253,6 +269,8 @@ pub struct Limits {
     pub load_slots: u32,
     /// Named call replay and in-flight route slots.
     pub call_records: u32,
+    /// Total bytes of a retained opaque call name, tool name and settled answer.
+    pub call_answer_bytes: u32,
     /// The task hub's finite work.
     pub tasks: tasks::Limits,
     /// Policy tables and authority payload bounds owned by the core.
@@ -289,6 +307,8 @@ pub struct CoreBriefBudgets {
 /// One event routed to a child of the core.
 #[derive(Debug)]
 pub enum Event {
+    /// A protocol-rendered answer, with opaque workspace evidence preserved verbatim.
+    SettledCall { to: ReplyTo, key: CallKey, call: crate::SettledCall },
     /// A connector owns the decoded effect under this transient owner.
     EffectStart { owner: Token, connector: u16, origin: crate::EffectOrigin },
     /// Connector handoffs and outbox outcomes in the core vocabulary.
@@ -2793,7 +2813,11 @@ fn task_saved_view(core: &mut Core, env: &Env<Limits>, task: &tasks::TaskRecord,
 
 fn call_decision(core: &mut Core, out: &mut Queue<Request>, to: ReplyTo, key: CallKey, part: CallPart) {
     if core.decide_named_call(key, part.clone()) {
-        out.push(Request::Write(Write::Save(Record::Core(CoreRecord::Call(CallRecord { key, part: part.clone() })))));
+        out.push(Request::Write(Write::Save(Record::Core(CoreRecord::Call(CallRecord {
+            key,
+            part: part.clone(),
+            settled: core.call_settled.get(&key).cloned(),
+        })))));
     }
     out.push(Request::Held(Box::new(Held::CallAnswer { to, key, part })));
 }
@@ -3443,20 +3467,45 @@ fn workspace_prepared(
         out.push(Request::Decided);
         return Requests::Out(out);
     }
+    let resume = core.settings.run.resume
+        && context.tries.transient == 0
+        && transcript.bytes <= u64::from(core.settings.resume_bytes);
+    let transcript_from = if resume { transcript.from } else { attempt };
     let offered = if context.last_message == 0 { None } else { Some(context.last_message) };
     assert!(
-        core.proofs.insert(task, RunProof { task, attempt, offered, turn: None, terminal: None }).is_ok(),
+        core.proofs
+            .insert(task, RunProof { task, attempt, transcript_from, offered, turn: None, terminal: None })
+            .is_ok(),
         "claim proof reserved before child mutation"
     );
-    let turns = core.resumed_turns(transcript);
+    let turns = if resume { core.resumed_turns(transcript) } else { Box::new([]) };
     let mut answered = List::with_capacity(env.limits.call_records);
-    for (&key, _) in &core.call_parts {
-        if key.task == task && key.attempt < attempt {
-            answered.push(key).expect("retained call bound");
+    let mut after = None;
+    for _ in 0..core.call_parts.len() {
+        let mut next = None;
+        for (&key, _) in &core.call_parts {
+            if key.task == task
+                && key.attempt < attempt
+                && match after {
+                    Some(previous) => key > previous,
+                    None => true,
+                }
+                && match next {
+                    Some(previous) => key < previous,
+                    None => true,
+                }
+            {
+                next = Some(key);
+            }
         }
+        let Some(key) = next else { break };
+        answered.push(key).expect("retained call bound");
+        after = Some(key);
     }
+    let mut policy = core.settings.run.clone();
+    policy.resume = resume;
     let run = RunCharter {
-        policy: core.settings.run.clone(),
+        policy,
         contract: context.contract,
         authority: context.authority,
         budget: authority::left(crate::translate::authority_numbers(context.numbers))
@@ -3577,7 +3626,7 @@ fn plan_brief(
             })
             .expect("dependency result section room");
     }
-    if core.transcript_oversized(task) {
+    if core.transcript_oversized(task) || context.tries.transient != 0 || !core.settings.run.resume {
         let Some(text) = crate::read_brief_part(core, text_limits, task, crate::BriefPart::TranscriptTail) else {
             work.push(Event::Tasks(tasks::Event::PreparationFailed { task }));
             out.push(Request::Decided);
@@ -5084,17 +5133,37 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                 }
                 continue;
             }
-            fleet::Request::AssignTyped { .. }
-            | fleet::Request::InboundTyped { .. }
-            | fleet::Request::RelayTyped { .. }
-            | fleet::Request::RelayedTyped { .. }
-            | fleet::Request::DropTyped { .. }
-            | fleet::Request::Grant { .. }
+            fleet::Request::AssignTyped { channel, kind: _, run, attempt, activation, assignment } => {
+                out.push(Request::Held(Box::new(Held::ViewStart { run, attempt })));
+                Request::Held(Box::new(Held::AssignTyped { channel, run, attempt, activation, assignment }))
+            }
+            fleet::Request::InboundTyped { channel, run, attempt, message } => {
+                if let Some(proof) = core.proofs.get_mut(&run.raw())
+                    && proof.attempt == attempt.raw()
+                {
+                    proof.offered = Some(match proof.offered {
+                        Some(previous) => previous.max(message.name.raw()),
+                        None => message.name.raw(),
+                    });
+                    out.push(Request::Write(Write::Save(Record::Core(CoreRecord::RunProof(proof.clone())))));
+                }
+                Request::Held(Box::new(Held::InboundTyped { channel, run, attempt, message }))
+            }
+            fleet::Request::RelayTyped { reply_to, run, attempt, call } => {
+                Request::Now(Box::new(Now::CallTyped { to: reply_to, run, attempt, call }))
+            }
+            fleet::Request::RelayedTyped { channel, run, attempt, call, answer } => {
+                Request::Held(Box::new(Held::RelayedTyped { channel, run, attempt, call, answer }))
+            }
+            fleet::Request::DropTyped { call } => Request::Now(Box::new(Now::DropTyped { call })),
+            fleet::Request::UndeliveredTyped { run, attempt, message, undelivered: _ } => {
+                Request::Now(Box::new(Now::UndeliveredTyped { run, attempt, message }))
+            }
+            fleet::Request::Grant { .. }
             | fleet::Request::Rejected { .. }
             | fleet::Request::Exhausted { .. }
             | fleet::Request::Bounced { .. }
-            | fleet::Request::UndeliveredTyped { .. }
-            | fleet::Request::Told { .. } => unreachable!("06a does not route typed host messages"),
+            | fleet::Request::Told { .. } => unreachable!("account and diagnostic host routes are handled separately"),
             fleet::Request::Turned { run, attempt, turn, body } => {
                 assert!(core.current_proof(run.raw(), attempt.raw()), "actual current turn has reserved proof");
                 Request::Now(Box::new(Now::TurnPayload { run, attempt, turn, body }))
@@ -5236,7 +5305,8 @@ pub fn room(limits: &Limits, event: &Event) -> Option<JournalRoom> {
         | Event::Holdings { .. }
         | Event::Account(_)
         | Event::View(_)
-        | Event::Notes(_) => Some(room),
+        | Event::Notes(_)
+        | Event::SettledCall { .. } => Some(room),
     }
 }
 
@@ -5273,6 +5343,7 @@ pub fn resume_fleet(core: &mut Core, env: &Env<Limits>) -> Requests {
 #[expect(clippy::too_many_lines, reason = "each bounded child event has one exhaustive route")]
 fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<Event>) -> Requests {
     match event {
+        Event::SettledCall { to, key, call } => crate::typed::settle(core, &env.limits, to, key, call),
         Event::EffectStart { owner, connector, origin } => crate::effects::start(core, env, owner, connector, origin),
         Event::EffectConnector(event) => crate::effects::connector(core, env, work, event),
         Event::EffectDeadline => crate::effects::deadline(core, env),
@@ -5506,11 +5577,11 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
         Event::AcceptedTurn { task, attempt, turn, accepted, cumulative, read, transcript } => {
             let proof = core.proofs.get_mut(&task).expect("turn proof reserved before child mutation");
             assert!(proof.attempt == attempt, "turn callback retains its actual claim");
-            proof.turn = Some(crate::TurnProof { turn, cumulative, read });
             let mut out = Queue::with_capacity(env.limits.call_records.checked_add(6).expect("turn route room"));
-            out.push(Request::Write(Write::Save(Record::Core(CoreRecord::RunProof(proof.clone())))));
             match accepted {
                 tasks::Accepted::New => {
+                    proof.turn = Some(crate::TurnProof { turn, cumulative, read });
+                    out.push(Request::Write(Write::Save(Record::Core(CoreRecord::RunProof(proof.clone())))));
                     out.push(Request::Write(Write::Save(Record::Core(CoreRecord::Turn(crate::TurnRecord {
                         task,
                         attempt,

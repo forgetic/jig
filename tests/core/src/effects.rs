@@ -18,6 +18,9 @@ pub struct World {
     pub domain: root::Domain,
     pub store: Store,
     pub systems: [System; 2],
+    pub typed_calls: Vec<(Token, u64, u64, fleet::TypedCall)>,
+    pub typed_answers: Vec<(Box<[u8]>, core::SettledCall)>,
+    pub inbound: Vec<tasks::Word>,
     pub answers: Vec<(Token, core::CallKey, core::CallPart)>,
     pub assigned: Option<root::Assignment>,
     pub sign_in: Option<u64>,
@@ -45,6 +48,7 @@ fn grant() -> authority::Grant {
 fn fixture(seed: u64, requirement: bool) -> (root::Config, root::Limits) {
     let mut limits = crate::world::limits();
     limits.core.authority.segments = 2;
+    limits.core.people.requests = 16;
     let mut configuration = crate::world::config(seed);
     let mut rules = configuration.core.authority.rules().clone();
     rules.ceiling.grants = Box::new([grant()]);
@@ -102,6 +106,9 @@ impl World {
             domain: root::Domain::new(configuration, &limits),
             store: Store::new(),
             systems: [System::new(), System::new()],
+            typed_calls: Vec::new(),
+            typed_answers: Vec::new(),
+            inbound: Vec::new(),
             answers: Vec::new(),
             assigned: None,
             sign_in: None,
@@ -184,6 +191,32 @@ impl World {
                         self.events.push_front(root::Event::Committed { number });
                     }
                     root::Request::Deliver(delivery) => self.delivered(delivery),
+                    root::Request::Now(core::Now::StartPreparation { task, .. }) => {
+                        let rows: Vec<_> = self
+                            .store
+                            .rows
+                            .values()
+                            .filter_map(|record| match record {
+                                root::Record::Core(core::Record::Core(core::CoreRecord::Turn(turn)))
+                                    if turn.task == task =>
+                                {
+                                    Some(turn.clone())
+                                }
+                                root::Record::Core(_) | root::Record::Connector { .. } => None,
+                            })
+                            .collect();
+                        for row in rows {
+                            self.events.push_back(root::Event::TranscriptLoaded {
+                                task,
+                                rows: Box::new([row]),
+                                done: false,
+                            });
+                        }
+                        self.events.push_back(root::Event::TranscriptLoaded { task, rows: Box::new([]), done: true });
+                    }
+                    root::Request::Now(core::Now::CallTyped { to, run, attempt, call }) => {
+                        self.typed_calls.push((to.into_token(), run.raw(), attempt.raw(), call));
+                    }
                     root::Request::Now(core::Now::EffectAnswer { to, key, part }) => {
                         self.answers.push((to.into_token(), key, part));
                     }
@@ -198,6 +231,7 @@ impl World {
                     root::Request::Stop => panic!("root stopped: {:?}", self.trace),
                 }
             }
+            self.domain.reclaim();
             if empty && self.events.is_empty() && self.domain.quiescent() {
                 return;
             }
@@ -207,6 +241,8 @@ impl World {
 
     fn delivered(&mut self, delivery: root::Delivery) {
         match delivery {
+            root::Delivery::TypedAnswer { name, call, .. } => self.typed_answers.push((name, call)),
+            root::Delivery::Core(core::Held::Inbound { word, .. }) => self.inbound.push(word),
             root::Delivery::Assigned { assignment, .. } => self.assigned = Some(assignment),
             root::Delivery::Procedure { task, connector: number, code, .. } => {
                 self.procedure = Some(task);
@@ -269,11 +305,14 @@ impl World {
             }
             root::Delivery::Core(core::Held::PeopleReply { reply, .. }) => self.people_answers.push(reply),
             root::Delivery::Core(
-                core::Held::ViewStart { .. }
+                core::Held::SettledCall { .. }
+                | core::Held::AssignTyped { .. }
+                | core::Held::InboundTyped { .. }
+                | core::Held::RelayedTyped { .. }
+                | core::Held::ViewStart { .. }
                 | core::Held::ViewFinished { .. }
                 | core::Held::ViewTaskPhase { .. }
                 | core::Held::ViewTurn { .. }
-                | core::Held::Inbound { .. }
                 | core::Held::Relay { .. }
                 | core::Held::Result { .. }
                 | core::Held::Acknowledge { .. }
@@ -466,5 +505,76 @@ impl World {
         self.send(root::Event::Core(core::Event::Tasks(tasks::Event::Restored)));
         self.send(root::Event::Core(core::Event::Fleet(fleet::Event::Loaded)));
         self.lose_answer = false;
+    }
+}
+
+impl World {
+    pub fn say(&mut self, key: u8) -> u64 {
+        let task = self.assigned.as_ref().expect("assigned chat").task;
+        self.send(root::Event::Core(core::Event::People(people::Event::Ask {
+            reply_to: ReplyTo::new(Token::new(3000 + u64::from(key))),
+            sign_in: self.sign_in.expect("signed in"),
+            key: [key; 16],
+            ask: people::Ask::Say { project: 1, task, words: Box::from([key]) },
+        })));
+        self.people_answers
+            .iter()
+            .rev()
+            .find_map(|reply| match reply {
+                people::Reply::Outcome(people::Outcome::Said { message, .. }) => Some(*message),
+                people::Reply::SignedIn { .. }
+                | people::Reply::SignedOut
+                | people::Reply::Outcome(_)
+                | people::Reply::Refused(_) => None,
+            })
+            .expect("durable words")
+    }
+
+    pub fn turn(&mut self, number: u32, spent: u64, read: Option<u64>, body: &[u8]) {
+        let assignment = self.assigned.as_ref().expect("assigned chat");
+        self.send(root::Event::Turn {
+            channel: Token::new(7),
+            task: assignment.task,
+            attempt: assignment.attempt,
+            turn: number,
+            cumulative: spent,
+            read,
+            transcript: body.into(),
+        });
+    }
+
+    pub fn end(&mut self, end: tasks::End, cumulative: u64) {
+        let assignment = self.assigned.as_ref().expect("assigned chat");
+        self.send(root::Event::Answer {
+            channel: Token::new(7),
+            task: assignment.task,
+            attempt: assignment.attempt,
+            cumulative,
+            end,
+        });
+    }
+
+    pub fn typed(&mut self, name: &[u8], tool: &[u8], input: &[u8], writes: bool) -> Token {
+        let assignment = self.assigned.as_ref().expect("assigned chat");
+        self.send(root::Event::Core(core::Event::Fleet(fleet::Event::RelayTyped {
+            channel: Token::new(7),
+            run: Token::new(assignment.task),
+            attempt: Token::new(assignment.attempt),
+            call: fleet::TypedCall {
+                name: name.into(),
+                tool: tool.into(),
+                writes,
+                input: input.into(),
+                deadline: Duration::from_secs(2),
+            },
+        })));
+        self.typed_calls.last().expect("fleet authenticated typed call").0
+    }
+}
+
+impl World {
+    pub fn retry_due(&mut self) {
+        self.wall += 1_000_000_000;
+        self.send(root::Event::Timer(core::Timer::Tasks));
     }
 }

@@ -24,6 +24,8 @@ pub enum RunAdmission {
 #[derive(Debug)]
 pub struct Transcript {
     pub previous_attempt: u64,
+    pub last: Option<(u64, u32)>,
+    pub from: u64,
     pub bytes: u64,
     pub kept: u64,
     pub turns: Queue<Box<[u8]>>,
@@ -103,12 +105,18 @@ impl Core {
 
     /// Begin a bounded transcript load for a due task's previous attempt.
     pub fn begin_transcript(&mut self, task: u64, previous_attempt: u64) {
+        let from = match self.proofs.get(&task) {
+            Some(proof) => proof.transcript_from,
+            None => 0,
+        };
         assert!(
             self.transcripts
                 .insert(
                     task,
                     Transcript {
                         previous_attempt,
+                        last: None,
+                        from,
                         bytes: 0,
                         kept: 0,
                         turns: Queue::with_capacity(self.settings.resume_bytes),
@@ -127,9 +135,19 @@ impl Core {
         if turn.task != task || turn.attempt > transcript.previous_attempt || turn.attempt == 0 || turn.turn == 0 {
             return false;
         }
+        if let Some(previous) = transcript.last
+            && (turn.attempt, turn.turn) <= previous
+        {
+            return false;
+        }
+        if turn.attempt < transcript.from {
+            transcript.last = Some((turn.attempt, turn.turn));
+            return true;
+        }
         let length = u64::try_from(turn.transcript.len()).expect("stored turn size fits u64");
         let Some(total) = transcript.bytes.checked_add(length) else { return false };
         transcript.bytes = total;
+        transcript.last = Some((turn.attempt, turn.turn));
         if length == 0 {
             return true;
         }

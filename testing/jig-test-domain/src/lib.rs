@@ -87,6 +87,8 @@ pub enum Write {
 pub enum Delivery {
     /// Core-held party, host, task or view output.
     Core(core::Held),
+    /// A typed settled answer with its original opaque call name.
+    TypedAnswer { channel: Token, task: u64, attempt: u64, name: Box<[u8]>, call: core::SettledCall },
     /// A prepared worker assignment, after the claim is durable.
     Assigned { channel: Token, assignment: Assignment },
     /// A post-commit continuation inside the core's fleet.
@@ -109,6 +111,7 @@ pub struct Assignment {
     /// Whole words and prior committed conversation offered to the worker.
     pub inbox: Box<[tasks::Word]>,
     pub transcript: Box<[Box<[u8]>]>,
+    pub answered: Box<[core::SettledCall]>,
     /// The selected account grant.
     pub grant: jig_core_accounts::Grant,
 }
@@ -130,6 +133,8 @@ pub enum Request {
 #[derive(Debug)]
 #[expect(clippy::large_enum_variant, reason = "the testing root moves admitted core events by value")]
 pub enum Event {
+    /// Drive one due child timer through the same decision barrier.
+    Timer(core::Timer),
     /// A party, host, account or other event in jig's vocabulary.
     Core(core::Event),
     /// One numbered connector's input from its system or a scripted peer.
@@ -144,9 +149,19 @@ pub enum Event {
         proposal: Option<Box<[u8]>>,
     },
     /// A scripted worker's retained turn, including its opaque body.
-    Turn { channel: Token, task: u64, attempt: u64, turn: u32, cumulative: u64, transcript: Box<[u8]> },
+    Turn {
+        channel: Token,
+        task: u64,
+        attempt: u64,
+        turn: u32,
+        cumulative: u64,
+        read: Option<u64>,
+        transcript: Box<[u8]>,
+    },
     /// A scripted worker's retained terminal answer.
     Answer { channel: Token, task: u64, attempt: u64, cumulative: u64, end: tasks::End },
+    /// A bounded store page of prior opaque turns; pages arrive oldest first.
+    TranscriptLoaded { task: u64, rows: Box<[core::TurnRecord]>, done: bool },
     /// Store acknowledgement of this exact commit number.
     Committed { number: u64 },
     /// A store failure of this exact commit number.
@@ -235,6 +250,11 @@ impl Domain {
         }
     }
 
+    /// Release retired child slots after every complete application iteration.
+    pub fn reclaim(&mut self) {
+        self.core.reclaim();
+    }
+
     /// Whether every accepted decision and output has settled.
     #[must_use]
     pub fn quiescent(&self) -> bool {
@@ -244,6 +264,7 @@ impl Domain {
 
 #[expect(clippy::large_enum_variant, reason = "the bounded route queue owns complete core events")]
 enum Work {
+    Timer(core::Timer),
     Core(core::Event),
     ResumeFleet,
     Connector {
@@ -264,6 +285,7 @@ enum Work {
         attempt: u64,
         turn: u32,
         cumulative: u64,
+        read: Option<u64>,
         transcript: Box<[u8]>,
     },
     Answer {
@@ -277,22 +299,41 @@ enum Work {
 
 #[derive(Debug)]
 enum Payload {
-    Turn { task: u64, attempt: u64, turn: u32, cumulative: u64, transcript: Box<[u8]> },
+    Turn { task: u64, attempt: u64, turn: u32, cumulative: u64, read: Option<u64>, transcript: Box<[u8]> },
     Answer { task: u64, attempt: u64, cumulative: u64, end: tasks::End },
+    TypedAnswer(core::SettledCall),
 }
 
 /// Admit one input and route all synchronous continuations inside one decision.
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
     match event {
+        Event::TranscriptLoaded { task, rows, done } => {
+            if !domain.core.transcripts.contains_key(&task) {
+                return;
+            }
+            if rows.len() > usize::try_from(env.limits.core.resume_bytes).expect("u32 fits usize") {
+                return;
+            }
+            for row in rows {
+                if !domain.core.append_transcript(task, row) {
+                    decide(domain, env, Work::Core(core::Event::PreparationFailed { task }));
+                    return;
+                }
+            }
+            if done {
+                decide(domain, env, Work::Core(core::Event::StartBrief { task }));
+            }
+        }
         Event::Committed { number } => domain.journal.committed(number),
         Event::Failed { number } => domain.journal.failed(number),
         Event::EffectCall { to, key, number, effect, deadline, proposal } => {
             decide(domain, env, Work::EffectCall { to, key, number, effect, deadline, proposal });
         }
+        Event::Timer(timer) => decide(domain, env, Work::Timer(timer)),
         Event::Core(event) => decide(domain, env, Work::Core(event)),
         Event::Connector { number, event } => decide(domain, env, Work::Connector { number, event }),
-        Event::Turn { channel, task, attempt, turn, cumulative, transcript } => {
-            decide(domain, env, Work::Turn { channel, task, attempt, turn, cumulative, transcript });
+        Event::Turn { channel, task, attempt, turn, cumulative, read, transcript } => {
+            decide(domain, env, Work::Turn { channel, task, attempt, turn, cumulative, read, transcript });
         }
         Event::Answer { channel, task, attempt, cumulative, end } => {
             decide(domain, env, Work::Answer { channel, task, attempt, cumulative, end });
@@ -303,7 +344,8 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event) {
 fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
     let core_room = match &first {
         Work::Core(event) => core::room(&env.limits.core, event),
-        Work::ResumeFleet
+        Work::Timer(_)
+        | Work::ResumeFleet
         | Work::Connector { .. }
         | Work::EffectCall { .. }
         | Work::Turn { .. }
@@ -330,6 +372,11 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
                 };
                 work.push(Work::Core(core::Event::EffectStart { owner, connector: number, origin }));
             }
+            Work::Timer(timer) => {
+                let requests =
+                    core::fire(&mut domain.core, &Env { now: env.now, wall: env.wall, limits: env.limits.core }, timer);
+                route_core(domain, env, &mut decision, requests, &mut work);
+            }
             Work::Core(event) => {
                 let requests =
                     core::step(&mut domain.core, &Env { now: env.now, wall: env.wall, limits: env.limits.core }, event);
@@ -353,8 +400,8 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
                 );
                 route_connector(domain, env, &mut decision, number, &mut requests, &mut work);
             }
-            Work::Turn { channel, task, attempt, turn, cumulative, transcript } => {
-                let body = payload(domain, Payload::Turn { task, attempt, turn, cumulative, transcript });
+            Work::Turn { channel, task, attempt, turn, cumulative, read, transcript } => {
+                let body = payload(domain, Payload::Turn { task, attempt, turn, cumulative, read, transcript });
                 work.push(Work::Core(core::Event::Fleet(fleet::Event::Turn {
                     channel,
                     run: Token::new(task),
@@ -477,7 +524,8 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
                     })),
                 );
             }
-            other @ (Delivery::Core(_)
+            other @ (Delivery::TypedAnswer { .. }
+            | Delivery::Core(_)
             | Delivery::Assigned { .. }
             | Delivery::System { .. }
             | Delivery::Procedure { .. }) => out.push(Request::Deliver(other)),

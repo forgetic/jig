@@ -86,13 +86,17 @@ fn end(out: &mut Queue<Request>) {
     out.push(Request::Decided);
 }
 
-fn save(out: &mut Queue<Request>, key: CallKey, part: CallPart) {
-    out.push(Request::Write(Write::Save(Record::Core(CoreRecord::Call(CallRecord { key, part })))));
+fn save(core: &Core, out: &mut Queue<Request>, key: CallKey, part: CallPart) {
+    out.push(Request::Write(Write::Save(Record::Core(CoreRecord::Call(CallRecord {
+        key,
+        part,
+        settled: core.call_settled.get(&key).cloned(),
+    })))));
 }
 
 fn answer(core: &mut Core, out: &mut Queue<Request>, to: ReplyTo, key: CallKey, part: CallPart) {
     if core.decide_named_call(key, part.clone()) {
-        save(out, key, part.clone());
+        save(core, out, key, part.clone());
         out.push(Request::Held(Box::new(Held::CallAnswer { to, key, part })));
     }
 }
@@ -507,7 +511,7 @@ fn complete(core: &mut Core, env: &Env<Limits>, work: &mut Queue<Event>, out: &m
         EffectOrigin::Call { to, key, deadline } => {
             let part = CallPart::Effect { connector: flight.connector, entry, deadline, outcome: None };
             assert!(core.decide_named_call(key, part.clone()), "effect fenced by current claim");
-            save(out, key, part);
+            save(core, out, key, part);
             assert!(
                 core.effect_replies.insert(entry, Waiting { to, key, deadline }).is_ok(),
                 "one effect reply per admitted call"
@@ -895,7 +899,7 @@ fn settled(
     if let Some((key, connector, deadline)) = found {
         let part = CallPart::Effect { connector, entry, deadline, outcome: Some(outcome) };
         assert!(core.call_parts.insert(key, part.clone()).is_ok(), "retained call row");
-        save(out, key, part.clone());
+        save(core, out, key, part.clone());
         match outcome {
             connector::OutboxOutcome::Made | connector::OutboxOutcome::Failed | connector::OutboxOutcome::Withdrawn => {
                 if let Some(reply) = core.effect_replies.remove(&entry) {

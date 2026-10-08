@@ -41,6 +41,8 @@ pub use routing::{
     Request, Requests, Timer, ToolKind, Write, fire, resume_fleet, room, room_max, step,
 };
 pub use sibling_routes::{MadeRoute, PersonMessage, SentRoute};
+mod typed;
+pub use typed::{DeliveryOutcome, SettledAnswer, SettledCall, typed_worst_case};
 mod stored;
 mod translate;
 mod watch;
@@ -230,6 +232,8 @@ pub struct Core {
     /// Durable live named-call decisions, with connector payloads retained by
     /// their owner and represented here only by connector number.
     pub call_parts: Map<CallKey, CallPart>,
+    /// Exact settled host answers and opaque delivery evidence under the same retained names.
+    pub call_settled: Map<CallKey, SettledCall>,
     /// Calls routed among the core children.
     pub routing_calls: Map<Token, RoutedCall>,
     /// Synchronous connector descriptions and verdicts in this decision.
@@ -338,6 +342,7 @@ impl Core {
             }
         }
         for &key in &retired {
+            self.call_settled.remove(&key);
             match self.call_parts.remove(&key) {
                 Some(CallPart::Effect { entry, .. }) => {
                     self.effect_replies.remove(&entry);
@@ -433,6 +438,7 @@ impl Core {
             connectors: config.connectors,
             pending_calls: Map::with_capacity(limits.call_records),
             call_parts: Map::with_capacity(limits.call_records),
+            call_settled: Map::with_capacity(limits.call_records),
             routing_calls: Map::with_capacity(limits.fleet.calls),
             effect_flights: Map::with_capacity(
                 limits
@@ -552,7 +558,7 @@ impl Core {
 }
 
 fn valid_proof(proof: &RunProof, expected: &RestoringProof, result_bytes: u32) -> bool {
-    if proof.task == 0 || proof.attempt == 0 {
+    if proof.task == 0 || proof.attempt == 0 || proof.transcript_from > proof.attempt {
         return false;
     }
     let spent = match proof.turn {

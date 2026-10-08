@@ -1,6 +1,7 @@
 //! Closed wake rules and bounded batch timers (domain/tasks.md, section 8.3).
 //! Policies and unread messages are durable in task rows. Monotonic deadlines
-//! are derived from injected wall and monotonic time after restore.
+//! are derived from injected wall and monotonic time after restore. Procedures
+//! batch news by their policy and step immediately on other messages.
 use crate::domain::{Domain, activate, publish, record, task_mut};
 use crate::{Active, Limits, MessageKind, NewsClass, Party, Phase, Request, ResultsWake, WakePolicy, WakeRule, Word};
 use skein_lib::{Duration, Env, Queue, Wall};
@@ -113,7 +114,19 @@ pub(crate) fn after_message(
     out: &mut Queue<Request>,
 ) {
     let decision = match record(domain, number).expect("message task live").executor {
-        crate::Executor::Procedure { .. } => WakeRule::Immediate,
+        crate::Executor::Procedure { .. } => match word.kind {
+            MessageKind::News { .. } => rule(domain, number, &word),
+            MessageKind::Words
+            | MessageKind::Amendment { .. }
+            | MessageKind::ProposalDecision { .. }
+            | MessageKind::Proposal { .. }
+            | MessageKind::Escalation { .. }
+            | MessageKind::Question
+            | MessageKind::Answer { .. }
+            | MessageKind::Result(_)
+            | MessageKind::Notice { .. }
+            | MessageKind::Timer { .. } => WakeRule::Immediate,
+        },
         crate::Executor::Agent { .. } => rule(domain, number, &word),
         crate::Executor::Person(_) => WakeRule::Never,
     };

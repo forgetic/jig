@@ -1,5 +1,6 @@
 use jig_core_tasks::{
-    Accepted, End, Event, MessageKind, NewsClass, Party, Refusal, Subscription, SubscriptionKind, WakeRule, Word,
+    Accepted, Active, End, Event, MessageKind, NewsClass, Party, Phase, Refusal, Subscription, SubscriptionKind,
+    WakeRule, Word,
 };
 use jig_tasks_world::{LIMITS, Reply, World, task};
 use skein_lib::{ReplyTo, Token, Wall};
@@ -266,6 +267,100 @@ fn a_watch_woken_once_by_a_burst_of_news() {
         },
     });
     assert_eq!(world.record(1).last_message, 3);
+}
+
+fn procedure_watch(seed: u64, count: u32, age: u64) -> World {
+    let mut world = World::new(seed, LIMITS);
+    let mut watch = task(1, &[]);
+    watch.executor = jig_core_tasks::Executor::Procedure { connector: 0, code: 1 };
+    watch.wake.news = WakeRule::Batch { count, age: skein_lib::Duration::from_nanos(age) };
+    assert_eq!(world.make(Party::Person(9), vec![watch]), Reply::Made(vec![1]));
+    let reply_to = world.to();
+    let call = reply_to.into_token().raw();
+    world.send(Event::SubscribeTopic {
+        reply_to: ReplyTo::new(Token::new(call)),
+        task: 1,
+        subscription: Subscription { number: 10, kind: SubscriptionKind::Topic { connector: 0, topic: 10 } },
+    });
+    assert_eq!(world.replies[&call], Reply::Done);
+    let reply_to = world.to();
+    let call = reply_to.into_token().raw();
+    world.send(Event::Procedure {
+        reply_to: ReplyTo::new(Token::new(call)),
+        task: 1,
+        step: 1,
+        decision: jig_core_tasks::ProcedureDecision::Wait,
+    });
+    assert_eq!(world.replies[&call], Reply::Done);
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Idle));
+    world
+}
+
+fn procedure_news(world: &mut World, number: u64) {
+    world.send(Event::Notice {
+        task: 1,
+        word: Word {
+            number,
+            from: Party::Task(1),
+            kind: MessageKind::News { subscription: 10, class: NewsClass::Wakes },
+            words: Box::new([]),
+            at: world.env.wall,
+            hits: 1,
+            eligible: false,
+        },
+    });
+}
+
+#[test]
+fn a_procedure_woken_once_by_a_burst_of_news_by_count() {
+    let mut world = procedure_watch(861, 3, 20);
+    for number in 1..3 {
+        procedure_news(&mut world, number);
+        assert_eq!(world.record(1).phase, Phase::Active(Active::Idle));
+    }
+    world.restart();
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Idle));
+    procedure_news(&mut world, 3);
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Due));
+    assert_eq!(world.record(1).attempt, 1);
+    procedure_news(&mut world, 4);
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Due));
+    assert_eq!(world.record(1).attempt, 1);
+    assert_eq!(world.record(1).inbox.len(), 1);
+    assert_eq!(world.record(1).inbox[0].hits, 4);
+    assert!(world.record(1).inbox[0].eligible);
+}
+
+#[test]
+fn a_procedure_woken_once_by_a_burst_of_news_by_age() {
+    let mut world = procedure_watch(862, 3, 20);
+    procedure_news(&mut world, 1);
+    world.elapse(skein_lib::Duration::from_nanos(10));
+    procedure_news(&mut world, 2);
+    world.restart();
+    world.elapse(skein_lib::Duration::from_nanos(9));
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Idle));
+    world.elapse(skein_lib::Duration::from_nanos(1));
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Due));
+    assert_eq!(world.record(1).attempt, 1);
+    assert_eq!(world.record(1).inbox.len(), 1);
+    assert_eq!(world.record(1).inbox[0].hits, 2);
+    assert!(world.record(1).inbox[0].eligible);
+    world.elapse(skein_lib::Duration::from_nanos(20));
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Due));
+    assert_eq!(world.record(1).attempt, 1);
+}
+
+#[test]
+fn a_procedures_words_step_it_while_news_waits_for_its_batch() {
+    let mut world = procedure_watch(863, 3, 20);
+    procedure_news(&mut world, 1);
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Idle));
+    say(&mut world, 2);
+    assert_eq!(world.record(1).phase, Phase::Active(Active::Due));
+    assert_eq!(world.record(1).attempt, 1);
+    assert_eq!(world.record(1).inbox.len(), 2);
+    assert!(!world.record(1).inbox[0].eligible);
 }
 
 #[test]

@@ -199,6 +199,7 @@ pub struct Observer {
     words: BTreeSet<(u64, u64)>,
     policy_changes: BTreeMap<(u64, [u8; 16]), (u32, people::PolicyChange)>,
     applied_changes: BTreeSet<(u64, [u8; 16])>,
+    recorded: Option<Vec<r::Observed>>,
 }
 
 impl Observer {
@@ -296,12 +297,31 @@ impl Observer {
             words: BTreeSet::new(),
             policy_changes: BTreeMap::new(),
             applied_changes: BTreeSet::new(),
+            recorded: None,
         }
     }
 
     /// Submit one translated observation, identifying the first broken promise.
     pub fn observe(&mut self, now: u64, observed: r::Observed) {
-        self.referee.observe(now, observed).unwrap_or_else(|error| panic!("referee {error:?} at {now}"));
+        if let Some(recorded) = &mut self.recorded {
+            recorded.push(observed);
+        } else {
+            self.referee.observe(now, observed).unwrap_or_else(|error| panic!("referee {error:?} at {now}"));
+        }
+    }
+
+    /// Translate boundary evidence for a referee owned by an enclosing harness.
+    #[must_use]
+    pub fn recording(configuration: &root::Config) -> Self {
+        let mut observer = Self::new(configuration);
+        observer.recorded = Some(Vec::new());
+        observer
+    }
+
+    /// Take observations in the order the neighbours and store produced them.
+    #[must_use]
+    pub fn take(&mut self) -> Vec<r::Observed> {
+        std::mem::take(self.recorded.as_mut().expect("recording observer"))
     }
 
     /// Observe inbound peer traffic, before the root may decide it.

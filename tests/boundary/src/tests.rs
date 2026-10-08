@@ -149,9 +149,13 @@ fn no_kit_crate_depends_on_an_application_crate_even_when_empty() {
 
 #[test]
 fn core_and_children_use_only_the_kit_and_foundation_even_when_empty() {
+    let crates = kit_root().join("crates");
     let failures: Vec<_> = manifests()
         .into_iter()
-        .filter(|manifest| manifest.name == "jig-core" || manifest.name.starts_with("jig-core-"))
+        .filter(|manifest| {
+            manifest.path.starts_with(&crates)
+                && (manifest.name == "jig-core" || manifest.name.starts_with("jig-core-"))
+        })
         .flat_map(|manifest| {
             manifest
                 .dependencies

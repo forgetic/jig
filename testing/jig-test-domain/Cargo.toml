@@ -1,0 +1,20 @@
+[package]
+name = "jig-test-domain"
+description = "The testing application's root over jig's core and two connectors"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+skein-lib.workspace = true
+jig-core.workspace = true
+jig-core-tasks.workspace = true
+jig-core-people.workspace = true
+jig-core-fleet.workspace = true
+jig-core-accounts.workspace = true
+jig-core-notes.workspace = true
+jig-test-connector.workspace = true
+
+[lints]
+workspace = true

@@ -10,22 +10,31 @@
 
 extern crate alloc;
 
+mod amendments;
+pub use amendments::TaskAmendDenied;
+mod escalation;
+mod goals;
 mod inbox;
+pub use goals::GoalStart;
 mod numbers;
+mod person_task;
+mod proposals;
+mod roles;
 mod routing;
 mod run;
 mod sibling_routes;
 pub use numbers::{Counters, Deployment, Family, fresh};
 pub use routing::{Ask, Event, Held, Limits, Now, Request, Requests, Route, Timer, Write, fire, step};
-pub use sibling_routes::{MadeRoute, SentRoute};
+pub use sibling_routes::{MadeRoute, PersonMessage, SentRoute};
 mod stored;
+mod translate;
 pub use run::{
     GoalRoute, HistoricalResult, Model, PendingRelay, PersonProposalRoute, PersonTaskRoute, RestoringProof, RoutedCall,
-    RunCharter, RunPolicy, Transcript,
+    RunAdmission, RunCharter, RunPolicy, Transcript,
 };
 pub use stored::{
-    CallKey, CallPart, CallRecord, CoreKey, CoreRecord, EscalationDecisionRecord, Key, ProposalDecisionRecord, Record,
-    Restored, RunProof, TerminalRecord, TurnProof, TurnRecord,
+    CallKey, CallPart, CallRecord, CallReplay, CoreKey, CoreRecord, EscalationDecisionRecord, Key,
+    ProposalDecisionRecord, Record, Restored, RunProof, TerminalRecord, TurnProof, TurnRecord,
 };
 
 use alloc::boxed::Box;
@@ -165,6 +174,27 @@ pub struct Core {
 }
 
 impl Core {
+    /// Whether a live task still holds this exact fenced attempt.
+    #[must_use]
+    pub fn current_proof(&self, task: u64, attempt: u64) -> bool {
+        match self.proofs.get(&task) {
+            Some(proof) => proof.attempt == attempt,
+            None => false,
+        }
+    }
+
+    /// Retain the canonical terminal of an unpriced attempt before the task
+    /// child makes its next lifecycle decision.
+    pub fn remember_unpriced_terminal(&mut self, run: Token, attempt: Token, end: tasks::End) {
+        let proof = self.proofs.get_mut(&run.raw()).expect("current fleet terminal has pre-reserved proof");
+        assert!(proof.attempt == attempt.raw(), "fleet terminal belongs to current proof");
+        let cumulative = match proof.turn {
+            Some(turn) => turn.cumulative,
+            None => 0,
+        };
+        proof.terminal = Some(TerminalRecord { task: run.raw(), attempt: attempt.raw(), cumulative, end });
+    }
+
     /// Retain one newly accepted named call decision. The application saves
     /// its store row and holds the outward answer behind the same commit.
     pub fn record_call(&mut self, key: CallKey, part: CallPart) {

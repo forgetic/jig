@@ -36,7 +36,47 @@ pub enum MadeRoute {
     Delegated { key: CallKey, tasks: Box<[u64]>, stubs: Box<[tasks::Stub]> },
 }
 
+/// One authenticated person word awaiting a durable task admission.
+#[derive(Debug)]
+pub struct PersonMessage {
+    pub request: Token,
+    pub person: u64,
+    pub project: u32,
+    pub task: u64,
+    pub question: Option<u64>,
+    pub words: Box<[u8]>,
+    pub at: Wall,
+}
+
 impl Core {
+    /// Number an authenticated person's word and route it to the task hub,
+    /// retaining the keyed reply correlation until admission completes.
+    pub fn person_message(&mut self, message: PersonMessage) -> Result<tasks::Event, people::Refusal> {
+        let PersonMessage { request, person, project, task, question, words, at } = message;
+        let Some(message) = fresh(&mut self.counters, Family::Message) else {
+            return Err(people::Refusal::Limit);
+        };
+        let kind = match question {
+            Some(number) => tasks::MessageKind::Answer { question: number },
+            None => tasks::MessageKind::Words,
+        };
+        assert!(self.saying.insert(request, (task, question)) == Ok(None), "one person message flight");
+        Ok(tasks::Event::Message {
+            reply_to: skein_lib::ReplyTo::new(request),
+            project,
+            task,
+            word: tasks::Word {
+                number: message,
+                from: tasks::Party::Person(person),
+                kind,
+                words,
+                at,
+                hits: 1,
+                eligible: false,
+            },
+        })
+    }
+
     /// Project a person's durable goal proposal into the party inbox.
     #[must_use]
     pub fn person_proposal_entries(&self, row: &tasks::PersonProposal) -> Box<[people::Entry]> {

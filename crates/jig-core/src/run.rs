@@ -1,9 +1,23 @@
 //! Live run and restart correlation held by the core (domain/engine.md, 3 and 7).
 
-use crate::CallKey;
+use crate::{CallKey, Core, TurnRecord};
 use alloc::boxed::Box;
+use jig_core_authority as authority;
 use jig_core_tasks as tasks;
-use skein_lib::{Queue, Token};
+use skein_lib::{List, Queue, Token, Wall};
+
+use crate::translate;
+
+/// The core's decision before a due agent run is prepared or claimed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RunAdmission {
+    /// Current policy, funds, account and writes allow preparation.
+    Allow,
+    /// A transient account refresh is still needed.
+    Account,
+    /// The task child must hold the run for the named reason.
+    Hold(tasks::Hold),
+}
 
 /// Bounded recent opaque conversation while a due task's store pages are read.
 /// Empty turn bodies need no slot: they add nothing to a resumed conversation.
@@ -13,6 +27,158 @@ pub struct Transcript {
     pub bytes: u64,
     pub kept: u64,
     pub turns: Queue<Box<[u8]>>,
+}
+
+impl Core {
+    /// Decide a run against current policy, funds, account usability and
+    /// connector-translated workspace writes.
+    #[must_use]
+    pub fn run_admission(&self, task: &tasks::RunContext, wall: Wall, writes: Box<[authority::Write]>) -> RunAdmission {
+        let mut findings =
+            Queue::with_capacity(authority::max_out(self.authority.limits()).expect("authority check bound"));
+        let numbers = translate::authority_numbers(task.numbers);
+        let checked = authority::check_run(
+            &self.authority,
+            &authority::RunAsk {
+                project: task.project,
+                authority: translate::authority_value(&task.authority),
+                numbers,
+                budget: authority::left(numbers).min(self.authority.rules().maximum_run_spend),
+                wall,
+                accounts: Box::new([self.accounts.usable(self.settings.account)]),
+                writes,
+            },
+            &mut findings,
+        );
+        match checked {
+            authority::Answer::Allow => RunAdmission::Allow,
+            authority::Answer::Wait | authority::Answer::Propose | authority::Answer::Refuse => {
+                let mut account = false;
+                let mut hold = None;
+                for _ in 0..findings.len() {
+                    match findings.pop().expect("authority finding count") {
+                        authority::Finding::Account => account = true,
+                        authority::Finding::Deadline => hold = Some(tasks::Hold::Deadline),
+                        authority::Finding::RunBudget
+                        | authority::Finding::RunCap
+                        | authority::Finding::Arithmetic
+                        | authority::Finding::Spend { .. }
+                        | authority::Finding::Price { .. } => {
+                            if hold != Some(tasks::Hold::Deadline) {
+                                hold = Some(tasks::Hold::Budget);
+                            }
+                        }
+                        authority::Finding::Oversized
+                        | authority::Finding::UnknownProject
+                        | authority::Finding::UnknownRole
+                        | authority::Finding::Authority { .. }
+                        | authority::Finding::Executor { .. }
+                        | authority::Finding::Tasks { .. }
+                        | authority::Finding::Writer
+                        | authority::Finding::Tool
+                        | authority::Finding::Grant { .. }
+                        | authority::Finding::ResourceAccess
+                        | authority::Finding::Reference
+                        | authority::Finding::Scope { .. }
+                        | authority::Finding::Required { .. }
+                        | authority::Finding::Failed { .. }
+                        | authority::Finding::Unguarded { .. }
+                        | authority::Finding::Unpermitted
+                        | authority::Finding::Undecidable
+                        | authority::Finding::PeriodSpend => {
+                            if hold.is_none() {
+                                hold = Some(tasks::Hold::Effects);
+                            }
+                        }
+                    }
+                }
+                match hold {
+                    Some(why) => RunAdmission::Hold(why),
+                    None if account => RunAdmission::Account,
+                    None => RunAdmission::Hold(tasks::Hold::Effects),
+                }
+            }
+        }
+    }
+
+    /// Begin a bounded transcript load for a due task's previous attempt.
+    pub fn begin_transcript(&mut self, task: u64, previous_attempt: u64) {
+        assert!(
+            self.transcripts
+                .insert(
+                    task,
+                    Transcript {
+                        previous_attempt,
+                        bytes: 0,
+                        kept: 0,
+                        turns: Queue::with_capacity(self.settings.resume_bytes),
+                    },
+                )
+                .is_ok(),
+            "one transcript preparation per live task"
+        );
+    }
+
+    /// Admit one restored turn in store order, retaining only the bounded
+    /// tail while still counting the full conversation for resume policy.
+    #[must_use]
+    pub fn append_transcript(&mut self, task: u64, turn: TurnRecord) -> bool {
+        let transcript = self.transcripts.get_mut(&task).expect("load belongs to prepared task");
+        if turn.task != task || turn.attempt > transcript.previous_attempt || turn.attempt == 0 || turn.turn == 0 {
+            return false;
+        }
+        let length = u64::try_from(turn.transcript.len()).expect("stored turn size fits u64");
+        let Some(total) = transcript.bytes.checked_add(length) else { return false };
+        transcript.bytes = total;
+        if length == 0 {
+            return true;
+        }
+        let bound = u64::from(self.settings.resume_bytes);
+        let body = if length > bound {
+            let start = turn
+                .transcript
+                .len()
+                .checked_sub(usize::try_from(bound).expect("u32 bound fits usize"))
+                .expect("oversize turn has tail");
+            Box::<[u8]>::from(turn.transcript.get(start..).expect("tail starts inside stored turn"))
+        } else {
+            turn.transcript
+        };
+        let body_len = u64::try_from(body.len()).expect("bounded turn fits u64");
+        for _ in 0..transcript.turns.len() {
+            if transcript.kept.checked_add(body_len).expect("two bounded tails") <= bound {
+                break;
+            }
+            let old = transcript.turns.pop().expect("overfull transcript has an older turn");
+            transcript.kept = transcript
+                .kept
+                .checked_sub(u64::try_from(old.len()).expect("bounded old turn"))
+                .expect("old turn was counted");
+        }
+        transcript.turns.push(body);
+        transcript.kept = transcript.kept.checked_add(body_len).expect("bounded transcript tail");
+        true
+    }
+
+    /// Whether the full prior conversation exceeded this charter's resume bound.
+    #[must_use]
+    pub fn transcript_oversized(&self, task: u64) -> bool {
+        self.transcripts.get(&task).expect("prepared transcript state").bytes > u64::from(self.settings.resume_bytes)
+    }
+
+    /// Select whole prior turns only while their cumulative bytes fit the
+    /// charter's resume bound. A longer conversation starts fresh.
+    #[must_use]
+    pub fn resumed_turns(&self, transcript: Transcript) -> Box<[Box<[u8]>]> {
+        let mut turns = List::with_capacity(transcript.turns.len());
+        if transcript.bytes <= u64::from(self.settings.resume_bytes) {
+            let mut kept = transcript.turns;
+            for _ in 0..kept.len() {
+                turns.push(kept.pop().expect("counted transcript turn")).expect("bounded transcript turns");
+            }
+        }
+        turns.into_boxed()
+    }
 }
 
 #[derive(Debug)]

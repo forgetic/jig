@@ -1,6 +1,15 @@
 //! The core's durable run and call identities (domain/engine.md, 5.4 and 7).
 
-use crate::{Core, Counters, Deployment, Limits};
+use crate::{Core, Counters, Deployment, Family, Limits, fresh};
+
+/// Owner of a retained named-call answer when the call is asked again.
+#[derive(Debug)]
+pub enum CallReplay {
+    /// The core kept the whole answer in its own vocabulary.
+    Core(CallPart),
+    /// The numbered connector kept the typed answer under the same key.
+    Connector { connector: u16 },
+}
 use alloc::boxed::Box;
 use skein_lib::Wall;
 
@@ -200,6 +209,34 @@ pub enum Restored {
 }
 
 impl Core {
+    /// Decide whether this named answer belongs to the current durable
+    /// claim, retaining it only while that claim still owns the call.
+    #[must_use]
+    pub fn decide_named_call(&mut self, key: CallKey, part: CallPart) -> bool {
+        let _pending = self.pending_calls.remove(&key);
+        let current = match self.proofs.get(&key.task) {
+            Some(proof) => proof.attempt == key.attempt,
+            None => false,
+        };
+        if !current {
+            return false;
+        }
+        let _number = fresh(&mut self.counters, Family::Call).expect("admitted call counter");
+        self.record_call(key, part);
+        true
+    }
+
+    /// Find the retained part of a named call without consulting a
+    /// connector's separately owned payload.
+    #[must_use]
+    pub fn replay_call(&self, key: CallKey) -> Option<CallReplay> {
+        match self.call_parts.get(&key) {
+            Some(CallPart::Connector { connector }) => Some(CallReplay::Connector { connector: *connector }),
+            Some(part) => Some(CallReplay::Core(part.clone())),
+            None => None,
+        }
+    }
+
     /// Validate a live task-family row against the deployment and retain the
     /// correlations that a later proof and view restoration will need.
     #[must_use]

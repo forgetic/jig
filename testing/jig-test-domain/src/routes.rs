@@ -197,9 +197,10 @@ fn route_ask(
                 }
             }
         }
-        core::Ask::Hold { .. }
+        core::Ask::ProjectGoal { feed } => hold(decision, Delivery::Projection { connector: number, feed }),
+        core::Ask::ForgetProjection { .. }
+        | core::Ask::Hold { .. }
         | core::Ask::EndTopic { .. }
-        | core::Ask::ProjectGoal { .. }
         | core::Ask::SubscriptionDone { .. }
         | core::Ask::UnsubscriptionDone { .. }
         | core::Ask::DropSubscription { .. }

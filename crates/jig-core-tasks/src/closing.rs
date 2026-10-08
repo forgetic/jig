@@ -287,6 +287,7 @@ pub(crate) fn progress(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<R
     }
 }
 
+#[expect(clippy::too_many_lines, reason = "one ending releases its funding, references, and waiting dependents")]
 fn end_task(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue<Request>) {
     let task = record(domain, number).expect("settled task live");
     let ending = match &task.phase {
@@ -317,6 +318,7 @@ fn end_task(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue
     }
     crate::funders::end(domain, env, number, out);
     ended.phase = Phase::Ended(ending.clone());
+    end_milestone(&mut ended, out);
     ended.ended_at = Some(env.wall);
     let id = domain.names.remove(&number).expect("ending name exists");
     crate::holds::release(domain, number);
@@ -388,4 +390,15 @@ fn end_task(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue
     crate::subscriptions::notify_state(domain, number, state, words, out);
     out.push(Request::Ended { task: number, requester, ending });
     fact(domain, Fact::Ended { task: number, status });
+}
+
+fn end_milestone(ended: &mut crate::TaskRecord, out: &mut Queue<Request>) {
+    ended.milestone = ended.milestone.checked_add(1).expect("task history position fits");
+    out.push(Request::Save {
+        record: Stored::Milestone(crate::Milestone {
+            task: ended.number,
+            position: ended.milestone,
+            phase: ended.phase.clone(),
+        }),
+    });
 }

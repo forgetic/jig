@@ -15,6 +15,7 @@ use core::mem::{size_of, size_of_val};
 #[must_use]
 pub fn stored_bytes(record: &Stored) -> Option<u64> {
     match record {
+        Stored::Milestone(row) => phase_bytes(&row.phase),
         Stored::PersonProposal(row) => {
             let mut total = bytes(size_of::<crate::PersonProposal>())?
                 .checked_add(spec_bytes(&row.goal.spec)?)?
@@ -172,7 +173,9 @@ fn ending_bytes(ending: &Ending) -> Option<u64> {
     }
 }
 
-fn phase_bytes(phase: &Phase) -> Option<u64> {
+/// Deep owned bytes of a task phase, excluding its inline slot.
+#[must_use]
+pub fn phase_bytes(phase: &Phase) -> Option<u64> {
     match phase {
         Phase::Closing(closing) => ending_bytes(&closing.ending),
         Phase::Ended(ending) => ending_bytes(ending),

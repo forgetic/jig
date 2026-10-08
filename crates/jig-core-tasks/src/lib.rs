@@ -82,14 +82,14 @@ pub use boundary::{
     Stage, Status, Stored, Stub, Subscription, SubscriptionKind, Taken, TaskRecord, TaskResult, Verdict, WakePolicy,
     WakeRule, Was, Word, Writer, WriterSlot,
 };
-pub use control::{Amendment, Change, Control, History};
+pub use control::{Amendment, Change, Control, History, Milestone};
 pub use domain::{Domain, ViewTask, fire, max_out, step, view_phase};
 pub use escalation::{Escalation, EscalationContext, EscalationDecision, EscalationHolder, EscalationOutcome};
 pub use facts::Fact;
 pub use failures::{Class, Retries, Retry, Tries};
 pub use funders::FundingRecord;
 pub use limits::{Limits, worst_case};
-pub use owned::{stored_bytes, terminal_bytes};
+pub use owned::{phase_bytes, stored_bytes, terminal_bytes};
 pub use proposals::{
     PersonProposal, PersonProposalState, Proposal, ProposalAction, ProposalDecision, ProposalHolder, ProposalKind,
     ProposalOutcome, ProposalState,

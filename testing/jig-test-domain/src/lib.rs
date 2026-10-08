@@ -52,6 +52,7 @@ impl Record {
 fn core_key(row: &core::Record) -> core::Key {
     match row {
         core::Record::Core(row) => core::Key::Core(match row {
+            core::CoreRecord::Projection(row) => core::CoreKey::Projection(row.key()),
             core::CoreRecord::Deployment(_) => core::CoreKey::Deployment,
             core::CoreRecord::Call(row) => core::CoreKey::Call(row.key),
             core::CoreRecord::RunProof(row) => core::CoreKey::RunProof(row.task),
@@ -85,6 +86,8 @@ pub enum Write {
 /// What the journal releases after the associated commit.
 #[derive(Debug)]
 pub enum Delivery {
+    /// One committed whole-tree projection handoff.
+    Projection { connector: u16, feed: Box<core::ProjectionFeed> },
     /// One committed inbox word for its current host.
     Message { channel: Token, task: u64, attempt: u64, word: tasks::Word },
     /// Perform this step of the core-owned restart script.
@@ -488,7 +491,17 @@ fn decide(domain: &mut Domain, env: &Env<Limits>, first: Work) {
     let mut work = Queue::with_capacity(env.limits.routes);
     work.push(first);
     for _ in 0..env.limits.routes {
-        let Some(next) = work.pop() else { break };
+        let Some(next) = work.pop() else {
+            let requests =
+                core::finish_decision(&mut domain.core, &Env { now: env.now, wall: env.wall, limits: env.limits.core });
+            let core::Requests::Out(ref out) = requests;
+            let done = out.len() == 1;
+            route_core(domain, env, &mut decision, requests, &mut work);
+            if done && work.is_empty() {
+                break;
+            }
+            continue;
+        };
         match next {
             Work::ConnectorFire { number } => {
                 let mut out = Queue::with_capacity(connector::MAX_OUT);
@@ -713,7 +726,8 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
                 let event = relay_message(domain, task, attempt, previous, word);
                 step(domain, env, event);
             }
-            other @ (Delivery::Message { .. }
+            other @ (Delivery::Projection { .. }
+            | Delivery::Message { .. }
             | Delivery::Restart(_)
             | Delivery::CallAnswer { .. }
             | Delivery::Core(_)

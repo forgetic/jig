@@ -352,6 +352,7 @@ pub(crate) fn decision_record(row: &tasks::Stored) -> Option<ProposalDecisionRec
         | tasks::Stored::Ledger(_)
         | tasks::Stored::Writer(_)
         | tasks::Stored::Pool(_)
-        | tasks::Stored::Stub(_) => None,
+        | tasks::Stored::Stub(_)
+        | tasks::Stored::Milestone(_) => None,
     }
 }

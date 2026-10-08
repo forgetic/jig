@@ -811,6 +811,7 @@ impl Observer {
             root::Delivery::Restart(_)
             | root::Delivery::Core(_)
             | root::Delivery::Fleet(_)
+            | root::Delivery::Projection { .. }
             | root::Delivery::System { .. } => {}
         }
         self.observe(now, r::Observed::Released { requires });

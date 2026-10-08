@@ -706,6 +706,8 @@ pub struct TaskRecord {
     pub ended_at: Option<Wall>,
     /// Last committed semantic change to this task; history rows are keyed by this sequence.
     pub revision: u64,
+    /// Last lifecycle milestone, independent of semantic amendments and proposals.
+    pub milestone: u64,
     /// An admitted authority narrowing stopped the current run; its terminal starts the task anew.
     pub narrowing: bool,
     /// Root-issued commit order for an ended result; zero while live and until the root saves an ending.
@@ -806,6 +808,8 @@ pub enum Key {
     PersonProposal(u64),
     /// Immutable plan change outside the live arena.
     History { task: u64, revision: u64 },
+    /// One immutable lifecycle milestone in a task's history.
+    Milestone { task: u64, position: u64 },
     /// Logical mutable live-task row.
     Live(/** `Live` task identity whose row is replaced or erased. */ u64),
     /// Logical historical ended-task row.
@@ -824,6 +828,8 @@ pub enum Key {
 /// funding, writer slots and pool counts are restored before admission.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Stored {
+    /// One immutable lifecycle milestone, loaded on demand.
+    Milestone(crate::Milestone),
     /// Pending or decided person-origin goal proposal.
     PersonProposal(Box<crate::PersonProposal>),
     /// Committed change read on demand, never restored as live state.
@@ -861,6 +867,7 @@ impl Stored {
         match self {
             Stored::PersonProposal(row) => Key::PersonProposal(row.number),
             Stored::History(row) => Key::History { task: row.task, revision: row.revision },
+            Stored::Milestone(row) => Key::Milestone { task: row.task, position: row.position },
             Stored::Live(record) => Key::Live(record.number),
             Stored::Ended(record) => Key::Ended(record.number),
             Stored::Stub(stub) => Key::Stub(stub.task),

@@ -17,6 +17,7 @@ pub(crate) struct Task {
     pub record: TaskRecord,
     pub alarm: Option<Alarm>,
     pub observed_hold: Option<crate::Hold>,
+    pub observed_phase: Option<Phase>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -348,7 +349,7 @@ impl Domain {
 pub(crate) fn output_bound(limits: &Limits) -> Option<u32> {
     limits
         .tasks
-        .checked_mul(20)?
+        .checked_mul(24)?
         .checked_add(limits.batch.checked_mul(2)?)?
         .checked_add(limits.funders.checked_mul(3)?)?
         .checked_add(limits.tasks.checked_mul(limits.subscriptions)?.checked_mul(2)?)?
@@ -689,8 +690,25 @@ pub(crate) fn activate(domain: &Domain, number: u64, out: &mut Queue<Request>) {
     });
 }
 
+fn milestone(domain: &mut Domain, number: u64, out: &mut Queue<Request>) {
+    let task = task_mut(domain, number).expect("milestone task is live");
+    if task.observed_phase.as_ref() == Some(&task.record.phase) {
+        return;
+    }
+    task.record.milestone = task.record.milestone.checked_add(1).expect("task history position fits");
+    task.observed_phase = Some(task.record.phase.clone());
+    out.push(Request::Save {
+        record: Stored::Milestone(crate::Milestone {
+            task: number,
+            position: task.record.milestone,
+            phase: task.record.phase.clone(),
+        }),
+    });
+}
+
 pub(crate) fn publish(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut Queue<Request>) {
     crate::proposals::withdraw_on_close(domain, number, out);
+    milestone(domain, number, out);
     let task = task_mut(domain, number).expect("published task is live");
     let held = match task.record.phase {
         Phase::Held { why, .. } => Some(why),
@@ -921,6 +939,7 @@ pub(crate) fn make_admitted(
                 created_at: env.wall,
                 ended_at: None,
                 revision: 0,
+                milestone: 0,
                 narrowing: false,
                 result_position: 0,
                 escalation: crate::Escalation::Unheld { revision: 0 },
@@ -974,6 +993,7 @@ pub(crate) fn make_admitted(
             },
             alarm: None,
             observed_hold: None,
+            observed_phase: None,
         };
         let id = domain.tasks.insert(task).expect("batch slab room admitted");
         let indexed = domain.names.insert(number, id);

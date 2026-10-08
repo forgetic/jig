@@ -81,8 +81,10 @@ pub enum Ask {
     DelegateHoldings { request: Token, from: u64, members: Box<[HoldingsNeed]> },
     /// Ask one connector for a procedure's delegated batch holdings.
     ProcedureHoldings { task: u64, step: u64, members: Box<[HoldingsNeed]> },
-    /// Project a tracked goal in this connector's own terms after its task save.
-    ProjectGoal { goal: Box<tasks::TaskRecord> },
+    /// Project the complete bounded tree and newly recorded history once per decision.
+    ProjectGoal { feed: Box<crate::ProjectionFeed> },
+    /// Release a goal's projection state after every closing write has settled.
+    ForgetProjection { goal: u64 },
     /// Complete a connector-owned subscription after the task hub accepts it.
     SubscriptionDone { request: Token, key: CallKey, subscription: u64 },
     /// Complete a connector-owned unsubscription after the task hub accepts it.
@@ -299,6 +301,8 @@ pub struct CoreBriefBudgets {
 /// One event routed to a child of the core.
 #[derive(Debug)]
 pub enum Event {
+    /// A connector's final projection write has settled, or its project has no home there.
+    ProjectionSettled { goal: u64, connector: u16 },
     /// A protocol-rendered answer, with opaque workspace evidence preserved verbatim.
     SettledCall { to: ReplyTo, key: CallKey, call: crate::SettledCall },
     /// A connector owns the decoded effect under this transient owner.
@@ -1312,6 +1316,7 @@ fn tag_tasks(
                                 | Ask::DelegateHoldings { .. }
                                 | Ask::ProcedureHoldings { .. }
                                 | Ask::ProjectGoal { .. }
+                                | Ask::ForgetProjection { .. }
                                 | Ask::ClaimDone { .. }
                                 | Ask::DropSubscription { .. }
                                 | Ask::RepairRefused { .. }
@@ -1380,6 +1385,7 @@ fn tag_tasks(
                         record
                     }
                     tasks::Stored::Live(_)
+                    | tasks::Stored::Milestone(_)
                     | tasks::Stored::Writer(_)
                     | tasks::Stored::Pool(_)
                     | tasks::Stored::Ledger(_)
@@ -1432,6 +1438,7 @@ fn tag_tasks(
                             }
                         }
                     }
+                    crate::projections::save(core, &env.limits, task, &mut out);
                     task_saved_view(core, env, task, &mut out);
                 }
                 let waiting = match &record {
@@ -1443,27 +1450,43 @@ fn tag_tasks(
                     | tasks::Stored::Writer(_)
                     | tasks::Stored::Pool(_)
                     | tasks::Stored::History(_)
+                    | tasks::Stored::Milestone(_)
                     | tasks::Stored::Stub(_) => None,
                 };
-                let projection = match &record {
-                    tasks::Stored::Live(task) | tasks::Stored::Ended(task) if task.tracked.is_some() => {
-                        Some(task.clone())
-                    }
+                match &record {
+                    tasks::Stored::Milestone(row) => crate::projections::history(
+                        core,
+                        &env.limits,
+                        row.task,
+                        crate::ProjectionMilestone {
+                            identity: crate::MilestoneId::Lifecycle { task: row.task, position: row.position },
+                            phase: Some(row.phase.clone()),
+                            change: None,
+                            words: Box::new([]),
+                        },
+                        &mut out,
+                    ),
+                    tasks::Stored::History(row) => crate::projections::history(
+                        core,
+                        &env.limits,
+                        row.task,
+                        crate::ProjectionMilestone {
+                            identity: crate::MilestoneId::Revision { task: row.task, revision: row.revision },
+                            phase: None,
+                            change: Some(row.change),
+                            words: row.reason.clone(),
+                        },
+                        &mut out,
+                    ),
                     tasks::Stored::Live(_)
                     | tasks::Stored::Ended(_)
                     | tasks::Stored::PersonProposal(_)
                     | tasks::Stored::Ledger(_)
                     | tasks::Stored::Writer(_)
                     | tasks::Stored::Pool(_)
-                    | tasks::Stored::History(_)
-                    | tasks::Stored::Stub(_) => None,
-                };
-                out.push(Request::Write(Write::Save(Record::Tasks(record))));
-                if let Some(goal) = projection {
-                    for &connector in core.connectors.as_ref() {
-                        out.push(Request::Ask { connector, ask: Ask::ProjectGoal { goal: goal.clone() } });
-                    }
+                    | tasks::Stored::Stub(_) => {}
                 }
+                out.push(Request::Write(Write::Save(Record::Tasks(record))));
                 if let Some((task, entries)) = waiting {
                     append_people(core, env, people::Event::Waiting { task, entries }, &mut out);
                 }
@@ -1902,6 +1925,10 @@ fn goal_decide(
     }
     let event = match choice {
         people::ProposalDecision::Accept => {
+            if core.projections.len() >= env.limits.tasks.tasks {
+                pool_refused(work, request, people::Refusal::Limit);
+                return;
+            }
             let source = match core.goal_accept_allowed(
                 &proposal,
                 project,
@@ -1982,6 +2009,10 @@ fn begin_goal_creation(
     budget: u64,
     priority: u32,
 ) {
+    if core.projections.len() >= env.limits.tasks.tasks {
+        pool_refused(work, request, people::Refusal::Limit);
+        return;
+    }
     let admitted = match core.goal_start(project, person, role, charter, budget, env.limits.tasks.tree_tasks) {
         Ok(admitted) => admitted,
         Err(why) => {
@@ -5262,7 +5293,9 @@ fn route_room_checked(limits: &Limits) -> Option<u32> {
         .checked_add(fleet)?
         .checked_add(brief)?
         .checked_add(limits.people.pending.checked_mul(2)?)?
-        .checked_add(limits.tasks.tasks)?
+        .checked_add(
+            limits.tasks.tasks.checked_mul(limits.tasks.tree_tasks.checked_add(limits.connectors)?.checked_add(4)?)?,
+        )?
         .checked_add(8)
 }
 
@@ -5330,7 +5363,8 @@ pub fn room(limits: &Limits, event: &Event) -> Option<JournalRoom> {
         | Event::Account(_)
         | Event::View(_)
         | Event::Notes(_)
-        | Event::SettledCall { .. } => Some(room),
+        | Event::SettledCall { .. }
+        | Event::ProjectionSettled { .. } => Some(room),
     }
 }
 
@@ -5367,6 +5401,12 @@ pub fn resume_fleet(core: &mut Core, env: &Env<Limits>) -> Requests {
 #[expect(clippy::too_many_lines, reason = "each bounded child event has one exhaustive route")]
 fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<Event>) -> Requests {
     match event {
+        Event::ProjectionSettled { goal, connector } => {
+            let mut out = Queue::with_capacity(route_room(&env.limits).checked_add(1).expect("settlement mark"));
+            crate::projections::settled(core, goal, connector, &mut out);
+            out.push(Request::Decided);
+            Requests::Out(out)
+        }
         Event::SettledCall { to, key, call } => crate::conversation::settle(core, &env.limits, to, key, call),
         Event::EffectStart { owner, connector, origin } => crate::effects::start(core, env, owner, connector, origin),
         Event::EffectConnector(event) => crate::effects::connector(core, env, work, event),
@@ -5395,6 +5435,22 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
         }
         Event::Tasks(event) => {
             let mut out = Queue::with_capacity(tasks::max_out(&env.limits.tasks));
+            if let tasks::Event::Make { batch, .. } = &event {
+                let mut tracked = 0_u32;
+                for row in batch {
+                    if row.tracked.is_some() {
+                        tracked = tracked.checked_add(1).expect("bounded make batch");
+                    }
+                }
+                if tracked > env.limits.tasks.tasks.saturating_sub(core.projections.len()) {
+                    let tasks::Event::Make { reply_to, .. } = event else { unreachable!("checked creation event") };
+                    out.push(tasks::Request::Refused {
+                        reply_to,
+                        problem: tasks::Problem { task: None, why: tasks::Refusal::Live, blocked_by: None },
+                    });
+                    return tag_tasks(core, env, out, tasks::max_out(&env.limits.tasks), false, false, false);
+                }
+            }
             tasks::step(
                 &mut core.tasks,
                 &Env { now: env.now, wall: env.wall, limits: env.limits.tasks },

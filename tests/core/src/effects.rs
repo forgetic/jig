@@ -36,6 +36,8 @@ pub struct World {
     pub assignments: Vec<(u64, u64)>,
     pub cancellations: Vec<(u64, u64)>,
     pub commits: Vec<Vec<root::Write>>,
+    pub projections: Vec<(usize, u16, core::ProjectionFeed)>,
+    pub hold_projection_settlements: bool,
     pub sign_in: Option<u64>,
     pub people_answers: Vec<people::Reply>,
     pub procedure: Option<u64>,
@@ -205,6 +207,8 @@ impl World {
             assignments: Vec::new(),
             cancellations: Vec::new(),
             commits: Vec::new(),
+            projections: Vec::new(),
+            hold_projection_settlements: false,
             sign_in: None,
             people_answers: Vec::new(),
             procedure: None,
@@ -415,6 +419,15 @@ impl World {
             }
         }
         match delivery {
+            root::Delivery::Projection { connector, feed } => {
+                if feed.closing && !self.hold_projection_settlements {
+                    self.events.push_back(root::Event::Core(core::Event::ProjectionSettled {
+                        goal: feed.goal.number,
+                        connector,
+                    }));
+                }
+                self.projections.push((self.commits.len(), connector, *feed));
+            }
             root::Delivery::Restart(step) => self.restart_step(step),
             root::Delivery::CallAnswer { name, call, .. } => self.host_answers.push((name, call)),
             root::Delivery::Message { word, .. } => self.inbound.push(word),
@@ -764,9 +777,16 @@ impl World {
                             | core::CoreRecord::ProposalDecision(_)
                             | core::CoreRecord::EscalationDecision(_),
                         )
-                        | core::Record::Tasks(tasks::Stored::History(_) | tasks::Stored::Ended(_)),
+                        | core::Record::Tasks(
+                            tasks::Stored::History(_) | tasks::Stored::Ended(_) | tasks::Stored::Milestone(_),
+                        ),
                     ) => continue,
-                    root::Record::Core(core::Record::Tasks(_) | core::Record::People(_) | core::Record::Notes(_))
+                    root::Record::Core(
+                        core::Record::Tasks(_)
+                        | core::Record::People(_)
+                        | core::Record::Notes(_)
+                        | core::Record::Core(core::CoreRecord::Projection(_)),
+                    )
                     | root::Record::Connector { .. } => 1,
                 };
                 if rank == group {

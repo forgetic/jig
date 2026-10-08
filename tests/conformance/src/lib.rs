@@ -156,9 +156,16 @@ impl Neighbours {
                             | core::CoreRecord::ProposalDecision(_)
                             | core::CoreRecord::EscalationDecision(_),
                         )
-                        | core::Record::Tasks(tasks::Stored::History(_) | tasks::Stored::Ended(_)),
+                        | core::Record::Tasks(
+                            tasks::Stored::History(_) | tasks::Stored::Ended(_) | tasks::Stored::Milestone(_),
+                        ),
                     ) => continue,
-                    root::Record::Core(core::Record::Tasks(_) | core::Record::People(_) | core::Record::Notes(_))
+                    root::Record::Core(
+                        core::Record::Tasks(_)
+                        | core::Record::People(_)
+                        | core::Record::Notes(_)
+                        | core::Record::Core(core::CoreRecord::Projection(_)),
+                    )
                     | root::Record::Connector { .. } => 1,
                 };
                 if rank == group {
@@ -462,6 +469,16 @@ impl Application for Testing {
         peers.observer.delivered(clock.now, &mut delivery);
         peers.peers.delivered(&delivery);
         match delivery {
+            root::Delivery::Projection { connector, feed } => {
+                if feed.closing {
+                    vec![Input::Event(root::Event::Core(core::Event::ProjectionSettled {
+                        goal: feed.goal.number,
+                        connector,
+                    }))]
+                } else {
+                    Vec::new()
+                }
+            }
             root::Delivery::Restart(step) => {
                 let position = match step {
                     core::RestartStep::LoadCore => 0,

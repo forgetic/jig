@@ -461,7 +461,10 @@ fn described(
     let project = match core.effect_flights.get(&owner) {
         Some(flight) => match core.tasks.task(flight.origin.task()) {
             Some(row) => row.project,
-            None => 0,
+            None => match core.projections.get(&flight.origin.task()) {
+                Some(state) => state.goal.project,
+                None => 0,
+            },
         },
         None => return,
     };
@@ -701,7 +704,7 @@ fn origin_current(core: &Core, connector: u16, origin: &EffectOrigin) -> bool {
             core.connectors.contains(&connector)
                 && match core.tasks.task(*goal) {
                     Some(row) => row.tracked.is_some(),
-                    None => false,
+                    None => core.projections.contains_key(goal),
                 }
                 && match entry {
                     Some(number) => *number != 0 && *number <= core.counters.deployment().connector_rows,
@@ -931,8 +934,13 @@ fn check(
 ) -> authority::Answer {
     match origin {
         EffectOrigin::Projection { goal, .. } => match core.tasks.task(*goal) {
-            Some(row) => core.connector_goal_effect_admit(row, description, env.wall, given, findings),
-            None => authority::Answer::Refuse,
+            Some(row) => core.connector_goal_effect_admit(row.project, description, env.wall, given, findings),
+            None => match core.projections.get(goal) {
+                Some(state) => {
+                    core.connector_goal_effect_admit(state.goal.project, description, env.wall, given, findings)
+                }
+                None => authority::Answer::Refuse,
+            },
         },
         EffectOrigin::Call { key, .. } => core.connector_effect_admit(key.task, description, env.wall, given, findings),
         EffectOrigin::Procedure { task, .. } => {

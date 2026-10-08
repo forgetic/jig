@@ -156,6 +156,11 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     ] {
         total = total.checked_add(Map::<CallKey, Event>::worst_case(capacity)?)?;
     }
+    total = total.checked_add(Map::<u64, Box<crate::Projection>>::worst_case(limits.tasks.tasks)?)?;
+    total = total.checked_add(bytes(
+        limits.tasks.tasks.checked_mul(limits.connectors.checked_add(2)?)?,
+        crate::projection_bytes(limits)?,
+    )?)?;
     total = total.checked_add(List::<u32>::worst_case(limits.authority.projects)?)?;
     total = total.checked_add(Map::<skein_lib::Token, crate::routing::NoteRoute>::worst_case(2)?)?;
     total = total.checked_add(Map::<u64, bool>::worst_case(limits.brief.briefs)?)?;

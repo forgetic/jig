@@ -617,6 +617,7 @@ impl World {
                 | Stored::Ended(_)
                 | Stored::Stub(_)
                 | Stored::Ledger(_)
+                | Stored::Milestone(_)
                 | Stored::History(_)
                 | Stored::PersonProposal(_) => None,
             })
@@ -706,6 +707,7 @@ impl World {
                 | Stored::Pool(_)
                 | Stored::Stub(_)
                 | Stored::Ledger(_)
+                | Stored::Milestone(_)
                 | Stored::History(_)
                 | Stored::PersonProposal(_) => None,
             })
@@ -722,6 +724,7 @@ impl World {
                 Stored::Ended(_)
                 | Stored::Stub(_)
                 | Stored::Ledger(_)
+                | Stored::Milestone(_)
                 | Stored::History(_)
                 | Stored::PersonProposal(_) => {}
             }
@@ -750,6 +753,7 @@ impl World {
             | Stored::Pool(_)
             | Stored::Stub(_)
             | Stored::Ledger(_)
+            | Stored::Milestone(_)
             | Stored::History(_)
             | Stored::PersonProposal(_) => {
                 unreachable!("live key")
@@ -775,6 +779,7 @@ impl World {
                 | Key::Ended(_)
                 | Key::Stub(_)
                 | Key::Ledger(_)
+                | Key::Milestone { .. }
                 | Key::History { .. }
                 | Key::PersonProposal(_) => None,
             })
@@ -837,6 +842,7 @@ impl World {
                 | Stored::Writer(_)
                 | Stored::Pool(_)
                 | Stored::Stub(_)
+                | Stored::Milestone(_)
                 | Stored::History(_)
                 | Stored::PersonProposal(_) => None,
             })

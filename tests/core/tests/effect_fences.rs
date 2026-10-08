@@ -16,7 +16,7 @@ fn recovered(world: &World, seed: u64, requirement: bool) -> (core::Core, Env<co
     }
     for row in world.store.rows.values() {
         if let root::Record::Core(core::Record::Tasks(row)) = row {
-            if matches!(row, tasks::Stored::Ended(_) | tasks::Stored::History(_)) {
+            if matches!(row, tasks::Stored::Ended(_) | tasks::Stored::Milestone(_) | tasks::Stored::History(_)) {
                 continue;
             }
             assert!(core.restore_task_row(row));

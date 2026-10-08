@@ -38,6 +38,14 @@ pub struct History {
     pub proposal: Option<Box<crate::Proposal>>,
 }
 
+/// One immutable lifecycle milestone, identified independently of semantic revisions.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct Milestone {
+    pub task: u64,
+    pub position: u64,
+    pub phase: Phase,
+}
+
 /// One kind of durable task-tree change.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Change {

@@ -572,7 +572,7 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>, stored: Stored, ou
             };
             let id = domain
                 .tasks
-                .insert(Task { record: *task, alarm: None, observed_hold })
+                .insert(Task { observed_phase: Some(task.phase.clone()), record: *task, alarm: None, observed_hold })
                 .expect("restored task admitted");
             let indexed = domain.names.insert(number, id);
             assert!(indexed == Ok(None), "restored name admitted");
@@ -600,6 +600,7 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>, stored: Stored, ou
         // Historical ended rows stay outside the live arena;
         // they cannot accidentally return an ended task to the live arena.
         Stored::Ended(task) => failed(domain, Some(task.number), Refusal::Restore, out),
+        Stored::Milestone(row) => failed(domain, Some(row.task), Refusal::Restore, out),
         Stored::History(row) => failed(domain, Some(row.task), Refusal::Restore, out),
         Stored::Ledger(record) => {
             if record.made > env.limits.tree_tasks || !crate::funders::restore_funding(domain, record) {

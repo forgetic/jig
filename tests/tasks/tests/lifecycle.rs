@@ -697,3 +697,29 @@ fn cancelling_unfinished_dependency_siblings_finishes_in_either_settlement_order
         w.referee.assert_passed(11);
     }
 }
+
+#[test]
+fn lifecycle_history_has_independent_positions_and_restore_does_not_repeat_a_phase() {
+    let mut world = World::new(173, LIMITS);
+    world.make(Party::Person(1), vec![task(1, &[])]);
+    let first = world.record(1).milestone;
+    let revision = world.record(1).revision;
+    world.send(Event::Hold { task: 1, why: Hold::Effects });
+    let held = world.record(1).milestone;
+    assert_eq!(held, first + 1);
+    assert_eq!(world.record(1).revision, revision, "lifecycle does not consume semantic revisions");
+    world.send(Event::Hold { task: 1, why: Hold::Effects });
+    assert_eq!(world.record(1).milestone, held, "the same phase has no second milestone");
+    world.restart();
+    assert_eq!(world.record(1).milestone, held, "restoration keeps the immutable history position");
+    let reply_to = world.to();
+    world.send(Event::Control { reply_to, by: Party::Person(1), task: 1, control: jig_core_tasks::Control::Release });
+    assert_eq!(world.record(1).milestone, held + 1);
+    assert_eq!(world.record(1).revision, revision + 1, "release also has its semantic history row");
+    assert!(
+        matches!(world.records.get(&Key::Milestone { task: 1, position: held }), Some(jig_core_tasks::Stored::Milestone(row)) if matches!(row.phase, Phase::Held { why: Hold::Effects, .. }))
+    );
+    assert!(
+        matches!(world.records.get(&Key::Milestone { task: 1, position: held + 1 }), Some(jig_core_tasks::Stored::Milestone(row)) if row.phase == world.record(1).phase)
+    );
+}

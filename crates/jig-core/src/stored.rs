@@ -160,6 +160,8 @@ pub struct CallRecord {
 /// its own child-family variant (domain/engine.md, 5.4).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum CoreRecord {
+    /// Bounded goal feed metadata, plan row or pending milestone.
+    Projection(crate::ProjectionRecord),
     /// Deployment numbers.
     Deployment(Deployment),
     /// One live named call's core answer.
@@ -179,6 +181,8 @@ pub enum CoreRecord {
 /// Core-owned fixed-size addresses, ordered within the core's own family.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum CoreKey {
+    /// One bounded row of a retained goal projection.
+    Projection(crate::ProjectionKey),
     /// Singleton deployment header.
     Deployment,
     /// Current claim evidence for one task.
@@ -313,7 +317,7 @@ impl Core {
                 self.view_phases.insert(task.number, (tasks::view_phase(&task.phase), task.tracked)).is_ok()
             }
             tasks::Stored::Ledger(_) | tasks::Stored::Writer(_) | tasks::Stored::Pool(_) => true,
-            tasks::Stored::Ended(_) | tasks::Stored::History(_) => false,
+            tasks::Stored::Ended(_) | tasks::Stored::History(_) | tasks::Stored::Milestone(_) => false,
         }
     }
 
@@ -321,6 +325,13 @@ impl Core {
     /// routes connector rows separately; it cannot alter this live decision.
     pub fn restore_core(&mut self, record: CoreRecord, limits: &Limits) -> Restored {
         match record {
+            CoreRecord::Projection(row) => {
+                if crate::projections::restore(self, limits, row) {
+                    Restored::Live
+                } else {
+                    Restored::Rejected
+                }
+            }
             CoreRecord::Deployment(deployment) => {
                 self.counters = Counters::new(deployment);
                 Restored::Deployment { commits: deployment.commits }

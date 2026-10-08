@@ -517,7 +517,7 @@ impl Core {
     /// requirements, independently of goal grants and funding (domain/authority.md, 6).
     pub fn connector_goal_effect_admit(
         &self,
-        goal: &tasks::TaskRecord,
+        project: u32,
         description: &EffectDescription,
         now: Wall,
         given: &[authority::Given],
@@ -526,7 +526,7 @@ impl Core {
         if description.connector != description.effect.connector {
             return authority::Answer::Refuse;
         }
-        authority::check_projection(&self.authority, goal.project, &description.effect, now, given, findings)
+        authority::check_projection(&self.authority, project, &description.effect, now, given, findings)
     }
 
     /// Check the write named by a connector for a run being prepared.

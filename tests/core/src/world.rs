@@ -500,6 +500,14 @@ impl World {
     fn delivered(&mut self, mut delivery: root::Delivery) {
         self.observer.delivered(self.iteration * 1_000_000, &mut delivery);
         match delivery {
+            root::Delivery::Projection { connector, feed } => {
+                if feed.closing {
+                    self.events.push_back(root::Event::Core(core::Event::ProjectionSettled {
+                        goal: feed.goal.number,
+                        connector,
+                    }));
+                }
+            }
             root::Delivery::Restart(_) => panic!("walking fixture uses the restored-marker path"),
             root::Delivery::Core(core::Held::NotesLoad { owner, range }) => {
                 let mut rows = skein_lib::List::with_capacity(self.limits.core.notes.load_rows);

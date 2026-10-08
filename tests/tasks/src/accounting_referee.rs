@@ -253,6 +253,7 @@ impl Accounting {
                             | Stored::Ended(_)
                             | Stored::Stub(_)
                             | Stored::Ledger(_)
+                            | Stored::Milestone(_)
                             | Stored::History(_)
                             | Stored::PersonProposal(_) => None,
                         })
@@ -289,6 +290,7 @@ impl Accounting {
                             | Stored::Ended(_)
                             | Stored::Stub(_)
                             | Stored::Ledger(_)
+                            | Stored::Milestone(_)
                             | Stored::History(_)
                             | Stored::PersonProposal(_) => None,
                         })
@@ -349,6 +351,7 @@ impl Accounting {
                 | Stored::Writer(_)
                 | Stored::Pool(_)
                 | Stored::Stub(_)
+                | Stored::Milestone(_)
                 | Stored::History(_)
                 | Stored::PersonProposal(_) => {}
             }

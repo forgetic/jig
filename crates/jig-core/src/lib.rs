@@ -29,6 +29,11 @@ pub use memory::worst_case;
 mod numbers;
 mod person_task;
 mod policy;
+mod projections;
+pub use projections::{
+    MilestoneId, Projection, ProjectionFeed, ProjectionGoal, ProjectionKey, ProjectionMilestone, ProjectionRecord,
+    ProjectionTask, finish_decision, projection_bytes, projection_record_bytes,
+};
 mod proposals;
 mod reading;
 mod restart;
@@ -246,6 +251,7 @@ pub struct Core {
     pub(crate) effect_replies: Map<u64, effects::Waiting>,
     /// Connectors whose outboxes must finish before a task closes.
     pub(crate) closing_connectors: Map<(u64, u16), ()>,
+    pub(crate) projections: Map<u64, Box<Projection>>,
     /// Connector payloads awaiting the task hub's proposal admission.
     pub(crate) proposing_effects: Map<Token, (u16, Token)>,
     /// Correlations while the notes child loads a page for a caller.
@@ -487,6 +493,7 @@ impl Core {
             closing_connectors: Map::with_capacity(
                 limits.tasks.tasks.checked_mul(limits.connectors).expect("bounded closing connectors"),
             ),
+            projections: Map::with_capacity(limits.tasks.tasks),
             proposing_effects: Map::with_capacity(limits.call_records),
             note_routes: Map::with_capacity(2),
             pending_note_briefs: Map::with_capacity(limits.brief.briefs),

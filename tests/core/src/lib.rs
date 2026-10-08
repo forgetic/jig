@@ -23,3 +23,6 @@ pub fn store_writes(
         })
         .collect()
 }
+
+pub mod observations;
+pub mod referee;

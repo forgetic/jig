@@ -77,10 +77,29 @@ pub struct Observed {
     pub resources: Vec<Name>,
     /// Starting state checked by the system, if any.
     pub condition: Option<u64>,
+    /// State requested by this copy.
+    pub target: u64,
+    /// Values and owners immediately before this copy arrived.
+    pub before: Vec<ValueObserved>,
     /// Whether this copy changed the target.
     pub applied: bool,
     /// Delivery class of this copy.
     pub copy: Copy,
+}
+
+/// One system value, including whether this deployment made it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ValueObserved {
+    pub state: Option<u64>,
+    pub owner: Option<SystemKey>,
+}
+
+/// One fact read, as observed beneath the connector.
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+pub struct ReadObserved {
+    pub resource: Name,
+    pub state: Option<u64>,
+    pub at: u64,
 }
 
 /// How a fake call's answer behaves.
@@ -119,6 +138,7 @@ pub struct System {
     keyed: BTreeMap<SystemKey, u64>,
     pending: VecDeque<Pending>,
     observed: Vec<Observed>,
+    reads: Vec<ReadObserved>,
     history: Vec<u64>,
     calls: u64,
 }
@@ -134,6 +154,12 @@ impl System {
     #[must_use]
     pub fn observed(&self) -> &[Observed] {
         &self.observed
+    }
+
+    /// Fact reads received, independently of connector verdicts.
+    #[must_use]
+    pub fn reads(&self) -> &[ReadObserved] {
+        &self.reads
     }
 
     /// Calls received, including lookups, but excluding preloaded history.
@@ -172,6 +198,11 @@ impl System {
         match request {
             SystemRequest::ReadFact { resource, observed } => {
                 let value = self.values.get(&Name::from_path(&resource));
+                self.reads.push(ReadObserved {
+                    resource: Name::from_path(&resource),
+                    state: value.map(|row| row.state),
+                    at: observed.as_nanos(),
+                });
                 SystemEvent::Fact {
                     resource,
                     fact: Fact { state: value.map(|row| row.state), observed, pending: false },
@@ -221,6 +252,13 @@ impl System {
         for path in &effect.resources {
             resources.push(Name::from_path(path));
         }
+        let before: Vec<_> = resources
+            .iter()
+            .map(|name| {
+                let value = self.values.get(name);
+                ValueObserved { state: value.map(|row| row.state), owner: value.and_then(|row| row.owner) }
+            })
+            .collect();
         if recovery == Recovery::Keyed
             && let Some(state) = self.keyed.get(&system_key)
         {
@@ -229,6 +267,8 @@ impl System {
                 key: system_key,
                 resources,
                 condition: effect.condition,
+                target: effect.target,
+                before,
                 applied: false,
                 copy,
             });
@@ -239,11 +279,11 @@ impl System {
             if let Some(expected) = effect.condition
                 && old.unwrap_or(0) != expected
             {
-                self.observe(effect, system_key, resources, false, copy);
+                self.observe(effect, system_key, resources, before, false, copy);
                 return ApplyResult::Conflict;
             }
             if form == Form::Creation && old.is_some() {
-                self.observe(effect, system_key, resources, false, copy);
+                self.observe(effect, system_key, resources, before, false, copy);
                 return ApplyResult::Conflict;
             }
         }
@@ -253,12 +293,29 @@ impl System {
         if recovery == Recovery::Keyed {
             self.keyed.insert(system_key, effect.target);
         }
-        self.observe(effect, system_key, resources, true, copy);
+        self.observe(effect, system_key, resources, before, true, copy);
         ApplyResult::Made { state: effect.target }
     }
 
-    fn observe(&mut self, effect: &Effect, key: SystemKey, resources: Vec<Name>, applied: bool, copy: Copy) {
-        self.observed.push(Observed { kind: effect.kind, key, resources, condition: effect.condition, applied, copy });
+    fn observe(
+        &mut self,
+        effect: &Effect,
+        key: SystemKey,
+        resources: Vec<Name>,
+        before: Vec<ValueObserved>,
+        applied: bool,
+        copy: Copy,
+    ) {
+        self.observed.push(Observed {
+            kind: effect.kind,
+            key,
+            resources,
+            condition: effect.condition,
+            target: effect.target,
+            before,
+            applied,
+            copy,
+        });
     }
 }
 

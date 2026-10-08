@@ -123,6 +123,15 @@ struct Run {
     answer_acked: bool,
 }
 
+/// Independent cumulative expense for one assignment, retained after its slot ends.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct Expense {
+    pub spent: u64,
+    pub kept: u64,
+    pub lost: u64,
+    pub lost_turns: u32,
+}
+
 /// A bounded host, with a script per new assignment and observations of its own.
 #[derive(Debug)]
 pub struct Worker {
@@ -136,6 +145,8 @@ pub struct Worker {
     pub answer_acks: u32,
     pub actual_spent: u64,
     pub lost_spent: u64,
+    /// Per-attempt expenses, including turns lost before acknowledgement.
+    pub expenses: BTreeMap<(u64, u64), Expense>,
     scripts: VecDeque<Box<[Script]>>,
     runs: BTreeMap<(u64, u64), Run>,
     connected: bool,
@@ -163,6 +174,7 @@ impl Worker {
             answer_acks: 0,
             actual_spent: 0,
             lost_spent: 0,
+            expenses: BTreeMap::new(),
             scripts: scripts.into(),
             runs: BTreeMap::new(),
             connected: true,
@@ -181,6 +193,7 @@ impl Worker {
         let script = self.scripts.pop_front().unwrap_or_default();
         self.seen.push(assignment.clone());
         let key = (assignment.task, assignment.attempt);
+        self.expenses.insert(key, Expense::default());
         assert!(
             self.runs
                 .insert(
@@ -235,6 +248,7 @@ impl Worker {
                 }
             }
             run.turns.retain(|row| !matches!(row, Up::Turn { turn: number, .. } if *number <= turn));
+            self.expenses.get_mut(&(task, attempt)).expect("assigned expense").kept = run.kept_spent;
             self.turn_acks += u32::try_from(before - run.turns.len()).expect("bounded retained turns");
             self.retire(task, attempt);
         }
@@ -247,6 +261,8 @@ impl Worker {
             if !run.answer_acked {
                 self.answer_acks += 1;
             }
+            run.kept_spent = run.spent;
+            self.expenses.get_mut(&(task, attempt)).expect("assigned expense").kept = run.spent;
             run.answer_acked = true;
             self.retire(task, attempt);
         }
@@ -286,6 +302,11 @@ impl Worker {
                 self.connected = false;
                 self.vanished = true;
                 self.lost_spent += self.runs.values().map(|run| run.spent - run.kept_spent).sum::<u64>();
+                for (key, run) in &self.runs {
+                    let expense = self.expenses.get_mut(key).expect("assigned expense");
+                    expense.lost = run.spent - run.kept_spent;
+                    expense.lost_turns = u32::try_from(run.turns.len()).expect("bounded retained turns");
+                }
                 self.runs.clear();
                 vec![Up::Lost { channel: self.channel }]
             }
@@ -345,6 +366,10 @@ impl Worker {
                     run.spent = run.spent.checked_add(cost).expect("spend fits");
                     assert!(run.spent <= run.assignment.budget, "scripted completion stays in its allowance");
                     self.actual_spent += cost;
+                    self.expenses
+                        .get_mut(&(run.assignment.task, run.assignment.attempt))
+                        .expect("assigned expense")
+                        .spent = run.spent;
                     let turn = Up::Turn {
                         channel: self.channel,
                         task: run.assignment.task,

@@ -332,6 +332,9 @@ pub struct World {
     pub procedure: Option<u64>,
     /// Refused named batches delivered to the calling worker.
     pub batch_refusals: u32,
+    /// Independent promises checked at the store and peer boundaries.
+    pub observer: crate::observations::Observer,
+    heap: crate::observations::Heap,
     scenario: Scenario,
     delegated: bool,
     goal_answer_sent: bool,
@@ -407,6 +410,7 @@ impl World {
                 name: b"Person".as_slice().into(),
             },
         }));
+        let heap = crate::observations::Heap::new(&limits);
         World {
             domain: root::Domain::new(config(seed), &limits),
             store: Store::new(),
@@ -420,6 +424,8 @@ impl World {
             results: 0,
             procedure: None,
             batch_refusals: 0,
+            observer: crate::observations::Observer::new(&config(seed)),
+            heap,
             scenario,
             delegated: false,
             goal_answer_sent: false,
@@ -431,9 +437,11 @@ impl World {
     /// Advance one outside event, one commit and all ready deliveries.
     pub fn iterate(&mut self) {
         self.iteration += 1;
+        self.observer.observe(self.iteration * 1_000_000, crate::referee::Observed::Tick);
         let now = Time::from_nanos(self.iteration * 1_000_000);
         let env = Env { now, wall: Wall::from_nanos(self.iteration * 1_000_000), limits: self.limits };
-        if let Some(event) = self.events.pop_front() {
+        if let Some(mut event) = self.events.pop_front() {
+            self.observer.inbound(&self.store, self.iteration * 1_000_000, &mut event);
             self.trace.push(format!("input {event:?}"));
             root::step(&mut self.domain, &env, event);
         }
@@ -449,6 +457,7 @@ impl World {
                     }
                     self.store.submit(number, crate::store_writes(rows), 0);
                     let applied = self.store.tick(false).expect("store did not fail").expect("ready commit");
+                    self.observer.durable(self.iteration * 1_000_000, &self.store);
                     self.events.push_front(root::Event::Committed { number: applied });
                 }
                 root::Request::Deliver(delivery) => self.delivered(delivery),
@@ -465,6 +474,7 @@ impl World {
             }
         }
         self.domain.reclaim();
+        self.observer.observe(self.iteration * 1_000_000, self.heap.observed());
         if self.scenario == Scenario::Goal
             && self.delegated
             && !self.goal_answer_sent
@@ -486,7 +496,8 @@ impl World {
     }
 
     #[expect(clippy::too_many_lines, reason = "one script handles each externally observed delivery")]
-    fn delivered(&mut self, delivery: root::Delivery) {
+    fn delivered(&mut self, mut delivery: root::Delivery) {
+        self.observer.delivered(self.iteration * 1_000_000, &mut delivery);
         match delivery {
             root::Delivery::Restart(_) => panic!("walking fixture uses the restored-marker path"),
             root::Delivery::Core(core::Held::NotesLoad { owner, range }) => {

@@ -14,7 +14,9 @@ static HEAP: heap::Counting = heap::Counting;
 fn core_children_routes_and_an_in_flight_decision_fit_the_checked_bound() {
     let limits = world::limits();
     let bound = core::worst_case(&limits.core).expect("walking limits price every core owner");
-    let config = world::config(91).core;
+    let configuration = world::config(91);
+    let mut observer = jig_core_world::observations::Observer::new(&configuration);
+    let config = configuration.core;
     let meter = Meter::new();
     meter.start();
     let mut domain = core::Core::new(config, &limits.core);
@@ -35,9 +37,10 @@ fn core_children_routes_and_an_in_flight_decision_fit_the_checked_bound() {
         let requests = core::step(&mut domain, &env, event);
         let measured = meter.end();
         drop(requests);
-        meter.check(measured, bound, &limits.core);
+        let held = meter.check(measured, bound, &limits.core);
+        observer.observe(0, jig_core_world::referee::Observed::Heap { held, maximum: bound });
     }
-    assert!(meter.held() <= bound);
+    observer.observe(0, jig_core_world::referee::Observed::Heap { held: meter.held(), maximum: bound });
 }
 
 #[test]
@@ -50,4 +53,16 @@ fn room_and_memory_refuse_unrepresentable_or_missing_limits() {
         core::worst_case(&core::Limits { tasks: tasks::Limits { tasks: u32::MAX, ..limits.tasks }, ..limits })
             .is_none()
     );
+}
+
+#[test]
+fn both_worlds_check_the_counted_heap_at_every_iteration() {
+    let mut walking = world::World::goal(190);
+    walking.run_goal();
+    drop(walking);
+    let mut effects = jig_core_world::effects::World::new(191, false);
+    effects.delegate();
+    effects.call(2, 9000);
+    effects.restart(191, false);
+    assert!(jig_core_world::observations::root_bound(&world::limits()).is_some());
 }

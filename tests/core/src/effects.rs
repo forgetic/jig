@@ -50,6 +50,9 @@ pub struct World {
     pub stopped: bool,
     /// Independent scripted hosts and clients, when this scenario uses them.
     pub peers: Option<crate::peers::Peers>,
+    /// Referee observations, independent of the root state.
+    pub observer: crate::observations::Observer,
+    heap: crate::observations::Heap,
     restoring: Option<Restore>,
     restart_reads: std::collections::BTreeMap<u16, core::RestartStep>,
     events: VecDeque<root::Event>,
@@ -140,6 +143,8 @@ impl World {
     pub fn configured(seed: u64, requirement: bool, configuration: root::Config, limits: root::Limits) -> World {
         let mut world = Self::empty(fixture(seed, requirement).0, &limits);
         world.send(root::Event::Core(core::Event::People(people::Event::Roles { project: 1, holdings: Box::new([]) })));
+        world.observer = crate::observations::Observer::new(&configuration);
+        world.observer.durable(world.wall, &world.store);
         world.domain = root::Domain::new(configuration, &limits);
         world.send(root::Event::RestartBegin);
         world.events.extend([
@@ -175,6 +180,8 @@ impl World {
     }
 
     fn empty(configuration: root::Config, limits: &root::Limits) -> World {
+        let observer = crate::observations::Observer::new(&configuration);
+        let heap = crate::observations::Heap::new(limits);
         World {
             domain: root::Domain::new(configuration, limits),
             store: Store::new(),
@@ -204,6 +211,8 @@ impl World {
             store_delay: 0,
             stopped: false,
             peers: None,
+            observer,
+            heap,
             restoring: None,
             restart_reads: std::collections::BTreeMap::new(),
             events: VecDeque::new(),
@@ -247,14 +256,21 @@ impl World {
         self.drain();
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one iteration keeps commit application, peer observations and root outputs in order"
+    )]
     pub fn drain(&mut self) {
         for _ in 0..300 {
             if self.stopped {
                 return;
             }
             self.wall += 1_000_000;
+            self.observer.observe(self.wall, crate::referee::Observed::Tick);
             let env = self.env();
-            if let Some(event) = self.events.pop_front() {
+            self.observer.systems(self.wall, &self.systems);
+            if let Some(mut event) = self.events.pop_front() {
+                self.observer.inbound(&self.store, self.wall, &mut event);
                 self.trace.push(format!("input {event:?}"));
                 root::step(&mut self.domain, &env, event);
             }
@@ -325,6 +341,8 @@ impl World {
                     Ok(None) => {}
                     Err(number) => self.events.push_front(root::Event::Failed { number }),
                 }
+                self.observer.durable(self.wall, &self.store);
+                self.observer.systems(self.wall, &self.systems);
                 self.restore_pages();
                 if self.domain.ready()
                     && let Some(peers) = &mut self.peers
@@ -332,7 +350,11 @@ impl World {
                     self.events.extend(peers.tick(&self.store, env.now));
                 }
             }
+            if let Some(peers) = &self.peers {
+                self.observer.workers(self.wall, &peers.workers);
+            }
             self.domain.reclaim();
+            self.observer.observe(self.wall, self.heap.observed());
             if empty
                 && self.events.is_empty()
                 && self.store.pending.is_empty()
@@ -346,7 +368,8 @@ impl World {
     }
 
     #[expect(clippy::too_many_lines, reason = "one exhaustive delivery handler drives the script's independent peers")]
-    fn delivered(&mut self, delivery: root::Delivery) {
+    fn delivered(&mut self, mut delivery: root::Delivery) {
+        self.observer.delivered(self.wall, &mut delivery);
         if let Some(peers) = &mut self.peers {
             peers.delivered(&delivery);
             if let root::Delivery::Core(core::Held::PeopleReply { to, sign_in, reply }) = delivery {
@@ -703,7 +726,7 @@ impl World {
                             | core::CoreRecord::ProposalDecision(_)
                             | core::CoreRecord::EscalationDecision(_),
                         )
-                        | core::Record::Tasks(tasks::Stored::History(_)),
+                        | core::Record::Tasks(tasks::Stored::History(_) | tasks::Stored::Ended(_)),
                     ) => continue,
                     root::Record::Core(core::Record::Tasks(_) | core::Record::People(_) | core::Record::Notes(_))
                     | root::Record::Connector { .. } => 1,
@@ -747,7 +770,9 @@ impl World {
                 kind.recovery = self.recovery;
             }
         }
+        self.observer.observe(self.wall, crate::referee::Observed::Restart);
         self.store.crash();
+        self.observer.cold(self.wall, &self.store);
         self.stopped = false;
         self.restoring = None;
         self.domain = root::Domain::new(config, &self.limits);

@@ -14,6 +14,7 @@ pub fn infrastructure_limits() -> infra::Limits {
         tasks: 4,
         procedures: 4,
         staged: 4,
+        proposals: 4,
         effects: 4,
         made: 4,
         resources_per_task: 4,
@@ -310,7 +311,7 @@ impl InfrastructureWorld {
                     live.extend(resources.iter().cloned());
                 }
                 infra::Record::Procedure(state) => match state.procedure {
-                    infra::Procedure::Remediate { service, .. } => {
+                    infra::Procedure::Remediate { service, .. } | infra::Procedure::Scale { service, .. } => {
                         live.insert(infra::Resource::Service(service));
                     }
                     infra::Procedure::Provision { environment, .. }
@@ -318,17 +319,19 @@ impl InfrastructureWorld {
                         live.insert(infra::Resource::Environment(environment));
                     }
                 },
-                infra::Record::Outbox(entry) => match entry.effect {
-                    infra::Effect::Restart { service, .. }
-                    | infra::Effect::Scale { service, .. }
-                    | infra::Effect::Rollback { service, .. } => {
-                        live.insert(infra::Resource::Service(service));
+                infra::Record::Proposal { effect, .. } | infra::Record::Outbox(infra::Entry { effect, .. }) => {
+                    match effect {
+                        infra::Effect::Restart { service, .. }
+                        | infra::Effect::Scale { service, .. }
+                        | infra::Effect::Rollback { service, .. } => {
+                            live.insert(infra::Resource::Service(service));
+                        }
+                        infra::Effect::CreateEnvironment { environment, .. }
+                        | infra::Effect::TearDown { environment, .. } => {
+                            live.insert(infra::Resource::Environment(environment));
+                        }
                     }
-                    infra::Effect::CreateEnvironment { environment, .. }
-                    | infra::Effect::TearDown { environment, .. } => {
-                        live.insert(infra::Resource::Environment(environment));
-                    }
-                },
+                }
                 infra::Record::Made { environment, .. } => {
                     live.insert(infra::Resource::Environment(environment));
                 }

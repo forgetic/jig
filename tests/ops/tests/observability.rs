@@ -88,7 +88,7 @@ fn observed_verdicts_wait_for_fresh_facts_and_load_tracks_change() {
         service: service(),
         freshness: 60,
     });
-    assert!(failed.contains(&obs::Request::Verdict { token: World::token(4), verdict: obs::Verdict::Refuse }));
+    assert!(failed.contains(&obs::Request::Verdict { token: World::token(4), verdict: obs::Verdict::Wait }));
 }
 
 #[test]
@@ -185,4 +185,42 @@ fn health_topic_reaches_subscribers_when_health_changes() {
         healthy: false,
         subscribers: Box::from([obs::Classed { task: 3, class: obs::Class::Wake }]),
     }));
+}
+
+#[test]
+fn the_scale_requirement_waits_for_half_an_hour_of_low_load() {
+    let mut world = World::new(0);
+    world.now = 1_800;
+    let token = World::token(1);
+    let judge = obs::Event::Judge {
+        token,
+        requirement: obs::Requirement::LoadBelow { percent: 40, for_seconds: 1_800 },
+        service: service(),
+        freshness: 60,
+    };
+    let high = obs::Fact {
+        observed: 1_800,
+        healthy_replicas: 3,
+        errors: 0,
+        error_rate_percent: 0,
+        load_percent: 95,
+        load: Box::from([obs::LoadPoint { at: 0, percent: 10 }, obs::LoadPoint { at: 1_800, percent: 95 }]),
+    };
+    world.event(obs::Event::System(obs::SystemEvent::Fact { service: service(), fact: high }));
+    let waiting = world.event(judge.clone());
+    assert!(waiting.contains(&obs::Request::Verdict { token, verdict: obs::Verdict::Wait }));
+    world.now = 3_601;
+    let low = obs::Fact {
+        observed: 3_601,
+        healthy_replicas: 3,
+        errors: 0,
+        error_rate_percent: 0,
+        load_percent: 10,
+        load: Box::from([obs::LoadPoint { at: 1_801, percent: 10 }, obs::LoadPoint { at: 3_601, percent: 10 }]),
+    };
+    let met = world.event(obs::Event::System(obs::SystemEvent::Fact { service: service(), fact: low }));
+    assert!(met.contains(&obs::Request::Verdict { token, verdict: obs::Verdict::Met { observed: 3_601 } }));
+    world.now = 3_662;
+    let stale = world.event(judge);
+    assert!(stale.contains(&obs::Request::Verdict { token, verdict: obs::Verdict::Wait }));
 }

@@ -271,6 +271,8 @@ pub struct EnvironmentFact {
 pub enum Procedure {
     /// Remediate a service and wait for health.
     Remediate { service: Service, operation: u64, deadline: u64 },
+    /// Set replicas after reading their current count afresh.
+    Scale { service: Service, replicas: u32, deadline: u64 },
     /// Create an environment and wait until it is ready.
     Provision { environment: Environment, until: u64, price: u64, deadline: u64 },
     /// Tear down an environment on release.
@@ -282,6 +284,10 @@ pub enum Procedure {
 pub enum ProcedurePhase {
     /// Evaluate current facts and decide once.
     Active,
+    /// A scale procedure has requested fresh replica facts.
+    ReadingFacts,
+    /// Fresh replica facts are ready for the scale decision.
+    FactsReady,
     /// An effect was asked for and is not settled.
     EffectOutstanding,
     /// Wait for a fact to reach the requested condition.
@@ -312,6 +318,8 @@ pub enum ProcedureSignal {
     Step,
     /// The effect it asked for was made.
     EffectMade,
+    /// Authority is waiting on an observed requirement; read afresh on the next step.
+    EffectWaiting,
     /// Its effect failed or was held.
     EffectFailed,
     /// The task is closing and releases what it held.
@@ -338,6 +346,8 @@ pub enum RecordKey {
     Rely(u64),
     /// A procedure task's state.
     Procedure(u64),
+    /// An effect retained under its proposal number.
+    Proposal(u64),
     /// An unsettled effect.
     Outbox(Key),
     /// An environment this deployment made.
@@ -351,6 +361,8 @@ pub enum Record {
     Rely { task: u64, resources: Box<[Resource]> },
     /// One procedure's state.
     Procedure(ProcedureState),
+    /// Proposed payload, retained without permission to make it.
+    Proposal { number: u64, task: u64, effect: Effect },
     /// One unsettled effect.
     Outbox(Entry),
     /// An environment made under a key.
@@ -364,6 +376,7 @@ impl Record {
         match self {
             Record::Rely { task, .. } => RecordKey::Rely(*task),
             Record::Procedure(state) => RecordKey::Procedure(state.task),
+            Record::Proposal { number, .. } => RecordKey::Proposal(*number),
             Record::Outbox(entry) => RecordKey::Outbox(entry.key),
             Record::Made { environment, .. } => RecordKey::Made(environment.clone()),
         }
@@ -383,6 +396,12 @@ pub enum Event {
     Procedure { task: u64, signal: ProcedureSignal },
     /// Stage an effect for the core's authority check.
     Describe { token: Token, effect: Effect },
+    /// Describe a retained proposal for a fresh authority check.
+    DescribeProposal { token: Token, number: u64 },
+    /// Keep a proposed payload without making an outbox entry.
+    KeepProposal { token: Token, number: u64, task: u64 },
+    /// Drop a terminal proposal payload.
+    DropProposal { number: u64 },
     /// Keep an approved effect under its key.
     Keep { token: Token, key: Key },
     /// Drop a staged effect after refusal.

@@ -194,3 +194,32 @@ fn an_uncertain_silence_waits_for_its_durable_deadline_before_retry() {
     assert_eq!(late.pop(), Some(Request::Erase { key: RecordKey::Outbox(key) }));
     assert_eq!(late.pop(), Some(Request::Outcome { key, outcome: Outcome::Made }));
 }
+
+#[test]
+fn sustained_load_needs_a_whole_window_and_a_low_starting_sample() {
+    let mut domain = Domain::new(&limits());
+    event(&mut domain, 10, Event::System(SystemEvent::Fact { service: service(), fact: fact(10, 10) }));
+    let judge = Event::Judge {
+        token: Token::new(1),
+        requirement: Requirement::LoadBelow { percent: 40, for_seconds: 30 },
+        service: service(),
+        freshness: 60,
+    };
+    assert_eq!(
+        event(&mut domain, 10, judge.clone()).pop(),
+        Some(Request::Verdict { token: Token::new(1), verdict: Verdict::Wait })
+    );
+    let facts = Fact {
+        load: Box::from([
+            LoadPoint { at: 0, percent: 95 },
+            LoadPoint { at: 20, percent: 10 },
+            LoadPoint { at: 40, percent: 10 },
+        ]),
+        ..fact(40, 10)
+    };
+    event(&mut domain, 40, Event::System(SystemEvent::Fact { service: service(), fact: facts }));
+    assert_eq!(
+        event(&mut domain, 40, judge).pop(),
+        Some(Request::Verdict { token: Token::new(1), verdict: Verdict::Wait })
+    );
+}

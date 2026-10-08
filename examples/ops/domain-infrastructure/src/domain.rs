@@ -7,7 +7,7 @@ use crate::{
     Recovery, Request, Resource, Service, ServiceFact, StepDecision, SystemEvent, SystemRequest,
 };
 
-/// One fact may report drift to sixteen tasks, plus a change and a save.
+/// One fact may wake sixteen scale readers and report drift to sixteen tasks.
 pub const MAX_OUT: u32 = 40;
 
 /// Infrastructure's bounded working set and durable records.
@@ -20,6 +20,7 @@ pub struct Domain {
     reliance: Map<u64, Box<[Resource]>>,
     procedures: Map<u64, ProcedureState>,
     staged: Map<Token, Effect>,
+    proposals: Map<u64, (u64, Effect)>,
     effects: Map<Key, Entry>,
     made: Map<Environment, Key>,
 }
@@ -30,7 +31,7 @@ impl Domain {
     pub fn new(backend: Backend, limits: &Limits) -> Self {
         assert!(crate::worst_case(limits).is_some(), "connector limits fit");
         assert!(
-            limits.tasks <= 16 && limits.effects <= 16 && limits.resources_per_task <= 16,
+            limits.tasks <= 16 && limits.effects <= 16 && limits.procedures <= 16 && limits.resources_per_task <= 16,
             "MAX_OUT covers one step"
         );
         Self {
@@ -41,6 +42,7 @@ impl Domain {
             reliance: Map::with_capacity(limits.tasks),
             procedures: Map::with_capacity(limits.procedures),
             staged: Map::with_capacity(limits.staged),
+            proposals: Map::with_capacity(limits.proposals),
             effects: Map::with_capacity(limits.effects),
             made: Map::with_capacity(limits.made),
         }
@@ -184,7 +186,23 @@ fn fresh_service(
         return;
     }
     let old = domain.services.insert(service.clone(), fact.clone()).expect("service capacity checked");
-    if old != Some(fact.clone()) {
+    let mut ready = List::with_capacity(env.limits.procedures);
+    for (task, state) in &domain.procedures {
+        match &state.procedure {
+            Procedure::Scale { service: target, .. } => {
+                if target == &service && state.phase == ProcedurePhase::ReadingFacts {
+                    ready.push(*task).expect("procedure count fits");
+                }
+            }
+            Procedure::Remediate { .. } | Procedure::Provision { .. } | Procedure::TearDown { .. } => {}
+        }
+    }
+    for task in &ready {
+        let state = domain.procedures.get_mut(task).expect("waiting procedure exists");
+        state.phase = ProcedurePhase::FactsReady;
+        out.push(Request::Save { record: Record::Procedure(state.clone()) });
+    }
+    if old != Some(fact.clone()) || !ready.is_empty() {
         out.push(Request::Changed { resource: Resource::Service(service.clone()) });
     }
     let revised = match old {
@@ -238,6 +256,9 @@ fn restore(domain: &mut Domain, record: Record) {
         }
         Record::Procedure(state) => {
             domain.procedures.insert(state.task, state).expect("restored procedure fits");
+        }
+        Record::Proposal { number, task, effect } => {
+            domain.proposals.insert(number, (task, effect)).expect("restored proposal fits");
         }
         Record::Outbox(entry) => {
             domain.effects.insert(entry.key, entry).expect("restored effect fits");
@@ -367,6 +388,11 @@ fn procedure(domain: &mut Domain, env: &Env<Limits>, task: u64, signal: Procedur
                 state.phase = ProcedurePhase::WaitingCondition;
             }
         }
+        ProcedureSignal::EffectWaiting => {
+            if state.phase == ProcedurePhase::EffectOutstanding {
+                state.phase = ProcedurePhase::Active;
+            }
+        }
         ProcedureSignal::EffectFailed => {
             state.phase = ProcedurePhase::Held;
         }
@@ -382,7 +408,7 @@ fn procedure(domain: &mut Domain, env: &Env<Limits>, task: u64, signal: Procedur
                 };
                 state.phase = ProcedurePhase::Active;
             }
-            Procedure::Remediate { .. } | Procedure::TearDown { .. } => {
+            Procedure::Remediate { .. } | Procedure::Scale { .. } | Procedure::TearDown { .. } => {
                 state.phase = ProcedurePhase::Done;
             }
         },
@@ -406,7 +432,7 @@ fn procedure(domain: &mut Domain, env: &Env<Limits>, task: u64, signal: Procedur
     }
 }
 
-#[expect(clippy::too_many_lines, reason = "three procedures share one level-triggered decision point")]
+#[expect(clippy::too_many_lines, reason = "procedures share one level-triggered decision point")]
 fn decide(
     domain: &Domain,
     now: u64,
@@ -442,6 +468,41 @@ fn decide(
                     Some(StepDecision::Wait { until: *deadline }),
                     Some(SystemRequest::Service { service: service.clone() }),
                 ),
+                ProcedurePhase::ReadingFacts
+                | ProcedurePhase::FactsReady
+                | ProcedurePhase::Holding
+                | ProcedurePhase::Done
+                | ProcedurePhase::Held => (state.phase, None, None),
+            }
+        }
+        Procedure::Scale { service, replicas, deadline } => {
+            if now > *deadline {
+                return (ProcedurePhase::Held, Some(StepDecision::Hold { reason: 4 }), None);
+            }
+            match state.phase {
+                ProcedurePhase::Active | ProcedurePhase::WaitingCondition => (
+                    ProcedurePhase::ReadingFacts,
+                    Some(StepDecision::Wait { until: *deadline }),
+                    Some(SystemRequest::Service { service: service.clone() }),
+                ),
+                ProcedurePhase::ReadingFacts | ProcedurePhase::EffectOutstanding => {
+                    (state.phase, Some(StepDecision::Wait { until: *deadline }), None)
+                }
+                ProcedurePhase::FactsReady => match domain.services.get(service) {
+                    Some(fact) if fact.replicas == *replicas => {
+                        (ProcedurePhase::Done, Some(StepDecision::Finish), None)
+                    }
+                    Some(fact) => (
+                        ProcedurePhase::EffectOutstanding,
+                        Some(StepDecision::Effect(Effect::Scale {
+                            service: service.clone(),
+                            from: fact.replicas,
+                            to: *replicas,
+                        })),
+                        None,
+                    ),
+                    None => (ProcedurePhase::Active, Some(StepDecision::Wait { until: *deadline }), None),
+                },
                 ProcedurePhase::Holding | ProcedurePhase::Done | ProcedurePhase::Held => (state.phase, None, None),
             }
         }
@@ -480,7 +541,11 @@ fn decide(
                         Some(StepDecision::Wait { until: *deadline }),
                         Some(SystemRequest::Environment { environment: environment.clone() }),
                     ),
-                    ProcedurePhase::Holding | ProcedurePhase::Done | ProcedurePhase::Held => (state.phase, None, None),
+                    ProcedurePhase::ReadingFacts
+                    | ProcedurePhase::FactsReady
+                    | ProcedurePhase::Holding
+                    | ProcedurePhase::Done
+                    | ProcedurePhase::Held => (state.phase, None, None),
                 },
                 None => (
                     state.phase,
@@ -515,7 +580,11 @@ fn decide(
                         Some(StepDecision::Wait { until: *deadline }),
                         Some(SystemRequest::Environment { environment: environment.clone() }),
                     ),
-                    ProcedurePhase::Holding | ProcedurePhase::Done | ProcedurePhase::Held => (state.phase, None, None),
+                    ProcedurePhase::ReadingFacts
+                    | ProcedurePhase::FactsReady
+                    | ProcedurePhase::Holding
+                    | ProcedurePhase::Done
+                    | ProcedurePhase::Held => (state.phase, None, None),
                 },
                 None => (
                     state.phase,
@@ -524,6 +593,16 @@ fn decide(
                 ),
             }
         }
+    }
+}
+
+fn stage(domain: &mut Domain, env: &Env<Limits>, token: Token, effect: Effect, out: &mut Queue<Request>) {
+    if effect_valid(&effect, &env.limits) && domain.staged.len() < env.limits.staged {
+        let description = describe(&effect, domain.backend);
+        domain.staged.insert(token, effect).expect("stage capacity checked");
+        out.push(Request::Described { token, description });
+    } else {
+        out.push(Request::Refused { token });
     }
 }
 
@@ -539,13 +618,22 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         }
         Event::StartProcedure { task, procedure } => start_procedure(domain, env, task, procedure, out),
         Event::Procedure { task, signal } => procedure(domain, env, task, signal, out),
-        Event::Describe { token, effect } => {
-            if effect_valid(&effect, &env.limits) && domain.staged.len() < env.limits.staged {
-                let description = describe(&effect, domain.backend);
-                domain.staged.insert(token, effect).expect("stage capacity checked");
-                out.push(Request::Described { token, description });
-            } else {
-                out.push(Request::Refused { token });
+        Event::Describe { token, effect } => stage(domain, env, token, effect, out),
+        Event::DescribeProposal { token, number } => match domain.proposals.get(&number) {
+            Some((_, effect)) => {
+                let effect = effect.clone();
+                stage(domain, env, token, effect, out);
+            }
+            None => out.push(Request::Refused { token }),
+        },
+        Event::KeepProposal { token, number, task } => {
+            let effect = domain.staged.remove(&token).expect("described proposal payload");
+            domain.proposals.insert(number, (task, effect.clone())).expect("proposal capacity reserved");
+            out.push(Request::Save { record: Record::Proposal { number, task, effect } });
+        }
+        Event::DropProposal { number } => {
+            if domain.proposals.remove(&number).is_some() {
+                out.push(Request::Erase { key: RecordKey::Proposal(number) });
             }
         }
         Event::Keep { token, key } => {

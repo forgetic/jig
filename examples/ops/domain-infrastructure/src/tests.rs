@@ -11,6 +11,7 @@ fn limits() -> Limits {
         tasks: 4,
         procedures: 4,
         staged: 4,
+        proposals: 4,
         effects: 4,
         made: 4,
         resources_per_task: 4,

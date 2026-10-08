@@ -93,20 +93,26 @@ fn verdict(fact: Option<&Fact>, question: &Question, now: u64) -> Verdict {
             if percent == 0 || percent > 100 {
                 return Verdict::Refuse;
             }
-            let start = now.saturating_sub(for_seconds);
-            let mut reached_start = false;
+            let Some(start) = fact.observed.checked_sub(for_seconds) else {
+                return Verdict::Wait;
+            };
+            let mut at_start: Option<crate::LoadPoint> = None;
             for sample in &fact.load {
                 if sample.at <= start {
-                    reached_start = true;
+                    match at_start {
+                        Some(prior) if prior.at >= sample.at => {}
+                        Some(_) | None => at_start = Some(*sample),
+                    }
                 }
-                if sample.at >= start && sample.at <= now && sample.percent >= percent {
-                    return Verdict::Refuse;
+                if sample.at >= start && sample.at <= fact.observed && sample.percent >= percent {
+                    return Verdict::Wait;
                 }
             }
-            if !reached_start || fact.load_percent >= percent {
-                Verdict::Wait
-            } else {
-                Verdict::Met { observed: fact.observed }
+            match at_start {
+                Some(sample) if sample.percent < percent && fact.load_percent < percent => {
+                    Verdict::Met { observed: fact.observed }
+                }
+                Some(_) | None => Verdict::Wait,
             }
         }
     }

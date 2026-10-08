@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use skein_lib::Map;
+use skein_lib::{List, Map};
 
 use crate::{Effect, Entry, Environment, EnvironmentFact, Key, Pool, ProcedureState, Resource, Service, ServiceFact};
 
@@ -18,6 +18,8 @@ pub struct Limits {
     pub procedures: u32,
     /// Staged effects.
     pub staged: u32,
+    /// Durable proposed effects.
+    pub proposals: u32,
     /// Unsettled outbox entries.
     pub effects: u32,
     /// Environments owned by this deployment.
@@ -44,7 +46,9 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         .checked_add(Map::<Pool, (u32, u32)>::worst_case(limits.pools)?)?
         .checked_add(Map::<u64, Box<[Resource]>>::worst_case(limits.tasks)?)?
         .checked_add(Map::<u64, ProcedureState>::worst_case(limits.procedures)?)?
+        .checked_add(List::<u64>::worst_case(limits.procedures)?)?
         .checked_add(Map::<skein_lib::Token, Effect>::worst_case(limits.staged)?)?
+        .checked_add(Map::<u64, (u64, Effect)>::worst_case(limits.proposals)?)?
         .checked_add(Map::<Key, Entry>::worst_case(limits.effects)?)?
         .checked_add(Map::<Environment, Key>::worst_case(limits.made)?)?
         .checked_add(u64::from(limits.services).checked_mul(name.checked_mul(3)?)?)?
@@ -56,6 +60,7 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
         )?
         .checked_add(u64::from(limits.procedures).checked_mul(name.checked_mul(3)?)?)?
         .checked_add(u64::from(limits.staged).checked_mul(name.checked_mul(3)?)?)?
+        .checked_add(u64::from(limits.proposals).checked_mul(name.checked_mul(3)?)?)?
         .checked_add(u64::from(limits.effects).checked_mul(name.checked_mul(3)?)?)?
         .checked_add(u64::from(limits.made).checked_mul(name.checked_mul(2)?)?)
 }

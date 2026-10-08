@@ -255,19 +255,14 @@ impl World {
                 | Request::RelayedTyped { .. }
                 | Request::DropTyped { .. }
                 | Request::UndeliveredTyped { .. }
-                | Request::Assign { .. }
                 | Request::Grant { .. }
                 | Request::Rejected { .. }
                 | Request::Exhausted { .. }
-                | Request::Inbound { .. }
-                | Request::Relayed { .. }
                 | Request::NotStarted { .. }
                 | Request::Lost { .. }
                 | Request::Withdrawn { .. }
                 | Request::Refused { .. }
-                | Request::Relay { .. }
                 | Request::Bounced { .. }
-                | Request::Undelivered { .. }
                 | Request::Told { .. } => panic!("unexpected turn-world request: {request:?}"),
             }
         }

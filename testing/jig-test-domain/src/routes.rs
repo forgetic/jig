@@ -28,8 +28,7 @@ pub(super) fn route_core(
             }
             core::Request::Write(core::Write::Erase(key)) => write(domain, decision, Write::Erase(Key::Core(key))),
             core::Request::Held(held) => match *held {
-                core::Held::Assign { channel, run, attempt }
-                | core::Held::AssignTyped { channel, run, attempt, .. } => {
+                core::Held::AssignTyped { channel, run, attempt, .. } => {
                     let assignment = domain.assignments.remove(&run.raw()).expect("prepared claim has assignment");
                     assert!(assignment.attempt == attempt.raw(), "current assignment fence");
                     hold(decision, Delivery::Assigned { channel, assignment });
@@ -50,8 +49,13 @@ pub(super) fn route_core(
                 core::Held::MakeEffect { connector, entry } => {
                     hold(decision, Delivery::Core(core::Held::MakeEffect { connector, entry }));
                 }
-                other @ (core::Held::InboundTyped { .. }
-                | core::Held::Relay { .. }
+                core::Held::InboundTyped { channel, run, attempt, message } => {
+                    let Some(crate::Payload::InboxWord(line)) = domain.payloads.remove(&message.words) else {
+                        unreachable!("inbox word payload")
+                    };
+                    hold(decision, Delivery::Message { channel, task: run.raw(), attempt: attempt.raw(), word: line });
+                }
+                other @ (core::Held::Relay { .. }
                 | core::Held::PeopleReply { .. }
                 | core::Held::CallAnswer { .. }
                 | core::Held::ViewStart { .. }
@@ -66,8 +70,6 @@ pub(super) fn route_core(
                 | core::Held::Cancel { .. }
                 | core::Held::Refuse { .. }
                 | core::Held::TurnBusy { .. }
-                | core::Held::Relayed { .. }
-                | core::Held::Inbound { .. }
                 | core::Held::StopRun { .. }
                 | core::Held::NotesLoad { .. }
                 | core::Held::NotesWritten { .. }
@@ -255,6 +257,10 @@ fn route_now(
     work: &mut Queue<Work>,
 ) {
     match now {
+        core::Now::UndeliveredTyped { message, .. } => {
+            drop(domain.payloads.remove(&message.words));
+        }
+
         core::Now::Activate { context } => {
             work.push(Work::Core(core::Event::Activate { context, ready: domain.ready() }));
         }
@@ -349,7 +355,9 @@ fn route_now(
             let payload = domain.payloads.get(&body).expect("fleet retained the turn body");
             let (cumulative, read) = match payload {
                 crate::Payload::Turn { cumulative, read, .. } => (*cumulative, *read),
-                crate::Payload::TypedAnswer(_) | crate::Payload::Answer { .. } => unreachable!("turn body family"),
+                crate::Payload::InboxWord(_) | crate::Payload::TypedAnswer(_) | crate::Payload::Answer { .. } => {
+                    unreachable!("turn body family")
+                }
             };
             work.push(Work::Core(core::Event::TurnPayload { run, attempt, turn, body, cumulative, read }));
         }
@@ -357,7 +365,9 @@ fn route_now(
             let body = domain.payloads.get(&payload).expect("fleet retained the answer body");
             let (cumulative, end) = match body {
                 crate::Payload::Answer { cumulative, end, .. } => (*cumulative, end.clone()),
-                crate::Payload::TypedAnswer(_) | crate::Payload::Turn { .. } => unreachable!("answer body family"),
+                crate::Payload::InboxWord(_) | crate::Payload::TypedAnswer(_) | crate::Payload::Turn { .. } => {
+                    unreachable!("answer body family")
+                }
             };
             work.push(Work::Core(core::Event::AnswerPayload {
                 run,
@@ -373,7 +383,7 @@ fn route_now(
             let body = domain.payloads.remove(&payload).expect("accepted turn body");
             let (cumulative, read, transcript) = match body {
                 crate::Payload::Turn { cumulative, read, transcript, .. } => (cumulative, read, transcript),
-                crate::Payload::TypedAnswer(_) | crate::Payload::Answer { .. } => {
+                crate::Payload::InboxWord(_) | crate::Payload::TypedAnswer(_) | crate::Payload::Answer { .. } => {
                     unreachable!("accepted turn body family")
                 }
             };
@@ -395,7 +405,9 @@ fn route_now(
                 Some(crate::Payload::Answer { task, attempt, .. }) => {
                     Some(core::PayloadRefusal::Answer { task, attempt })
                 }
-                Some(crate::Payload::TypedAnswer(_)) => unreachable!("typed answer is not a turn or terminal"),
+                Some(crate::Payload::InboxWord(_) | crate::Payload::TypedAnswer(_)) => {
+                    unreachable!("typed answer is not a turn or terminal")
+                }
                 None => None,
             };
             work.push(Work::Core(core::Event::RefusedPayload { request, problem, payload }));
@@ -403,7 +415,6 @@ fn route_now(
         core::Now::HistoricalProposal { .. }
         | core::Now::HistoricalEscalation { .. }
         | core::Now::EscalationInspection { .. }
-        | core::Now::CallPayload { .. }
         | core::Now::CompleteBrief { .. }
         | core::Now::ProcedureDelegateOutcome { .. }
         | core::Now::RestoreRefused => {
@@ -412,7 +423,6 @@ fn route_now(
         other @ (core::Now::SettledCallRefused { .. }
         | core::Now::CallTyped { .. }
         | core::Now::DropTyped { .. }
-        | core::Now::UndeliveredTyped { .. }
         | core::Now::EffectAnswer { .. }
         | core::Now::SignInRefused { .. }
         | core::Now::WatchRefused { .. }

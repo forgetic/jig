@@ -127,8 +127,6 @@ pub enum Held {
     PeopleReply { to: ReplyTo, sign_in: Option<u64>, reply: people::Reply },
     /// A named core call answer, assembled and delivered after its decision commits.
     CallAnswer { to: ReplyTo, key: CallKey, part: CallPart },
-    /// A claimed run begins on a host after its assignment is committed.
-    Assign { channel: Token, run: Token, attempt: Token },
     /// A started run becomes visible after the same claim commits.
     ViewStart { run: Token, attempt: Token },
     /// A finished task becomes visible after its terminal commits.
@@ -153,10 +151,6 @@ pub enum Held {
     Refuse { channel: Token },
     /// Ask the host to retain and retry a turn that did not enter a decision.
     TurnBusy { channel: Token, run: Token, attempt: Token, turn: u32 },
-    /// Deliver a named call answer retained by the application's root.
-    Relayed { channel: Token, run: Token, attempt: Token, call: Token, answer: Token },
-    /// A committed inbox word is handed to the current fenced host attempt.
-    Inbound { channel: Token, run: Token, attempt: Token, word: tasks::Word },
     /// Cancel the current fenced run after its task decision commits.
     StopRun { task: u64, attempt: u64 },
     /// Store page requested by the notes child after earlier commits.
@@ -244,8 +238,6 @@ pub enum Now {
     EscalationReply { to: ReplyTo, person: u64, context: Box<tasks::EscalationContext> },
     /// Refuse an authenticated held-chat read.
     EscalationRefused { to: ReplyTo, why: people::Refusal },
-    /// Translate a root-owned named-call payload after the fleet admits its relay.
-    CallPayload { to: ReplyTo, run: Token, attempt: Token, body: Token },
     /// The first child admitted from a connector procedure's batch, if any.
     ProcedureDelegateOutcome { task: u64, step: u64, child: Option<u64> },
     /// A restored task row was refused; the root must fail startup.
@@ -5056,11 +5048,6 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
     for _ in 0..marked {
         let Some(next) = pending.pop() else { break };
         let request = match next {
-            fleet::Request::Assign { channel, kind, run, attempt } => {
-                record_host(core, &mut out, run, attempt, kind);
-                out.push(Request::Held(Box::new(Held::ViewStart { run, attempt })));
-                Request::Held(Box::new(Held::Assign { channel, run, attempt }))
-            }
             fleet::Request::Acknowledge { channel, run, attempt } => {
                 Request::Held(Box::new(Held::Acknowledge { channel, run, attempt }))
             }
@@ -5073,9 +5060,6 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
             fleet::Request::Refuse { channel } => Request::Held(Box::new(Held::Refuse { channel })),
             fleet::Request::TurnBusy { channel, run, attempt, turn } => {
                 Request::Held(Box::new(Held::TurnBusy { channel, run, attempt, turn }))
-            }
-            fleet::Request::Relayed { channel, run, attempt, call, answer } => {
-                Request::Held(Box::new(Held::Relayed { channel, run, attempt, call, answer }))
             }
             fleet::Request::Drop { payload } => Request::Now(Box::new(Now::DropPayload { payload })),
             fleet::Request::Listed { run, attempt } => {
@@ -5104,26 +5088,6 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                     let _: Option<u64> = core.unreported_restored.remove(&run.raw());
                 }
                 append_tasks(core, env, tasks::Event::Started { task: run.raw(), attempt: attempt.raw() }, &mut out);
-                continue;
-            }
-            fleet::Request::Inbound { channel, run, attempt, event } => {
-                let relay = core.relaying.take().expect("fleet inbound follows committed word");
-                assert!(event.raw() == relay.word.number, "relay event identifies word");
-                if let Some(proof) = core.proofs.get_mut(&run.raw())
-                    && proof.attempt == attempt.raw()
-                    && proof.offered == relay.previous
-                {
-                    proof.offered = Some(match proof.offered {
-                        Some(previous) => previous.max(relay.word.number),
-                        None => relay.word.number,
-                    });
-                    out.push(Request::Write(Write::Save(Record::Core(CoreRecord::RunProof(proof.clone())))));
-                    out.push(Request::Held(Box::new(Held::Inbound { channel, run, attempt, word: relay.word })));
-                }
-                continue;
-            }
-            fleet::Request::Undelivered { .. } => {
-                drop(core.relaying.take());
                 continue;
             }
             fleet::Request::NotStarted { to, run, attempt }
@@ -5187,6 +5151,20 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                 Request::Held(Box::new(Held::AssignTyped { channel, run, attempt, activation, assignment }))
             }
             fleet::Request::InboundTyped { channel, run, attempt, message } => {
+                let deliver = match core.relaying.take() {
+                    Some(relay) => {
+                        assert!(message.name.raw() == relay.message, "relay name identifies word");
+                        match core.proofs.get(&run.raw()) {
+                            Some(proof) => proof.attempt == attempt.raw() && proof.offered == relay.previous,
+                            None => false,
+                        }
+                    }
+                    None => true,
+                };
+                if !deliver {
+                    out.push(Request::Now(Box::new(Now::DropPayload { payload: message.words })));
+                    continue;
+                }
                 if let Some(proof) = core.proofs.get_mut(&run.raw())
                     && proof.attempt == attempt.raw()
                 {
@@ -5206,6 +5184,7 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
             }
             fleet::Request::DropTyped { call } => Request::Now(Box::new(Now::DropTyped { call })),
             fleet::Request::UndeliveredTyped { run, attempt, message, undelivered: _ } => {
+                let _pending = core.relaying.take();
                 Request::Now(Box::new(Now::UndeliveredTyped { run, attempt, message }))
             }
             fleet::Request::Grant { .. }
@@ -5222,10 +5201,6 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
                 let _: Option<u64> = core.unreported_restored.remove(&run.raw());
                 assert!(core.current_proof(run.raw(), attempt.raw()), "actual current answer has reserved proof");
                 Request::Now(Box::new(Now::AnswerPayload { run, attempt, payload }))
-            }
-            fleet::Request::Relay { reply_to, run, attempt, body } => {
-                assert!(core.current_proof(run.raw(), attempt.raw()), "fleet only relays a current claim");
-                Request::Now(Box::new(Now::CallPayload { to: reply_to, run, attempt, body }))
             }
         };
         out.push(request);

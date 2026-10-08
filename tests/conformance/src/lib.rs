@@ -361,7 +361,7 @@ impl Application for Testing {
                     more,
                 })))]
             }
-            root::Delivery::Core(_) | root::Delivery::TypedAnswer { .. } => Vec::new(),
+            root::Delivery::Core(_) | root::Delivery::TypedAnswer { .. } | root::Delivery::Message { .. } => Vec::new(),
             root::Delivery::Fleet(_) => panic!("root consumes fleet continuations"),
         }
     }

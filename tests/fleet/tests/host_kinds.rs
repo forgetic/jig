@@ -37,14 +37,28 @@ fn a_run_placed_on_the_engine_slots_is_settled_as_not_started_by_a_restart_befor
         step(
             &mut domain,
             limits,
-            Event::Start { reply_to: ReplyTo::new(attempt), run: task, attempt, workstream: 1, kinds: Kinds::Engine }
+            Event::StartTyped {
+                reply_to: ReplyTo::new(attempt),
+                run: task,
+                attempt,
+                workstream: 1,
+                kinds: Kinds::Engine,
+                assignment: refs()
+            }
         )
         .is_empty()
     );
     assert_eq!(
         place(&mut domain, limits),
         vec![
-            Request::Assign { channel: Token::new(0), kind: HostKind::Engine, run: task, attempt },
+            Request::AssignTyped {
+                channel: Token::new(0),
+                kind: HostKind::Engine,
+                run: task,
+                attempt,
+                activation: attempt.raw(),
+                assignment: refs()
+            },
             Request::Placed { run: task, attempt },
         ]
     );
@@ -94,7 +108,14 @@ fn a_charter_for_workers_only_waits_while_only_engine_slots_are_free() {
         step(
             &mut domain,
             limits,
-            Event::Start { reply_to: ReplyTo::new(attempt), run: task, attempt, workstream: 3, kinds: Kinds::Workers }
+            Event::StartTyped {
+                reply_to: ReplyTo::new(attempt),
+                run: task,
+                attempt,
+                workstream: 3,
+                kinds: Kinds::Workers,
+                assignment: refs()
+            }
         )
         .is_empty()
     );
@@ -119,7 +140,14 @@ fn a_charter_for_workers_only_waits_while_only_engine_slots_are_free() {
     assert_eq!(
         place(&mut domain, limits),
         vec![
-            Request::Assign { channel: Token::new(5), kind: HostKind::Worker, run: task, attempt },
+            Request::AssignTyped {
+                channel: Token::new(5),
+                kind: HostKind::Worker,
+                run: task,
+                attempt,
+                activation: attempt.raw(),
+                assignment: refs()
+            },
             Request::Placed { run: task, attempt },
         ]
     );
@@ -151,14 +179,28 @@ fn a_worker_holding_the_workstream_is_preferred_over_a_free_engine_slot() {
         step(
             &mut domain,
             limits,
-            Event::Start { reply_to: ReplyTo::new(attempt), run: task, attempt, workstream: 9, kinds: Kinds::Both }
+            Event::StartTyped {
+                reply_to: ReplyTo::new(attempt),
+                run: task,
+                attempt,
+                workstream: 9,
+                kinds: Kinds::Both,
+                assignment: refs()
+            }
         )
         .is_empty()
     );
     assert_eq!(
         place(&mut domain, limits),
         vec![
-            Request::Assign { channel: Token::new(11), kind: HostKind::Worker, run: task, attempt },
+            Request::AssignTyped {
+                channel: Token::new(11),
+                kind: HostKind::Worker,
+                run: task,
+                attempt,
+                activation: attempt.raw(),
+                assignment: refs()
+            },
             Request::Placed { run: task, attempt },
         ]
     );
@@ -179,8 +221,19 @@ fn a_worker_holding_the_workstream_is_preferred_over_a_free_engine_slot() {
     assert_eq!(
         place(&mut domain, limits),
         vec![
-            Request::Assign { channel: Token::new(0), kind: HostKind::Engine, run: task, attempt },
+            Request::AssignTyped {
+                channel: Token::new(0),
+                kind: HostKind::Engine,
+                run: task,
+                attempt,
+                activation: attempt.raw(),
+                assignment: refs()
+            },
             Request::Placed { run: task, attempt },
         ]
     );
+}
+
+fn refs() -> jig_core_fleet::TypedAssignment {
+    jig_core_fleet::TypedAssignment { turns: Token::new(0), answered: Token::new(0) }
 }

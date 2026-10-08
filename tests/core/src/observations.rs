@@ -767,9 +767,9 @@ impl Observer {
                     }
                 }
             },
-            root::Delivery::Core(core::Held::Inbound { run, word, .. }) => {
-                requires.push(r::Receipt::Word(run.raw(), word.number));
-                self.observe(now, r::Observed::Reached(r::Receipt::Word(run.raw(), word.number)));
+            root::Delivery::Message { task: run, word, .. } => {
+                requires.push(r::Receipt::Word(*run, word.number));
+                self.observe(now, r::Observed::Reached(r::Receipt::Word(*run, word.number)));
             }
             root::Delivery::Core(core::Held::Result { person, task, .. }) => {
                 requires.push(r::Receipt::Ended(*task));

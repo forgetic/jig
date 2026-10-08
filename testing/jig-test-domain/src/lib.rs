@@ -85,6 +85,8 @@ pub enum Write {
 /// What the journal releases after the associated commit.
 #[derive(Debug)]
 pub enum Delivery {
+    /// One committed inbox word for its current host.
+    Message { channel: Token, task: u64, attempt: u64, word: tasks::Word },
     /// Perform this step of the core-owned restart script.
     Restart(core::RestartStep),
     /// Core-held party, host, task or view output.
@@ -388,6 +390,7 @@ enum Payload {
     Turn { task: u64, attempt: u64, turn: u32, cumulative: u64, read: Option<u64>, transcript: Box<[u8]> },
     Answer { task: u64, attempt: u64, cumulative: u64, end: tasks::End },
     TypedAnswer(core::SettledCall),
+    InboxWord(tasks::Word),
 }
 
 /// Admit one input and route all synchronous continuations inside one decision.
@@ -684,22 +687,11 @@ pub fn release(domain: &mut Domain, env: &Env<Limits>, out: &mut Queue<Request>)
                 );
             }
             Delivery::Core(core::Held::Relay { task, attempt, previous, word }) => {
-                let event = Token::new(word.number);
-                assert!(
-                    domain.core.relaying.replace(core::PendingRelay { previous, word }).is_none(),
-                    "one committed relay in flight"
-                );
-                step(
-                    domain,
-                    env,
-                    Event::Core(core::Event::Fleet(fleet::Event::Inbound {
-                        run: Token::new(task),
-                        attempt: Token::new(attempt),
-                        event,
-                    })),
-                );
+                let event = relay_message(domain, task, attempt, previous, word);
+                step(domain, env, event);
             }
-            other @ (Delivery::Restart(_)
+            other @ (Delivery::Message { .. }
+            | Delivery::Restart(_)
             | Delivery::TypedAnswer { .. }
             | Delivery::Core(_)
             | Delivery::Assigned { .. }
@@ -844,4 +836,18 @@ pub fn restore_record(domain: &mut Domain, env: &Env<Limits>, record: Record) ->
             true
         }
     }
+}
+
+fn relay_message(domain: &mut Domain, task: u64, attempt: u64, previous: Option<u64>, word: tasks::Word) -> Event {
+    let name = Token::new(word.number);
+    let body = payload(domain, Payload::InboxWord(word));
+    assert!(
+        domain.core.relaying.replace(core::PendingRelay { previous, message: name.raw() }).is_none(),
+        "one committed relay in flight"
+    );
+    Event::Core(core::Event::Fleet(fleet::Event::InboundTyped {
+        run: Token::new(task),
+        attempt: Token::new(attempt),
+        message: fleet::TypedMessage { name, sender: body, words: body },
+    }))
 }

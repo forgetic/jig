@@ -5,7 +5,7 @@
 //! - It sends assignments, spaced out: within the limits, beyond them (the
 //!   kind of refusal it expects noted), or naming a run it has in flight
 //!   under a new attempt; also to a worker shutting down, which refuses
-//!   them. Workspace items, saving and snapshots are drawn.
+//!   them. Workspace items, saving and transcripts are drawn.
 //! - For each assignment it sends inbound events while the run is in flight,
 //!   each carrying its place in the run's sequence, some too large; may
 //!   cancel it; and may send messages for an attempt it never assigned,
@@ -22,8 +22,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jig_host::{
-    AgentFailure, Answer, Assignment, Bounce, Event, Failure, Hosting, Invalid, Limits, Preparation, Reason, Refusal,
-    Request, RunFailure, Workspace,
+    AgentFailure, Assignment, AssignmentTyped, Bounce, EndingV2, Event, Failure, Hosting, Invalid, Limits, Preparation,
+    Reason, Refusal, Request, RunFailure, Workspace,
 };
 use skein_lib::{Duration, ReplyTo, Rng, Token};
 use skein_world::domain::Span;
@@ -39,9 +39,9 @@ pub struct Script {
     pub invalid: u32,
     pub repeats: u32,
     /// The chance, per mille, that an assignment saves unfinished work, and
-    /// that it has a snapshot.
+    /// that it has committed conversation turns.
     pub saves: u32,
-    pub snapshots: u32,
+    pub transcripts: u32,
     /// The most inbound events it sends a run, the time between them, and the
     /// chance, per mille, that one is too large.
     pub events: u32,
@@ -189,7 +189,7 @@ impl Engine {
         match request {
             Request::AnswerV2 { to, run, attempt, answer } => {
                 assert_eq!(to, ReplyTo::new(run), "an answer goes to its assignment");
-                self.answered(run, attempt, &crate::fixtures::plain(&answer));
+                self.answered(run, attempt, &answer.ending);
                 Vec::new()
             }
             Request::RelayTyped { run, attempt, delivery: call, .. } => self.relay(run, attempt, call),
@@ -253,7 +253,7 @@ impl Engine {
         let (assignment, invalid) = self.draw(run, attempt);
         let assigned = Assigned { invalid, next: 0, cancelled: false };
         assert!(self.open.insert((run, attempt), assigned).is_none(), "an attempt is assigned once");
-        acts.push(Self::host(crate::fixtures::assign(ReplyTo::new(run), assignment), false));
+        acts.push(Self::host(Event::AssignTyped { reply_to: ReplyTo::new(run), assignment }, false));
         // What it sends the run while it is in flight.
         let events = self.rng.below(u64::from(self.script.events) + 1);
         let mut at = Duration::ZERO;
@@ -274,30 +274,33 @@ impl Engine {
 
     /// An assignment for `run`'s attempt `attempt`, and the refusal it
     /// expects if it is beyond the limits.
-    fn draw(&mut self, run: Token, attempt: Token) -> (Assignment, Option<Invalid>) {
+    fn draw(&mut self, run: Token, attempt: Token) -> (AssignmentTyped, Option<Invalid>) {
         let charter = bytes(self.rng.between(1, self.limits.charter_bytes));
-        let snapshot = if self.rng.chance(self.script.snapshots) {
-            Some(bytes(self.rng.between(1, self.limits.snapshot_bytes)))
+        let turns = if self.rng.chance(self.script.transcripts) {
+            vec![bytes(
+                self.rng.between(1, self.limits.turn_bytes.min(self.limits.transcript_bytes.saturating_sub(16))),
+            )]
+            .into_boxed_slice()
         } else {
-            None
+            Box::new([])
         };
-        let mut assignment = Assignment {
+        let assignment = Assignment {
             grants: Box::new([]),
             run,
             attempt,
             workspace: Some(Workspace { workstream: run.raw(), items: Token::new(run.raw().saturating_add(1000)) }),
             save: self.rng.chance(self.script.saves),
             charter,
-            snapshot,
         };
+        let mut assignment = AssignmentTyped { assignment, turns, answered: Box::new([]) };
         if !self.rng.chance(self.script.invalid) {
             return (assignment, None);
         }
         let invalid = if self.rng.chance(500) {
-            assignment.charter = bytes(self.limits.charter_bytes.saturating_add(1));
+            assignment.assignment.charter = bytes(self.limits.charter_bytes.saturating_add(1));
             Invalid::Charter
         } else {
-            assignment.snapshot = Some(bytes(self.limits.snapshot_bytes.saturating_add(1)));
+            assignment.turns = vec![bytes(self.limits.transcript_bytes.saturating_add(1))].into_boxed_slice();
             Invalid::Transcript
         };
         (assignment, Some(invalid))
@@ -352,21 +355,22 @@ impl Engine {
         acts
     }
 
-    fn answered(&mut self, run: Token, attempt: Token, answer: &Answer) {
+    fn answered(&mut self, run: Token, attempt: Token, answer: &EndingV2) {
         let assigned = self.open.remove(&(run, attempt)).expect("an assignment is answered once, while in flight");
         let refused = match answer {
-            Answer::Refused(Refusal::Invalid(refused)) => Some(*refused),
-            Answer::Refused(Refusal::Busy) | Answer::Ended { .. } | Answer::Parked { .. } | Answer::Failed { .. } => {
-                None
-            }
+            EndingV2::Refused(Refusal::Invalid(refused)) => Some(*refused),
+            EndingV2::Refused(Refusal::Busy)
+            | EndingV2::Ended { .. }
+            | EndingV2::Parked { .. }
+            | EndingV2::Failed { .. } => None,
         };
         assert_eq!(
             refused, assigned.invalid,
             "an assignment is refused as invalid for what is beyond the limits, and only then"
         );
         let work = match answer {
-            Answer::Refused(_) => None,
-            Answer::Ended { work, .. } | Answer::Parked { work, .. } | Answer::Failed { work, .. } => Some(work),
+            EndingV2::Refused(_) => None,
+            EndingV2::Ended { work, .. } | EndingV2::Parked { work, .. } | EndingV2::Failed { work, .. } => Some(work),
         };
         if let Some(work) = work {
             if let Some(left) = work.left {
@@ -391,13 +395,13 @@ impl Engine {
 
 /// An answer's kind, for counting endings.
 #[must_use]
-pub fn ending(answer: &Answer) -> &'static str {
+pub fn ending(answer: &EndingV2) -> &'static str {
     match answer {
-        Answer::Refused(Refusal::Busy) => "refused: busy",
-        Answer::Refused(Refusal::Invalid(_)) => "refused: invalid",
-        Answer::Ended { .. } => "ended",
-        Answer::Parked { .. } => "parked",
-        Answer::Failed { failure, .. } => failure_kind(*failure),
+        EndingV2::Refused(Refusal::Busy) => "refused: busy",
+        EndingV2::Refused(Refusal::Invalid(_)) => "refused: invalid",
+        EndingV2::Ended { .. } => "ended",
+        EndingV2::Parked { .. } => "parked",
+        EndingV2::Failed { failure, .. } => failure_kind(*failure),
     }
 }
 

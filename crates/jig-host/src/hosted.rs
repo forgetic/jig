@@ -11,7 +11,7 @@ use skein_lib::{Env, Id, List, Map, Queue, ReplyTo, Set, Slab, Token};
 
 use crate::assignment::{self, len};
 use crate::boundary::{
-    AgentFailure, Answer, AnsweredCall, Ask, Assignment, AssignmentTyped, Bounce, Delivery, Failure, Finish, Grant,
+    AgentFailure, AnsweredCall, Ask, Assignment, AssignmentTyped, Bounce, Delivery, EndingV2, Failure, FinishV2, Grant,
     Hosting, Phase, Preparation, Reason, Refusal, Reply, Request, RunFailure, SettledAnswer, Work,
 };
 use crate::call::{self, Call};
@@ -71,9 +71,9 @@ pub(crate) struct NamedEvent {
 
 #[derive(Debug)]
 enum State {
-    /// Its workspace is being prepared. The charter and the snapshot wait for
+    /// Its workspace is being prepared. The charter and conversation wait for
     /// the agent, and inbound events in `held`.
-    Preparing { reply_to: ReplyTo, charter: Box<[u8]>, snapshot: Option<Box<[u8]>>, held: Queue<NamedEvent> },
+    Preparing { reply_to: ReplyTo, charter: Box<[u8]>, held: Queue<NamedEvent> },
     /// Cancelled for `reason` as it was prepared: it answers once the prepare
     /// has settled.
     Cancelling { reply_to: ReplyTo, reason: Reason },
@@ -101,7 +101,7 @@ enum Ending {
     /// It ended with `outcome`, as it said.
     Ended { outcome: Box<[u8]> },
     /// It parked, as it said.
-    Parked { snapshot: Option<Box<[u8]>> },
+    Parked,
     /// It failed: as it said, or its agent broke the rules saying it, or
     /// exited without a word.
     Failed { failure: Failure, detail: Box<[u8]> },
@@ -121,8 +121,8 @@ pub(crate) fn assign_typed(
     out: &mut Queue<Request>,
 ) {
     let AssignmentTyped { assignment, turns, answered } = next;
-    if assignment.snapshot.is_some() || !typed_fits(&turns, &answered, &env.limits) {
-        let invalid = if assignment.snapshot.is_some() { crate::Invalid::Version } else { crate::Invalid::Transcript };
+    if !typed_fits(&turns, &answered, &env.limits) {
+        let invalid = crate::Invalid::Transcript;
         refuse_v2(reply_to, &assignment, Refusal::Invalid(invalid), out);
         return;
     }
@@ -199,7 +199,7 @@ fn assign_runtime(
         refused(reply_to, &assignment, Refusal::Busy, &runtime, out);
         return;
     }
-    let Assignment { run, attempt, workspace, save, charter, snapshot, grants } = assignment;
+    let Assignment { run, attempt, workspace, save, charter, grants } = assignment;
     let held = Queue::with_capacity(env.limits.held);
     let entry = Hosted {
         run,
@@ -211,7 +211,7 @@ fn assign_runtime(
         relays: Set::with_capacity(env.limits.run_calls),
         delivery: None,
         runtime,
-        state: State::Preparing { reply_to, charter, snapshot, held },
+        state: State::Preparing { reply_to, charter, held },
     };
     let id = hosted.insert(entry).expect("checked for room above");
     let named = names.insert(run, id).expect("a name for every slot");
@@ -263,9 +263,9 @@ fn inbound_named(
     let entry = domain.hosted.get_mut(id).expect("a named run is hosted");
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Preparing { reply_to, charter, snapshot, mut held } => {
+        State::Preparing { reply_to, charter, mut held } => {
             hold(&mut held, message, run, attempt, out);
-            State::Preparing { reply_to, charter, snapshot, held }
+            State::Preparing { reply_to, charter, held }
         }
         State::Starting { reply_to, workspace, mut held } => {
             hold(&mut held, message, run, attempt, out);
@@ -410,13 +410,12 @@ fn start_prepared(domain: &mut Domain, owner: Token, workspace: Option<Token>, o
     }
     let state = mem::replace(&mut entry.state, State::Closed);
     entry.state = match state {
-        State::Preparing { reply_to, charter, snapshot, held } => {
+        State::Preparing { reply_to, charter, held } => {
             let mut grants = List::with_capacity(u32::try_from(entry.grants.len()).expect("validated grants"));
             for grant in &entry.grants {
                 grants.push(*grant).expect("room for every grant");
             }
             let typed = entry.runtime.start.take().expect("an agent is started once");
-            assert!(snapshot.is_none(), "typed assignments contain conversation turns");
             out.push(Request::StartTyped {
                 owner,
                 workspace,
@@ -624,7 +623,13 @@ pub(crate) fn yielded(domain: &mut Domain, owner: Token, out: &mut Queue<Request
     conclude(domain, id, out);
 }
 
-pub(crate) fn finished(domain: &mut Domain, env: &Env<Limits>, owner: Token, finish: Finish, out: &mut Queue<Request>) {
+pub(crate) fn finished(
+    domain: &mut Domain,
+    env: &Env<Limits>,
+    owner: Token,
+    finish: FinishV2,
+    out: &mut Queue<Request>,
+) {
     let Domain { hosted, calls, .. } = domain;
     let id = Id::<Hosted>::from_token(owner);
     let entry = hosted.get_mut(id).expect("a run lives until its agent has gone");
@@ -642,7 +647,7 @@ pub(crate) fn finished(domain: &mut Domain, env: &Env<Limits>, owner: Token, fin
                 // winds down: its own ending wins.
                 Ending::Stopped { failure, detail: _ } => said(finish, failure, &env.limits),
                 // It said how it finishes already, or its agent exited.
-                ending @ (Ending::Ended { .. } | Ending::Parked { .. } | Ending::Failed { .. }) => ending,
+                ending @ (Ending::Ended { .. } | Ending::Parked | Ending::Failed { .. }) => ending,
             };
             State::Stopping { reply_to, workspace, agent, ending, gone }
         }
@@ -915,7 +920,7 @@ fn settle(
 ) -> State {
     let delivered_end = match &ending {
         Ending::Ended { .. } => entry.left.is_some(),
-        Ending::Parked { .. } | Ending::Failed { .. } | Ending::Stopped { .. } => false,
+        Ending::Parked | Ending::Failed { .. } | Ending::Stopped { .. } => false,
     };
     match workspace {
         Some(workspace) if entry.save && !delivered_end => {
@@ -956,15 +961,15 @@ fn answer(
     let answer = match ending {
         Ending::Ended { outcome } => {
             facts.push(Fact::Ended { run, attempt });
-            Answer::Ended { outcome, work }
+            EndingV2::Ended { outcome, work }
         }
-        Ending::Parked { snapshot } => {
+        Ending::Parked => {
             facts.push(Fact::Parked { run, attempt });
-            Answer::Parked { snapshot, work }
+            EndingV2::Parked { work }
         }
         Ending::Failed { failure, detail } | Ending::Stopped { failure, detail } => {
             facts.push(Fact::Failed { run, attempt, failure });
-            Answer::Failed { failure, detail, work }
+            EndingV2::Failed { failure, detail, work }
         }
     };
     out.push(Request::AnswerV2 {
@@ -1133,17 +1138,16 @@ fn leave(relays: &Set<Id<Call>>, calls: &mut Slab<Call>, out: &mut Queue<Request
 
 /// How the run ends, as it says it finishes; a cancel it reports is
 /// `cancelled`. Saying more than the limits allow breaks the rules.
-fn said(finish: Finish, cancelled: Failure, limits: &Limits) -> Ending {
+fn said(finish: FinishV2, cancelled: Failure, limits: &Limits) -> Ending {
     let rules = Ending::Failed { failure: Failure::Agent(AgentFailure::Rules), detail: Box::new([]) };
     match finish {
-        Finish::Ended { outcome } if len(&outcome) > limits.outcome_bytes => rules,
-        Finish::Ended { outcome } => Ending::Ended { outcome },
-        Finish::Parked { snapshot: Some(snapshot) } if len(&snapshot) > limits.snapshot_bytes => rules,
-        Finish::Parked { snapshot } => Ending::Parked { snapshot },
-        Finish::Failed { failure: RunFailure::Cancelled } => {
+        FinishV2::Ended { outcome } if len(&outcome) > limits.outcome_bytes => rules,
+        FinishV2::Ended { outcome } => Ending::Ended { outcome },
+        FinishV2::Parked => Ending::Parked,
+        FinishV2::Failed { failure: RunFailure::Cancelled } => {
             Ending::Failed { failure: cancelled, detail: Box::new([]) }
         }
-        Finish::Failed { failure } => Ending::Failed { failure: Failure::Run(failure), detail: Box::new([]) },
+        FinishV2::Failed { failure } => Ending::Failed { failure: Failure::Run(failure), detail: Box::new([]) },
     }
 }
 
@@ -1152,7 +1156,7 @@ fn explained(ending: Ending, detail: Box<[u8]>) -> Ending {
     match ending {
         Ending::Failed { failure, detail: _ } => Ending::Failed { failure, detail },
         Ending::Stopped { failure, detail: _ } => Ending::Stopped { failure, detail },
-        ending @ (Ending::Ended { .. } | Ending::Parked { .. }) => ending,
+        ending @ (Ending::Ended { .. } | Ending::Parked) => ending,
     }
 }
 
@@ -1207,14 +1211,8 @@ pub(crate) fn grant(domain: &mut Domain, run: Token, attempt: Token, grant: Gran
     }
 }
 
-fn next_answer(turns: u32, spent: u64, answer: Answer) -> crate::AnswerV2 {
-    let ending = match answer {
-        Answer::Refused(refusal) => crate::EndingV2::Refused(refusal),
-        Answer::Ended { outcome, work } => crate::EndingV2::Ended { outcome, work },
-        Answer::Parked { snapshot: _, work } => crate::EndingV2::Parked { work },
-        Answer::Failed { failure, detail, work } => crate::EndingV2::Failed { failure, detail, work },
-    };
-    crate::AnswerV2 { turns, spent, ending }
+fn next_answer(turns: u32, spent: u64, answer: EndingV2) -> crate::AnswerV2 {
+    crate::AnswerV2 { turns, spent, ending: answer }
 }
 
 fn refuse_v2(reply_to: ReplyTo, assignment: &Assignment, refusal: Refusal, out: &mut Queue<Request>) {
@@ -1222,7 +1220,7 @@ fn refuse_v2(reply_to: ReplyTo, assignment: &Assignment, refusal: Refusal, out: 
         to: reply_to,
         run: assignment.run,
         attempt: assignment.attempt,
-        answer: next_answer(0, 0, Answer::Refused(refusal)),
+        answer: next_answer(0, 0, EndingV2::Refused(refusal)),
     });
 }
 
@@ -1306,7 +1304,7 @@ pub(crate) fn finished_v2(
     owner: Token,
     turns: u32,
     spent: u64,
-    finish: crate::FinishV2,
+    finish: FinishV2,
     out: &mut Queue<Request>,
 ) {
     let Some(entry) = domain.hosted.get_mut(Id::<Hosted>::from_token(owner)) else {
@@ -1320,10 +1318,5 @@ pub(crate) fn finished_v2(
         faulted(domain, env, owner, AgentFailure::Rules, out);
         return;
     }
-    let finish = match finish {
-        crate::FinishV2::Ended { outcome } => Finish::Ended { outcome },
-        crate::FinishV2::Parked => Finish::Parked { snapshot: None },
-        crate::FinishV2::Failed { failure } => Finish::Failed { failure },
-    };
     finished(domain, env, owner, finish, out);
 }

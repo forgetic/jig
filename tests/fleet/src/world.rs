@@ -889,12 +889,17 @@ impl World {
             }
             Up::Relay { run, attempt, call } => {
                 let body = self.payload(Payload::Body { call });
-                Event::Relay {
+                Event::RelayTyped {
                     channel: token,
                     run: Token::new(run),
                     attempt: Token::new(attempt),
-                    call: Token::new(call),
-                    body,
+                    call: fleet::TypedCall {
+                        name: Box::from(call.to_be_bytes()),
+                        tool: Box::new([]),
+                        writes: false,
+                        input: Box::from(body.raw().to_be_bytes()),
+                        deadline: Duration::ZERO,
+                    },
                 }
             }
             Up::Bounced { run, attempt } => Event::Bounced {
@@ -926,25 +931,24 @@ impl World {
 
     fn request(&mut self, request: Request) {
         match request {
-            Request::AssignTyped { .. }
-            | Request::InboundTyped { .. }
-            | Request::RelayTyped { .. }
-            | Request::RelayedTyped { .. }
-            | Request::DropTyped { .. }
-            | Request::UndeliveredTyped { .. }
-            | Request::Turned { .. }
-            | Request::AcknowledgeTurn { .. }
-            | Request::TurnBusy { .. } => {
-                unreachable!("the first-version world sends no typed records or turns")
+            Request::Turned { .. } | Request::AcknowledgeTurn { .. } | Request::TurnBusy { .. } => {
+                unreachable!("this world exercises placement and relays")
+            }
+            Request::DropTyped { call } => {
+                self.payloads.end(skein_lib::Reader::new(&call.input).u64().expect("body token"));
             }
             Request::Grant { .. } | Request::Rejected { .. } | Request::Exhausted { .. } => {}
-            Request::Assign { channel, kind: _, run, attempt } => {
+            Request::AssignTyped { channel, run, attempt, .. } => {
                 self.stats.assigned += 1;
                 self.sent(run, attempt, Down::Assign);
                 self.down(channel, Message::Assign { run: run.raw(), attempt: attempt.raw() });
             }
-            Request::Inbound { channel, run, attempt, event } => {
-                assert_eq!(self.payloads.end(event.raw()), Payload::Inbound, "an inbound event goes down as it is");
+            Request::InboundTyped { channel, run, attempt, message } => {
+                assert_eq!(
+                    self.payloads.end(message.words.raw()),
+                    Payload::Inbound,
+                    "an inbound event goes down as it is"
+                );
                 self.stats.delivered += 1;
                 self.sent(run, attempt, Down::Inbound);
                 self.down(channel, Message::Inbound { run: run.raw(), attempt: attempt.raw() });
@@ -953,10 +957,17 @@ impl World {
                 self.sent(run, attempt, Down::Cancel);
                 self.down(channel, Message::Cancel { run: run.raw(), attempt: attempt.raw() });
             }
-            Request::Relayed { channel, run, attempt, call, answer } => {
+            Request::RelayedTyped { channel, run, attempt, call, answer } => {
                 assert_eq!(self.payloads.end(answer.raw()), Payload::Reply, "a call's answer goes down as it is");
                 self.sent(run, attempt, Down::Relayed);
-                self.down(channel, Message::Relayed { run: run.raw(), attempt: attempt.raw(), call: call.raw() });
+                self.down(
+                    channel,
+                    Message::Relayed {
+                        run: run.raw(),
+                        attempt: attempt.raw(),
+                        call: skein_lib::Reader::new(&call).u64().expect("call token"),
+                    },
+                );
             }
             Request::Acknowledge { channel, run, attempt } => {
                 self.down(channel, Message::Acknowledge { run: run.raw(), attempt: attempt.raw() });
@@ -991,8 +1002,8 @@ impl World {
                 self.ended(to, run, attempt, end);
             }
             Request::Refused { to, run, attempt, refusal: _ } => self.ended(to, run, attempt, End::Refused),
-            Request::Relay { reply_to, run: _, attempt: _, body } => {
-                match self.payloads.end(body.raw()) {
+            Request::RelayTyped { reply_to, call, .. } => {
+                match self.payloads.end(skein_lib::Reader::new(&call.input).u64().expect("body token")) {
                     Payload::Body { .. } => {}
                     Payload::Answer(_) | Payload::Inbound | Payload::Reply | Payload::Fact => {
                         panic!("seed {}: a relayed call's payload is its body", self.settings.seed)
@@ -1005,8 +1016,8 @@ impl World {
                 self.after(self.settings.serve, Delivery::Reply { epoch, reply_to: ReplyTo::new(token) });
             }
             Request::Bounced { .. } => self.end("bounced"),
-            Request::Undelivered { run: _, attempt: _, event, undelivered } => {
-                assert_eq!(self.payloads.end(event.raw()), Payload::Inbound, "an undelivered event comes back");
+            Request::UndeliveredTyped { message, undelivered, .. } => {
+                assert_eq!(self.payloads.end(message.words.raw()), Payload::Inbound, "an undelivered event comes back");
                 match undelivered {
                     Undelivered::Unplaced | Undelivered::Adrift | Undelivered::Gone => self.end("undelivered"),
                 }
@@ -1075,12 +1086,13 @@ impl World {
         self.stats.starts += 1;
         self.calls.open(attempt, ());
         self.observe(Seen::Started { run, attempt });
-        self.stage.push(Event::Start {
+        self.stage.push(Event::StartTyped {
             reply_to: ReplyTo::new(Token::new(attempt)),
             run: Token::new(run),
             attempt: Token::new(attempt),
             workstream: run,
             kinds: fleet::Kinds::Workers,
+            assignment: fleet::TypedAssignment { turns: Token::new(0), answered: Token::new(0) },
         });
         let at = self.now.saturating_add(self.settings.timeout);
         self.send(at, Delivery::Timeout { item, attempt });
@@ -1153,7 +1165,11 @@ impl World {
         let run = self.items[item].run;
         self.stats.inbound += 1;
         let event = self.payload(Payload::Inbound);
-        self.stage.push(Event::Inbound { run: Token::new(run), attempt: Token::new(attempt), event });
+        self.stage.push(Event::InboundTyped {
+            run: Token::new(run),
+            attempt: Token::new(attempt),
+            message: fleet::TypedMessage { name: event, sender: event, words: event },
+        });
     }
 
     /// An attempt's call ended. An answer is made durable before the record
@@ -1274,13 +1290,11 @@ impl World {
 /// An event, for the trace, without its payload's bytes.
 fn describe(event: &Event) -> String {
     match event {
-        Event::Start { run, attempt, .. } => format!("Start {} {}", run.raw(), attempt.raw()),
+        Event::StartTyped { run, attempt, .. } => format!("Start {} {}", run.raw(), attempt.raw()),
         Event::Hello { channel, hello } => {
             format!("Hello {} slots {} hosting {:?}", channel.raw(), hello.slots, hello.hosting)
         }
-        Event::StartTyped { .. }
-        | Event::InboundTyped { .. }
-        | Event::RelayTyped { .. }
+        Event::InboundTyped { .. }
         | Event::Grant { .. }
         | Event::Rejected { .. }
         | Event::Exhausted { .. }
@@ -1289,11 +1303,10 @@ fn describe(event: &Event) -> String {
         | Event::TurnBusy { .. }
         | Event::Adopt { .. }
         | Event::Cancel { .. }
-        | Event::Inbound { .. }
         | Event::Relayed { .. }
         | Event::Lost { .. }
         | Event::Answer { .. }
-        | Event::Relay { .. }
+        | Event::RelayTyped { .. }
         | Event::Bounced { .. }
         | Event::Told { .. }
         | Event::Acknowledge { .. }

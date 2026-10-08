@@ -9,11 +9,6 @@ pub(crate) fn check(assignment: &Assignment, limits: &Limits) -> Result<(), Inva
     if len(&assignment.charter) > limits.charter_bytes {
         return Err(Invalid::Charter);
     }
-    if let Some(snapshot) = &assignment.snapshot
-        && len(snapshot) > limits.snapshot_bytes
-    {
-        return Err(Invalid::Snapshot);
-    }
     if u64::try_from(assignment.grants.len()).expect("a length fits") > u64::from(limits.accounts) {
         return Err(Invalid::Grants);
     }

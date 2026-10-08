@@ -176,14 +176,11 @@ impl Domain {
 pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queue<Request>) {
     match event {
         Event::StartTyped { reply_to, run, attempt, workstream, kinds, assignment } => {
-            attempt::start(domain, env, reply_to, run, attempt, workstream, kinds, Some(assignment), out);
+            attempt::start(domain, env, reply_to, run, attempt, workstream, kinds, assignment, out);
         }
         Event::InboundTyped { run, attempt, message } => call::inbound_typed(domain, run, attempt, message, out),
         Event::RelayTyped { channel, run, attempt, call } => {
             call::relay_typed(domain, env, channel, run, attempt, call, out);
-        }
-        Event::Start { reply_to, run, attempt, workstream, kinds } => {
-            attempt::start(domain, env, reply_to, run, attempt, workstream, kinds, None, out);
         }
         Event::Adopt { reply_to, run, attempt, kept, kind, worked } => match kind {
             HostKind::Engine => {
@@ -196,7 +193,6 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             HostKind::Worker => attempt::adopt(domain, env, reply_to, run, attempt, kept, out),
         },
         Event::Cancel { run, attempt } => attempt::cancel(domain, run, attempt, out),
-        Event::Inbound { run, attempt, event } => call::inbound(domain, run, attempt, event, out),
         Event::Relayed { to, answer } => call::relayed(domain, to, answer, out),
         Event::Acknowledge { run, attempt } => attempt::acknowledge(domain, run, attempt, out),
         Event::Grant { run, attempt, grant } => call::grant(domain, run, attempt, grant, out),
@@ -229,9 +225,6 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
         }
         Event::TurnKept { run, attempt, turn } => turn::kept(domain, run, attempt, turn, out),
         Event::TurnBusy { run, attempt, turn } => turn::busy(domain, run, attempt, turn, out),
-        Event::Relay { channel, run, attempt, call, body } => {
-            call::relay(domain, channel, run, attempt, call, body, out);
-        }
         Event::Bounced { channel, run, attempt, name, bounce } => {
             call::bounced(domain, channel, run, attempt, name, bounce, out);
         }

@@ -220,7 +220,6 @@ impl World {
             workspace: None,
             save: false,
             charter: charter_bytes(budget, prices, !transcript.is_empty()),
-            snapshot: None,
             grants: Box::new([hub::Grant { account: 0, generation: 1, valid: Duration::from_secs(3600) }]),
         };
         self.hub_events.push_back(hub::Event::AssignTyped {

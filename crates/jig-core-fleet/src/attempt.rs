@@ -120,7 +120,7 @@ pub(crate) struct Attempt {
     /// The contiguous committed turn prefix, restored atomically on adoption.
     pub(crate) kept: u32,
     /// The parent's conversation state references for a typed assignment.
-    pub(crate) typed: Option<TypedAssignment>,
+    pub(crate) typed: TypedAssignment,
     pub(crate) state: State,
 }
 
@@ -249,7 +249,7 @@ pub(crate) fn start(
     attempt: Token,
     workstream: u64,
     kinds: Kinds,
-    typed: Option<TypedAssignment>,
+    typed: TypedAssignment,
     out: &mut Queue<Request>,
 ) {
     let refusal = if workstream == 0 {
@@ -290,7 +290,14 @@ pub(crate) fn adopt(
         }
         replace(domain, run, out);
         let until = env.now.saturating_add(env.limits.grace);
-        insert(domain, run, attempt, false, None, State::Adopted { to, until });
+        insert(
+            domain,
+            run,
+            attempt,
+            false,
+            TypedAssignment { turns: Token::new(0), answered: Token::new(0) },
+            State::Adopted { to, until },
+        );
         let id = *domain.names.get(&(run, attempt)).expect("inserted above");
         domain.attempts.get_mut(id).expect("inserted above").kept = kept;
         return;
@@ -898,7 +905,7 @@ fn assigned(
     to: ReplyTo,
     workstream: u64,
     kinds: Kinds,
-    typed: Option<TypedAssignment>,
+    typed: TypedAssignment,
     channel: Id<Channel>,
     names: Names,
     env: &Env<Limits>,
@@ -910,24 +917,14 @@ fn assigned(
     if entry.kind == HostKind::Worker {
         channel::cache(entry, &env.limits, workstream);
     }
-    match typed {
-        Some(assignment) => out.push(Request::AssignTyped {
-            channel: entry.token,
-            kind: entry.kind,
-            run: names.run,
-            attempt: names.attempt,
-            activation: names.attempt.raw(),
-            assignment,
-        }),
-        None => {
-            out.push(Request::Assign {
-                channel: entry.token,
-                kind: entry.kind,
-                run: names.run,
-                attempt: names.attempt,
-            });
-        }
-    }
+    out.push(Request::AssignTyped {
+        channel: entry.token,
+        kind: entry.kind,
+        run: names.run,
+        attempt: names.attempt,
+        activation: names.attempt.raw(),
+        assignment: typed,
+    });
     out.push(Request::Placed { run: names.run, attempt: names.attempt });
     facts.push(Fact::Placed);
     State::Claimed { to, at: Where::On(channel), workstream, kinds }
@@ -983,13 +980,20 @@ fn found(
         let until = if domain.loaded { Some(env.now.saturating_add(env.limits.grace)) } else { None };
         State::Stray { at, until }
     };
-    insert(domain, names.run, names.attempt, true, None, state);
+    insert(
+        domain,
+        names.run,
+        names.attempt,
+        true,
+        TypedAssignment { turns: Token::new(0), answered: Token::new(0) },
+        state,
+    );
 }
 
 // What a state implies, in one place.
 
 /// Tracks a new attempt in `state`. The entrance checked there is room.
-fn insert(domain: &mut Domain, run: Token, attempt: Token, listed: bool, typed: Option<TypedAssignment>, state: State) {
+fn insert(domain: &mut Domain, run: Token, attempt: Token, listed: bool, typed: TypedAssignment, state: State) {
     let Ok(id) = domain.attempts.insert(Attempt { run, token: attempt, listed, kept: 0, typed, state }) else {
         unreachable!("the entrance checks there is room for an attempt");
     };

@@ -30,13 +30,7 @@ use crate::facts::Fact;
 pub(crate) struct Call {
     attempt: Id<Attempt>,
     /// The worker's name for it, kept until the parent's answer.
-    name: Name,
-}
-
-#[derive(PartialEq, Eq, Hash, Debug)]
-enum Name {
-    Legacy(Token),
-    Typed(Box<[u8]>),
+    name: Box<[u8]>,
 }
 
 /// Where the parent's live claim is, as far as relaying goes.
@@ -89,31 +83,6 @@ fn owned(domain: &Domain, channel: Token, run: Token, attempt: Token) -> Option<
     }
 }
 
-/// A run's host call, from its worker: passed to the parent as a call of the
-/// fleet's, if its attempt is the live claim and there is room.
-pub(crate) fn relay(
-    domain: &mut Domain,
-    channel: Token,
-    run: Token,
-    attempt: Token,
-    call: Token,
-    body: Token,
-    out: &mut Queue<Request>,
-) {
-    let Some(id) = owned(domain, channel, run, attempt) else {
-        domain.facts.push(Fact::Dropped);
-        out.push(Request::Drop { payload: body });
-        return;
-    };
-    match domain.calls.insert(Call { attempt: id, name: Name::Legacy(call) }) {
-        Ok(call) => out.push(Request::Relay { reply_to: ReplyTo::new(call.token()), run, attempt, body }),
-        Err(_) => {
-            domain.facts.push(Fact::Dropped);
-            out.push(Request::Drop { payload: body });
-        }
-    }
-}
-
 /// A typed call is passed through whole, with only its bounded name retained
 /// for the answer. A rejected call is returned whole to its parent.
 pub(crate) fn relay_typed(
@@ -135,7 +104,7 @@ pub(crate) fn relay_typed(
         out.push(Request::DropTyped { call });
         return;
     }
-    let name = Name::Typed(call.name.clone());
+    let name = call.name.clone();
     match domain.calls.insert(Call { attempt: id, name }) {
         Ok(id) => out.push(Request::RelayTyped { reply_to: ReplyTo::new(id.token()), run, attempt, call }),
         Err(_) => {
@@ -151,50 +120,18 @@ pub(crate) fn relayed(domain: &mut Domain, to: ReplyTo, answer: Token, out: &mut
     let id = Id::<Call>::from_token(to.into_token());
     let entry = domain.calls.get_mut(id).expect("the parent answers a call in flight, which is kept until it does");
     let owner = entry.attempt;
-    let name = mem::replace(&mut entry.name, Name::Legacy(Token::new(0)));
+    let name = mem::replace(&mut entry.name, Box::new([]));
     domain.calls.retire(id);
     match live(domain, owner) {
         Live::On(channel) => {
             let entry = domain.attempts.get(owner).expect("a live claim is tracked");
-            match name {
-                Name::Legacy(call) => {
-                    out.push(Request::Relayed { channel, run: entry.run, attempt: entry.token, call, answer });
-                }
-                Name::Typed(call) => {
-                    out.push(Request::RelayedTyped { channel, run: entry.run, attempt: entry.token, call, answer });
-                }
-            }
+            out.push(Request::RelayedTyped { channel, run: entry.run, attempt: entry.token, call: name, answer });
         }
         Live::Adrift | Live::Not => {
             domain.facts.push(Fact::Dropped);
             out.push(Request::Drop { payload: answer });
         }
     }
-}
-
-/// An inbound event from the parent: down to the attempt's worker, or back
-/// to the parent if it reaches none.
-pub(crate) fn inbound(domain: &mut Domain, run: Token, attempt: Token, event: Token, out: &mut Queue<Request>) {
-    let undelivered = match domain.names.get(&(run, attempt)) {
-        Some(&id) => match &domain.attempts.get(id).expect("a named attempt is tracked").state {
-            State::Claimed { at: Where::On(channel), .. } => {
-                let channel = channel::token(&domain.channels, *channel);
-                out.push(Request::Inbound { channel, run, attempt, event });
-                return;
-            }
-            State::Waiting { .. } => Undelivered::Unplaced,
-            State::Adopted { .. } | State::Claimed { at: Where::Adrift { .. }, .. } => Undelivered::Adrift,
-            State::Cancelled { .. }
-            | State::Handed { .. }
-            | State::Acknowledged { .. }
-            | State::Stray { .. }
-            | State::Kept { .. }
-            | State::Fenced { .. } => Undelivered::Gone,
-            State::Closed => unreachable!("a closed attempt is no longer named"),
-        },
-        None => Undelivered::Gone,
-    };
-    out.push(Request::Undelivered { run, attempt, event, undelivered });
 }
 
 /// A typed message follows the same host fence as an opaque inbound event.

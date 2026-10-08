@@ -57,7 +57,6 @@ impl Settings {
                 accounts: 4,
                 slots: 4,
                 charter_bytes: 4096,
-                snapshot_bytes: 1024,
                 transcript_bytes: 1040,
                 delivery_evidence_bytes: 0,
                 turn_bytes: 1024,
@@ -78,7 +77,7 @@ impl Settings {
                 invalid: 0,
                 repeats: 0,
                 saves: 500,
-                snapshots: 200,
+                transcripts: 200,
                 events: 3,
                 event_gap: Span::millis(100, 10_000),
                 large: 0,
@@ -311,13 +310,10 @@ pub struct World {
     /// Draws the latencies.
     rng: Rng,
     settings: Settings,
-
     host: host::Domain,
     stage: Stage<Limits, Arrival, Request>,
-
     engine: Engine,
     parent: Parent,
-
     wire: Schedule<Delivery>,
     lanes: [Time; 3],
     /// When contact is lost and comes back, if it is.
@@ -337,7 +333,6 @@ pub struct World {
     kept: BTreeSet<(Token, Token)>,
     /// Whether the host has taken a shutdown.
     shut: bool,
-
     stats: Stats,
     trace: Trace,
 }
@@ -533,7 +528,6 @@ impl World {
                     workspace: Some(host::Workspace { workstream: run.raw(), items: Token::new(0) }),
                     save: false,
                     charter: Box::from(&b"again"[..]),
-                    snapshot: None,
                 };
                 let event = crate::fixtures::assign(ReplyTo::new(run), assignment);
                 self.stage.inbox.push_front(Arrival { event, stale: false, duplicate: true });
@@ -688,9 +682,9 @@ impl World {
         match request {
             Request::AnswerV2 { to: _, run: answered, attempt: of, answer } => {
                 assert_eq!((*answered, *of), (run, attempt), "an assignment is answered as itself");
-                match crate::fixtures::plain(answer) {
-                    host::Answer::Refused(_) => {}
-                    host::Answer::Ended { .. } | host::Answer::Parked { .. } | host::Answer::Failed { .. } => {
+                match &answer.ending {
+                    host::EndingV2::Refused(_) => {}
+                    host::EndingV2::Ended { .. } | host::EndingV2::Parked { .. } | host::EndingV2::Failed { .. } => {
                         panic!("an assignment answered at once is refused: {answer:?}")
                     }
                 }
@@ -736,8 +730,8 @@ impl World {
                     if let Some(agent) = hosted.agent {
                         assert!(self.left.contains(&agent), "a run answers once it has left live");
                     }
-                    check_word(hosted, &crate::fixtures::plain(&answer));
-                    if let Some(path) = cancel_path(hosted, &crate::fixtures::plain(&answer)) {
+                    check_word(hosted, &answer.ending);
+                    if let Some(path) = cancel_path(hosted, &answer.ending) {
                         self.path(path);
                     }
                 }
@@ -964,10 +958,10 @@ fn fact_kind(fact: Fact) -> &'static str {
 /// Checks that a run is answered as it first said it finishes: its own ending
 /// stands even after a stop, a cancel it reports after a stop being the
 /// worker's; a run that said nothing is answered as failed.
-fn check_word(hosted: &Hosted, answer: &host::Answer) {
+fn check_word(hosted: &Hosted, answer: &host::EndingV2) {
     let failure = match answer {
-        host::Answer::Failed { failure, .. } => Some(*failure),
-        host::Answer::Refused(_) | host::Answer::Ended { .. } | host::Answer::Parked { .. } => None,
+        host::EndingV2::Failed { failure, .. } => Some(*failure),
+        host::EndingV2::Refused(_) | host::EndingV2::Ended { .. } | host::EndingV2::Parked { .. } => None,
     };
     match hosted.word {
         Some(Word::Ended) => assert!(matches_ended(answer), "a run that said it ended is answered so: {answer:?}"),
@@ -988,28 +982,28 @@ fn check_word(hosted: &Hosted, answer: &host::Answer) {
     }
 }
 
-fn matches_ended(answer: &host::Answer) -> bool {
+fn matches_ended(answer: &host::EndingV2) -> bool {
     match answer {
-        host::Answer::Ended { .. } => true,
-        host::Answer::Refused(_) | host::Answer::Parked { .. } | host::Answer::Failed { .. } => false,
+        host::EndingV2::Ended { .. } => true,
+        host::EndingV2::Refused(_) | host::EndingV2::Parked { .. } | host::EndingV2::Failed { .. } => false,
     }
 }
 
-fn matches_parked(answer: &host::Answer) -> bool {
+fn matches_parked(answer: &host::EndingV2) -> bool {
     match answer {
-        host::Answer::Parked { .. } => true,
-        host::Answer::Refused(_) | host::Answer::Ended { .. } | host::Answer::Failed { .. } => false,
+        host::EndingV2::Parked { .. } => true,
+        host::EndingV2::Refused(_) | host::EndingV2::Ended { .. } | host::EndingV2::Failed { .. } => false,
     }
 }
 
 /// Where a cancelled run was when its cancel came, if before it was live.
-fn cancel_path(hosted: &Hosted, answer: &host::Answer) -> Option<&'static str> {
+fn cancel_path(hosted: &Hosted, answer: &host::EndingV2) -> Option<&'static str> {
     match answer {
-        host::Answer::Failed { failure: Failure::Cancelled(_), .. } => {}
-        host::Answer::Refused(_)
-        | host::Answer::Ended { .. }
-        | host::Answer::Parked { .. }
-        | host::Answer::Failed { .. } => {
+        host::EndingV2::Failed { failure: Failure::Cancelled(_), .. } => {}
+        host::EndingV2::Refused(_)
+        | host::EndingV2::Ended { .. }
+        | host::EndingV2::Parked { .. }
+        | host::EndingV2::Failed { .. } => {
             return None;
         }
     }

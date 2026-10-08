@@ -652,12 +652,12 @@ impl World {
                 assert_eq!(problem.why, tasks::Refusal::Batch);
                 self.batch_refusals += 1;
             }
-            root::Delivery::Core(core::Held::Inbound { channel, run, attempt, word }) => {
+            root::Delivery::Message { channel, task: run, attempt, word } => {
                 assert_eq!(word.from, tasks::Party::Task(self.procedure.expect("delegated child")));
                 self.events.push_back(root::Event::Answer {
                     channel,
-                    task: run.raw(),
-                    attempt: attempt.raw(),
+                    task: run,
+                    attempt,
                     cumulative: 3,
                     end: tasks::End::Finished {
                         result: tasks::TaskResult::Report { words: b"done".as_slice().into() },

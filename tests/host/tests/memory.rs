@@ -3,8 +3,8 @@
 //! exactly its limits, then every run ending with as much as it may hold.
 
 use jig_host::{
-    AgentFailure, Answer, Ask, Assignment, Bounce, Delivery, DeliveryOutcome, Domain, Event, Finish, Grant, Invalid,
-    Limits, Preparation, Reason, Refusal, Request, Workspace, max_out, resume, step, worst_case,
+    AgentFailure, Ask, Assignment, Bounce, Delivery, DeliveryOutcome, Domain, EndingV2, Event, FinishV2, Grant,
+    Invalid, Limits, Preparation, Reason, Refusal, Request, Workspace, max_out, resume, step, worst_case,
 };
 use skein_lib::{Duration, Env, Queue, ReplyTo, Time, Token, Wall};
 use skein_world::domain::heap::{self, Meter};
@@ -16,7 +16,6 @@ const LIMITS: Limits = Limits {
     accounts: 4,
     slots: 2,
     charter_bytes: 1024,
-    snapshot_bytes: 512,
     transcript_bytes: 528,
     delivery_evidence_bytes: 0,
     turn_bytes: 512,
@@ -44,7 +43,7 @@ enum Asked {
     Delivery { owner: Token },
     Relay { call: Token },
     Save { owner: Token },
-    Answer { answer: Answer },
+    Answer { answer: EndingV2 },
     AnswerV2 { answer: jig_host::AnswerV2 },
     Turn,
     Bounced { bounce: Bounce },
@@ -64,11 +63,7 @@ struct Measured {
 }
 
 impl Measured {
-    fn new(mut limits: Limits) -> Measured {
-        limits.transcript_bytes = limits.transcript_bytes.max(limits.snapshot_bytes + 16);
-        if limits.turns == 0 {
-            limits.turn_bytes = limits.turn_bytes.max(limits.snapshot_bytes);
-        }
+    fn new(limits: Limits) -> Measured {
         let bound = worst_case(&limits).expect("the test limits fit");
         // The output queue belongs to the parent, not the measured child.
         let out = Queue::with_capacity(max_out(&limits));
@@ -100,13 +95,12 @@ impl Measured {
                 Request::RelayTyped { delivery, .. } => Asked::Relay { call: delivery },
                 Request::AnswerV2 { answer, .. } => {
                     if answer.turns == 0 {
-                        Asked::Answer { answer: jig_host_world::fixtures::plain(&answer) }
+                        Asked::Answer { answer: answer.ending }
                     } else {
                         Asked::AnswerV2 { answer }
                     }
                 }
                 Request::StartTyped { .. } => Asked::Start,
-
                 Request::Prepare { owner, .. } => Asked::Prepare { owner },
                 Request::Save { owner, .. } => Asked::Save { owner },
                 Request::Bounced { bounce, .. } => Asked::Bounced { bounce },
@@ -134,7 +128,7 @@ impl Measured {
     }
 }
 
-/// An assignment for `run` of exactly the limits: a charter, a snapshot and
+/// An assignment for `run` of exactly the limits: a charter and
 /// names of their limits, as many items as a workspace may list.
 fn assignment(run: u64, limits: &Limits) -> Assignment {
     Assignment {
@@ -146,7 +140,6 @@ fn assignment(run: u64, limits: &Limits) -> Assignment {
         workspace: Some(Workspace { workstream: run, items: Token::new(run + 2000) }),
         save: true,
         charter: bytes(limits.charter_bytes),
-        snapshot: Some(bytes(limits.snapshot_bytes)),
     }
 }
 
@@ -161,9 +154,14 @@ fn fill(limits: Limits) {
     let mut host = Measured::new(limits);
     let mut owners = Vec::new();
     for run in 0..u64::from(limits.slots) {
-        let [Asked::Prepare { owner }] =
-            host.step(jig_host_world::fixtures::assign(ReplyTo::new(Token::new(run)), assignment(run, &limits)))[..]
-        else {
+        let [Asked::Prepare { owner }] = host.step(Event::AssignTyped {
+            reply_to: ReplyTo::new(Token::new(run)),
+            assignment: jig_host::AssignmentTyped {
+                assignment: assignment(run, &limits),
+                turns: Box::new([]),
+                answered: Box::new([]),
+            },
+        })[..] else {
             panic!("an assignment of exactly the limits is admitted");
         };
         for _ in 0..limits.held {
@@ -178,7 +176,7 @@ fn fill(limits: Limits) {
         owners.push(owner);
     }
     let held = host.meter.held();
-    let starting = limits.charter_bytes + limits.snapshot_bytes + u64::from(limits.held) * limits.event_bytes;
+    let starting = limits.charter_bytes + u64::from(limits.held) * limits.event_bytes;
     assert!(held >= u64::from(limits.slots) * starting, "{limits:?}: every slot holds what it may as it prepares");
 
     let mut pending = Vec::new();
@@ -235,7 +233,7 @@ fn fill(limits: Limits) {
         } else {
             None
         };
-        let finish = Finish::Ended { outcome: bytes(limits.outcome_bytes) };
+        let finish = FinishV2::Ended { outcome: bytes(limits.outcome_bytes) };
         assert!(!host.step(jig_host_world::fixtures::finished(*owner, finish)).is_empty(), "stopped");
         assert!(host.step(Event::Faulted { owner: *owner, fault: AgentFailure::WallTime }).is_empty(), "decided");
         let detail = bytes(u64::from(limits.detail_bytes) + 1);
@@ -263,7 +261,7 @@ fn beyond(host: &mut Measured, limits: &Limits) {
     let mut beyond = assignment(0, limits);
     beyond.charter = bytes(limits.charter_bytes + 1);
     let refused = host.step(jig_host_world::fixtures::assign(ReplyTo::new(Token::new(0)), beyond));
-    assert_eq!(refused, [Asked::Answer { answer: Answer::Refused(Refusal::Invalid(Invalid::Charter)) }]);
+    assert_eq!(refused, [Asked::Answer { answer: EndingV2::Refused(Refusal::Invalid(Invalid::Charter)) }]);
     let [Asked::Prepare { owner: _ }] =
         host.step(jig_host_world::fixtures::assign(ReplyTo::new(Token::new(0)), assignment(0, limits)))[..]
     else {
@@ -281,7 +279,7 @@ fn beyond(host: &mut Measured, limits: &Limits) {
 /// A delivery still in flight as its run ended settles, and the run answers.
 fn owners_push(host: &mut Measured, call: Token, delivery: Delivery) {
     let settled = host.step(Event::Delivered { owner: call, delivery });
-    let [Asked::Other, Asked::Other, Asked::Answer { answer: Answer::Ended { .. } }] = &settled[..] else {
+    let [Asked::Other, Asked::Other, Asked::Answer { answer: EndingV2::Ended { .. } }] = &settled[..] else {
         panic!("told how it went, released and answered: {settled:?}");
     };
 }
@@ -292,9 +290,14 @@ fn paths(limits: Limits) {
     let mut host = Measured::new(limits);
     let mut owners = Vec::new();
     for run in 0..u64::from(limits.slots) {
-        let [Asked::Prepare { owner }] =
-            host.step(jig_host_world::fixtures::assign(ReplyTo::new(Token::new(run)), assignment(run, &limits)))[..]
-        else {
+        let [Asked::Prepare { owner }] = host.step(Event::AssignTyped {
+            reply_to: ReplyTo::new(Token::new(run)),
+            assignment: jig_host::AssignmentTyped {
+                assignment: assignment(run, &limits),
+                turns: Box::new([]),
+                answered: Box::new([]),
+            },
+        })[..] else {
             panic!("admitted");
         };
         owners.push(owner);
@@ -342,10 +345,10 @@ fn paths(limits: Limits) {
 fn a_host_with_every_slot_full_stays_within_its_worst_case() {
     fill(LIMITS);
     fill(Limits { slots: 16, held: 8, run_calls: 4, ..LIMITS });
-    fill(Limits { slots: 200, charter_bytes: 65_536, snapshot_bytes: 16_384, event_bytes: 4096, ..LIMITS });
+    fill(Limits { slots: 200, charter_bytes: 65_536, transcript_bytes: 16_384, event_bytes: 4096, ..LIMITS });
     fill(Limits { run_calls: 1, held: 0, ..LIMITS });
     // The outcome dominates what a run holds: the ending's side of the max.
-    fill(Limits { charter_bytes: 16, snapshot_bytes: 16, held: 0, outcome_bytes: 4096, run_calls: 4, ..LIMITS });
+    fill(Limits { charter_bytes: 16, transcript_bytes: 16, held: 0, outcome_bytes: 4096, run_calls: 4, ..LIMITS });
 }
 
 #[test]
@@ -361,8 +364,7 @@ fn ordered_transcripts_and_delivery_feedback_fit_the_hosts_bound() {
     let mut owners = Vec::with_capacity(usize::try_from(limits.slots).expect("bounded"));
     let mut host = Measured::new(limits);
     for run in 0..u64::from(limits.slots) {
-        let mut assignment = assignment(run, &limits);
-        assignment.snapshot = None;
+        let assignment = assignment(run, &limits);
         let overhead = u64::try_from(size_of::<Box<[u8]>>()).expect("bounded");
         let turns = (0..16).map(|_| bytes(limits.turn_bytes - overhead)).collect::<Vec<_>>().into_boxed_slice();
         let next = AssignmentTyped { assignment, turns, answered: Box::new([]) };
@@ -400,7 +402,7 @@ fn ordered_transcripts_and_delivery_feedback_fit_the_hosts_bound() {
             panic!("save ordinary unfinished work")
         };
         let asked = host.step(Event::Saved { owner: saving, at: Some(Token::new(7)) });
-        let [Asked::Other, Asked::AnswerV2 { answer }] = &*asked else { panic!("snapshot-free answer: {asked:?}") };
+        let [Asked::Other, Asked::AnswerV2 { answer }] = &*asked else { panic!("host answer: {asked:?}") };
         assert_eq!((answer.turns, answer.spent), (1, 29));
         let EndingV2::Parked { work } = &answer.ending else { panic!("parked") };
         assert!(work.saved.is_some());

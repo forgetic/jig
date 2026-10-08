@@ -417,7 +417,7 @@ impl World {
         match delivery {
             root::Delivery::Restart(step) => self.restart_step(step),
             root::Delivery::TypedAnswer { name, call, .. } => self.typed_answers.push((name, call)),
-            root::Delivery::Core(core::Held::Inbound { word, .. }) => self.inbound.push(word),
+            root::Delivery::Message { word, .. } => self.inbound.push(word),
             root::Delivery::Assigned { assignment, .. } => {
                 self.assignments.push((assignment.task, assignment.attempt));
                 self.assigned = Some(assignment);
@@ -538,10 +538,8 @@ impl World {
                 | core::Held::NotesWritten { .. }
                 | core::Held::NotesDeleted { .. }
                 | core::Held::TurnBusy { .. }
-                | core::Held::Relayed { .. }
                 | core::Held::StopRun { .. }
                 | core::Held::Refuse { .. }
-                | core::Held::Assign { .. }
                 | core::Held::MakeEffect { .. },
             ) => {}
             root::Delivery::Fleet(_) => panic!("root releases its fleet continuations internally"),

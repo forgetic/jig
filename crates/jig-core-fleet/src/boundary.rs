@@ -8,15 +8,15 @@
 //!   (domain/hosts.md, sections 2 and 4). A worker's channel is named by the
 //!   protocol's token for it, `channel`, and is in contact from its
 //!   [`Event::Hello`], the first thing said on it, until its
-//!   [`Event::Lost`]. [`Request::Assign`] is a call to the worker, answered
+//!   [`Event::Lost`]. [`Request::AssignTyped`] is a call to the worker, answered
 //!   by one [`Event::Answer`] under the run's and the attempt's names. The
 //!   worker keeps the answer, and the slot it takes, until the fleet sends
 //!   [`Request::Acknowledge`], which it does once the parent has made the
 //!   answer durable, or once the answer is for an attempt fenced off; it
 //!   sends it again after every hello until then. A refusal goes once and
-//!   keeps nothing. [`Request::Inbound`], [`Request::Cancel`] and
-//!   [`Request::Relayed`] are notices to the worker hosting an attempt;
-//!   [`Event::Relay`] is a call of the run's, which the fleet passes up and
+//!   keeps nothing. [`Request::InboundTyped`], [`Request::Cancel`] and
+//!   [`Request::RelayedTyped`] are notices to the worker hosting an attempt;
+//!   [`Event::RelayTyped`] is a call of the run's, which the fleet passes up and
 //!   whose answer it passes down, at most once; [`Event::Bounced`] and
 //!   [`Event::Told`] are notices. [`Request::Refuse`] turns a worker away
 //!   at its hello, when the fleet has no room for another: its channel is
@@ -24,7 +24,7 @@
 //!   not acknowledged. Everything a worker sends names a run and an attempt,
 //!   and is dropped unless that attempt is the parent's live claim (attempts
 //!   are fenced): only its answer is still taken once it is cancelled.
-//! - The parent's own. [`Event::Start`] and [`Event::Adopt`] are calls,
+//! - The parent's own. [`Event::StartTyped`] and [`Event::Adopt`] are calls,
 //!   each ended by exactly one of [`Request::Answered`], [`Request::Lost`],
 //!   [`Request::Withdrawn`] or [`Request::Refused`]; a start is told
 //!   [`Request::Placed`] before, each time it is assigned, and an adoption
@@ -35,14 +35,14 @@
 //!   restart, the parent adopts the claims its records hold and then says
 //!   [`Event::Loaded`]; an attempt a worker lists that no claim adopts is
 //!   told as [`Request::Listed`], and waits to be adopted for the grace from
-//!   then. [`Event::Cancel`] and [`Event::Inbound`] name an attempt, and an
+//!   then. [`Event::Cancel`] and [`Event::InboundTyped`] name an attempt, and an
 //!   inbound event that does not reach a worker comes back as
-//!   [`Request::Undelivered`]. A [`Request::Relay`] is a call the parent
+//!   [`Request::UndeliveredTyped`]. A [`Request::RelayTyped`] is a call the parent
 //!   answers with exactly one [`Event::Relayed`].
 //!
 //! What the fleet passes through and never reads is the parent's. An
-//! assignment (its charter, workspace and snapshot) is named by its run and
-//! attempt, and the parent attaches it to the [`Request::Assign`] that
+//! assignment (its charter, workspace and transcript) is named by its run and
+//! attempt, and the parent attaches it to the [`Request::AssignTyped`] that
 //! names them. An inbound event, a relayed call and its answer, a run's
 //! answer, turns and facts are each named by a token the parent issues, and
 //! echoed exactly once: in the request that passes it on, or in a
@@ -155,19 +155,6 @@ pub enum Event {
         attempt: Token,
         call: TypedCall,
     },
-    /// From the parent, a call: place the attempt `attempt` of the run `run`
-    /// on a worker with a free slot, preferring one that holds `workstream`,
-    /// and assign it; then answer once it has ended. It waits for a slot, and
-    /// for its run's earlier attempts to be gone; a newer attempt of the run
-    /// withdraws it.
-    Start {
-        reply_to: ReplyTo,
-        run: Token,
-        attempt: Token,
-        workstream: u64,
-        /// Host kinds the charter permits.
-        kinds: Kinds,
-    },
     /// From the parent, a claim restored after restart. A worker may report
     /// it within the grace; an engine-hosted claim is settled at once.
     Adopt {
@@ -186,13 +173,6 @@ pub enum Event {
     Cancel {
         run: Token,
         attempt: Token,
-    },
-    /// From the parent: an inbound event for the attempt `attempt` of the run
-    /// `run`, to pass to its worker.
-    Inbound {
-        run: Token,
-        attempt: Token,
-        event: Token,
     },
     /// From the parent, the one answer to a `Relay`.
     Relayed {
@@ -274,15 +254,6 @@ pub enum Event {
         attempt: Token,
         turn: u32,
     },
-    /// From a worker, a host call of the attempt `attempt` of the run `run`,
-    /// which the worker names `call`, relayed as it is.
-    Relay {
-        channel: Token,
-        run: Token,
-        attempt: Token,
-        call: Token,
-        body: Token,
-    },
     /// From a worker: an inbound event for the attempt `attempt` of the run
     /// `run` was not passed on, for `bounce`.
     Bounced {
@@ -340,14 +311,6 @@ pub enum Request {
     DropTyped {
         call: TypedCall,
     },
-    /// To the chosen host, a call to run an attempt. Engine slots use the
-    /// reserved local token zero; workers use their channel tokens.
-    Assign {
-        channel: Token,
-        kind: HostKind,
-        run: Token,
-        attempt: Token,
-    },
     Grant {
         channel: Token,
         run: Token,
@@ -366,13 +329,6 @@ pub enum Request {
         account: u32,
         retry_after: Duration,
     },
-    /// To a worker: an inbound event for the attempt it hosts.
-    Inbound {
-        channel: Token,
-        run: Token,
-        attempt: Token,
-        event: Token,
-    },
     /// To a worker: cancel the attempt `attempt` of the run `run`. Sent
     /// again on every channel whose hello lists it unanswered, the first
     /// having maybe been lost.
@@ -380,14 +336,6 @@ pub enum Request {
         channel: Token,
         run: Token,
         attempt: Token,
-    },
-    /// To a worker: the answer to its relayed call `call`.
-    Relayed {
-        channel: Token,
-        run: Token,
-        attempt: Token,
-        call: Token,
-        answer: Token,
     },
     /// To a worker: the engine has the answer of the attempt `attempt` of the
     /// run `run` durably, or does not want it, and the worker forgets it.
@@ -479,13 +427,6 @@ pub enum Request {
         attempt: Token,
         refusal: Refusal,
     },
-    /// To the parent, a call: a host call of the run's, relayed as it is.
-    Relay {
-        reply_to: ReplyTo,
-        run: Token,
-        attempt: Token,
-        body: Token,
-    },
     /// To the parent: an inbound event its worker did not pass on, for
     /// `bounce`.
     Bounced {
@@ -493,14 +434,6 @@ pub enum Request {
         attempt: Token,
         name: Token,
         bounce: Bounce,
-    },
-    /// To the parent: the inbound event `event` reached no worker, for
-    /// `undelivered`. The parent keeps it.
-    Undelivered {
-        run: Token,
-        attempt: Token,
-        event: Token,
-        undelivered: Undelivered,
     },
     /// A typed message reached no live host; all its values remain the parent's.
     UndeliveredTyped {
@@ -566,7 +499,7 @@ pub enum Phase {
 pub enum Answer {
     /// It ended with its outcome.
     Ended,
-    /// It parked, with its snapshot if it had one.
+    /// It parked.
     Parked,
     /// It failed, for a typed failure.
     Failed,

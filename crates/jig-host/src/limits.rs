@@ -18,8 +18,6 @@ pub struct Limits {
     pub accounts: u32,
     /// The most bytes of a charter.
     pub charter_bytes: u64,
-    /// The most bytes of a snapshot: an assignment's, or a parked run's.
-    pub snapshot_bytes: u64,
     /// Opaque transcript, including the committed call tail.
     pub transcript_bytes: u64,
     /// Maximum opaque evidence bytes in one settled delivery call.
@@ -94,14 +92,13 @@ pub fn worst_case(limits: &Limits) -> Option<u64> {
     let capacity = limits.slots.checked_mul(limits.turns)?.checked_mul(2)?;
     let turns = Map::<Name, Pending>::worst_case(capacity)?
         .checked_add(u64::from(limits.slots).checked_mul(limits.turn_queue_bytes.checked_mul(2)?)?)?;
-    // Until its agent starts, a run holds its charter, its snapshot and the
+    // Until its agent starts, a run holds its charter, its conversation and the
     // inbound events that came meanwhile; from when it is told how the run
-    // finishes, the outcome, the snapshot or the detail of the failure.
+    // finishes, the outcome or the detail of the failure.
     let held = Queue::<NamedEvent>::worst_case(limits.held)?
         .checked_add(u64::from(limits.held).checked_mul(limits.event_bytes)?)?;
-    let starting =
-        limits.charter_bytes.checked_add(limits.snapshot_bytes.max(limits.transcript_bytes))?.checked_add(held)?;
-    let ending = limits.outcome_bytes.max(limits.snapshot_bytes).max(u64::from(limits.detail_bytes));
+    let starting = limits.charter_bytes.checked_add(limits.transcript_bytes)?.checked_add(held)?;
+    let ending = limits.outcome_bytes.max(u64::from(limits.detail_bytes));
     // Throughout, the opaque workspace handle, grants, and relayed calls in
     // flight (a delivery is held inline).
     let run_calls = Set::<Id<Call>>::worst_case(limits.run_calls)?;

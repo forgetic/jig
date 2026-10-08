@@ -31,7 +31,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use jig_host::{
-    AgentFailure, Ask, Delivery, DeliveryOutcome, Event, Finish, Limits, Preparation, Request, RunFailure, Workspace,
+    AgentFailure, Ask, Delivery, DeliveryOutcome, Event, FinishV2, Limits, Preparation, Request, RunFailure, Workspace,
 };
 use skein_lib::{Duration, Rng, Token};
 use skein_world::domain::Span;
@@ -302,10 +302,7 @@ impl Parent {
             Phase::Working { steps: 0 } => self.fate(agent),
             Phase::Working { steps } => self.act(agent, steps - 1),
             // Idle past its time: it parks, as a session does.
-            Phase::Waiting { .. } => {
-                let snapshot = self.snapshot();
-                self.say(agent, Finish::Parked { snapshot })
-            }
+            Phase::Waiting { .. } => self.say(agent, FinishV2::Parked),
             Phase::Stuck { fault } => {
                 let after = self.script.kill.draw(&mut self.rng);
                 let mut out = vec![host(Duration::ZERO, Event::Faulted { owner: self.owner(agent), fault })];
@@ -315,9 +312,9 @@ impl Parent {
             Phase::Stopping { word: true } => {
                 self.tally.words += 1;
                 let finish = match self.rng.below(3) {
-                    0 => Finish::Ended { outcome: bytes(self.rng.between(1, self.limits.outcome_bytes)) },
-                    1 => Finish::Parked { snapshot: None },
-                    _ => Finish::Failed { failure: RunFailure::Cancelled },
+                    0 => FinishV2::Ended { outcome: bytes(self.rng.between(1, self.limits.outcome_bytes)) },
+                    1 => FinishV2::Parked,
+                    _ => FinishV2::Failed { failure: RunFailure::Cancelled },
                 };
                 let mut out = vec![host(Duration::ZERO, crate::fixtures::finished(self.owner(agent), finish))];
                 out.extend(self.goes(agent, b"cancelled"));
@@ -403,15 +400,12 @@ impl Parent {
         match fate {
             Fate::Ended => {
                 let len = self.rng.between(1, self.limits.outcome_bytes);
-                self.say(agent, Finish::Ended { outcome: bytes(len) })
+                self.say(agent, FinishV2::Ended { outcome: bytes(len) })
             }
-            Fate::Parked => {
-                let snapshot = self.snapshot();
-                self.say(agent, Finish::Parked { snapshot })
-            }
-            Fate::Failed(failure) => self.say(agent, Finish::Failed { failure }),
+            Fate::Parked => self.say(agent, FinishV2::Parked),
+            Fate::Failed(failure) => self.say(agent, FinishV2::Failed { failure }),
             Fate::Oversized => {
-                let finish = Finish::Ended { outcome: bytes(self.limits.outcome_bytes + 1) };
+                let finish = FinishV2::Ended { outcome: bytes(self.limits.outcome_bytes + 1) };
                 self.say(agent, finish)
             }
             Fate::Exited => self.goes(agent, b"panicked at 'index out of bounds'"),
@@ -432,7 +426,7 @@ impl Parent {
     }
 
     /// The run says how it finishes, and its agent exits after a while.
-    fn say(&mut self, agent: Token, finish: Finish) -> Vec<Out> {
+    fn say(&mut self, agent: Token, finish: FinishV2) -> Vec<Out> {
         let after = self.script.exit.draw(&mut self.rng);
         vec![host(Duration::ZERO, crate::fixtures::finished(self.owner(agent), finish)), self.exit(agent, after)]
     }
@@ -592,10 +586,6 @@ impl Parent {
             }
         }
         unreachable!("a save ends once");
-    }
-
-    fn snapshot(&mut self) -> Option<Box<[u8]>> {
-        if self.rng.chance(500) { Some(bytes(self.rng.between(1, self.limits.snapshot_bytes))) } else { None }
     }
 
     fn draw_fate(&mut self) -> Fate {

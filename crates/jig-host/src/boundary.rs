@@ -415,8 +415,6 @@ pub struct Assignment {
     pub save: bool,
     /// What the agent's run is given, passed through.
     pub charter: Box<[u8]>,
-    /// The state of a parked run to resume from, passed through.
-    pub snapshot: Option<Box<[u8]>>,
     pub grants: Box<[Grant]>,
 }
 
@@ -544,17 +542,6 @@ pub enum DeliveryOutcome {
     Failed,
 }
 
-/// How the run finishes, as it says.
-#[derive(PartialEq, Eq, Hash, Debug)]
-pub enum Finish {
-    /// It ended with `outcome`, its declared outcome, passed through.
-    Ended { outcome: Box<[u8]> },
-    /// It parked, handing over `snapshot` if it has one.
-    Parked { snapshot: Option<Box<[u8]>> },
-    /// It failed, for `failure`.
-    Failed { failure: RunFailure },
-}
-
 /// Why an inbound event was not passed on.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Bounce {
@@ -588,20 +575,6 @@ pub enum Phase {
     Ending,
 }
 
-/// The answer to an `Assign`.
-#[derive(PartialEq, Eq, Hash, Debug)]
-pub enum Answer {
-    /// Refused at the entrance: nothing was done.
-    Refused(Refusal),
-    /// The run ended with `outcome`.
-    Ended { outcome: Box<[u8]>, work: Work },
-    /// The run parked, with its snapshot if it had one.
-    Parked { snapshot: Option<Box<[u8]>>, work: Work },
-    /// The run failed, for `failure`; `detail` is for operators, never for an
-    /// LLM.
-    Failed { failure: Failure, detail: Box<[u8]>, work: Work },
-}
-
 /// The root's tokens for what a run delivered and saved on its workspace.
 #[derive(PartialEq, Eq, Hash, Debug)]
 pub struct Work {
@@ -626,10 +599,7 @@ pub enum Refusal {
 pub enum Invalid {
     /// The charter holds more bytes than a run may.
     Charter,
-    /// The snapshot holds more bytes than a run may.
-    Snapshot,
     Transcript,
-    Version,
     Grants,
 }
 

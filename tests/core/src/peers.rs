@@ -231,8 +231,8 @@ impl Peers {
             root::Delivery::Core(core::Held::Cancel { channel, run, attempt }) => {
                 self.worker(channel.raw()).cancel(run.raw(), attempt.raw());
             }
-            root::Delivery::Core(core::Held::Inbound { channel, run, attempt, word }) => {
-                self.worker(channel.raw()).message(run.raw(), attempt.raw(), word.number, word.words.clone());
+            root::Delivery::Message { channel, task, attempt, word } => {
+                self.worker(channel.raw()).message(*task, *attempt, word.number, word.words.clone());
             }
             root::Delivery::Core(core::Held::CallAnswer { key, part, .. }) => {
                 if let Some((channel, number)) = self.call_hosts.remove(key) {

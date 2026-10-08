@@ -37,7 +37,7 @@
 //! grace of a lost channel, and that of an adoption.
 //!
 //! The fleet knows workers, slots, workstreams, runs, attempts and phases,
-//! and how an answer ends; charters, snapshots, outcomes, inbound events,
+//! and how an answer ends; charters, transcripts, outcomes, inbound events,
 //! relayed calls and facts are the parent's, named by tokens the fleet passes
 //! on or hands back. A run and an attempt are tokens to the fleet, as the host
 //! protocol packs them.

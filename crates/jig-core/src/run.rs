@@ -273,7 +273,7 @@ pub struct HistoricalResult {
 #[derive(Debug)]
 pub struct PendingRelay {
     pub previous: Option<u64>,
-    pub word: tasks::Word,
+    pub message: u64,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

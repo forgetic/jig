@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use skein_lib::{Env, List, Queue, ReplyTo, Time, Token, Wall};
 
 use crate::{
-    Assignment, Bounce, Delivery, DeliveryOutcome, Domain, Event, Failure, Finish, Invalid, Limits, Preparation,
+    Assignment, Bounce, Delivery, DeliveryOutcome, Domain, Event, Failure, FinishV2, Invalid, Limits, Preparation,
     Reason, Refusal, Reply, Request, Told, Work, Workspace, max_out, step,
 };
 
@@ -12,7 +12,6 @@ const LIMITS: Limits = Limits {
     slots: 2,
     accounts: 2,
     charter_bytes: 64,
-    snapshot_bytes: 32,
     transcript_bytes: 64,
     delivery_evidence_bytes: 64,
     turn_bytes: 64,
@@ -83,7 +82,6 @@ fn assignment(run: u64) -> Assignment {
         workspace: Some(Workspace { workstream: run, items: Token::new(run.checked_add(100).expect("small run")) }),
         save: true,
         charter: Box::from(&b"charter"[..]),
-        snapshot: None,
         grants: Box::new([]),
     }
 }
@@ -117,7 +115,7 @@ fn an_itemless_run_starts_and_ends_without_a_workspace() {
         [Request::ReplyTyped { agent, call: Box::from(call.raw().to_be_bytes()), reply: Reply::Unavailable }]
     );
     assert_eq!(
-        &*h.step(fixtures::finished(owner, Finish::Ended { outcome: Box::from(&b"done"[..]) })),
+        &*h.step(fixtures::finished(owner, FinishV2::Ended { outcome: Box::from(&b"done"[..]) })),
         [Request::Stop { agent }]
     );
     let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
@@ -242,7 +240,7 @@ fn a_delivery_is_answered_after_the_workspace_reports_what_it_left() {
         &*requests,
         [Request::ReplyTyped { agent, call: Box::from(call.raw().to_be_bytes()), reply: Reply::Delivered(delivered) }]
     );
-    let requests = h.step(fixtures::finished(owner, Finish::Ended { outcome: Box::from(&b"done"[..]) }));
+    let requests = h.step(fixtures::finished(owner, FinishV2::Ended { outcome: Box::from(&b"done"[..]) }));
     assert_eq!(&*requests, [Request::Stop { agent }]);
     let requests = h.step(Event::Gone { owner, detail: Box::new([]) });
     let [
@@ -266,7 +264,7 @@ fn stopping_waits_for_a_delivery_even_after_the_agent_is_gone() {
     };
     let delivery = *delivery;
     assert_eq!(
-        &*h.step(fixtures::finished(owner, Finish::Ended { outcome: Box::from(&b"done"[..]) })),
+        &*h.step(fixtures::finished(owner, FinishV2::Ended { outcome: Box::from(&b"done"[..]) })),
         [Request::Stop { agent }]
     );
     assert!(h.step(Event::Gone { owner, detail: Box::new([]) }).is_empty());
@@ -386,15 +384,14 @@ fn cancellation_returns_messages_held_before_the_agent_starts() {
 
 mod fixtures {
     // Typed host records used by the lifecycle scripts. Callback tokens are encoded
-    // as opaque names; the conversation replaces the scripts' former snapshots.
-    use crate::{Ask, Assignment, AssignmentTyped, Event, Finish, FinishV2};
+    // as opaque names; names are opaque bytes.
+    use crate::{Ask, Assignment, AssignmentTyped, Event, FinishV2};
     use skein_lib::{Reader, ReplyTo, Token};
-    pub fn assign(reply_to: ReplyTo, mut assignment: Assignment) -> Event {
-        let turns: Box<[Box<[u8]>]> = match assignment.snapshot.take() {
-            Some(body) => Box::from([body]),
-            None => Box::new([]),
-        };
-        Event::AssignTyped { reply_to, assignment: AssignmentTyped { assignment, turns, answered: Box::new([]) } }
+    pub fn assign(reply_to: ReplyTo, assignment: Assignment) -> Event {
+        Event::AssignTyped {
+            reply_to,
+            assignment: AssignmentTyped { assignment, turns: Box::new([]), answered: Box::new([]) },
+        }
     }
     pub fn inbound(run: Token, attempt: Token, name: Token, words: Box<[u8]>) -> Event {
         Event::InboundTyped { run, attempt, name, sender: Box::new([]), words }
@@ -403,12 +400,7 @@ mod fixtures {
         Event::CalledTyped { owner, call: Box::from(call.raw().to_be_bytes()), ask }
     }
 
-    pub fn finished(owner: Token, finish: Finish) -> Event {
-        let finish = match finish {
-            Finish::Ended { outcome } => FinishV2::Ended { outcome },
-            Finish::Parked { .. } => FinishV2::Parked,
-            Finish::Failed { failure } => FinishV2::Failed { failure },
-        };
+    pub fn finished(owner: Token, finish: FinishV2) -> Event {
         Event::FinishedV2 { owner, turns: 0, spent: 0, finish }
     }
     pub fn deliver(title: Box<[u8]>) -> Ask {

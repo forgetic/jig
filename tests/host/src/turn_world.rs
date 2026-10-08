@@ -157,7 +157,6 @@ impl World {
             workspace,
             save: true,
             charter: Box::from(&b"charter"[..]),
-            snapshot: None,
             grants: Box::new([]),
         };
         self.send(Event::AssignTyped {
@@ -180,7 +179,6 @@ impl World {
             workspace: None,
             save: false,
             charter: Box::from(&b"charter"[..]),
-            snapshot: None,
             grants: Box::new([]),
         };
         self.send(Event::AssignTyped {

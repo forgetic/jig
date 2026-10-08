@@ -107,6 +107,11 @@ What every application runs, and what makes jig's promises its own.
     - a standing task running across many periods;
     - many sessions and sub-agents of one run near the end of its
       budget;
+
+    Each runs with the application's own kinds. One the application has
+    no kind for (a pool, where its connectors take no pooled holds) is
+    reported as not applicable, never faked with a different mechanism;
+    jig's own worlds still cover it;
   - the referee (section 6).
 - **What the application gives,** through the harness's trait:
   - its engine domain, built from configuration;

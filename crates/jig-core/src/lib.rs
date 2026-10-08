@@ -11,6 +11,7 @@
 extern crate alloc;
 
 mod amendments;
+pub mod connector;
 pub use amendments::TaskAmendDenied;
 mod escalation;
 mod goals;

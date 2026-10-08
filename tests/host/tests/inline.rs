@@ -1,4 +1,4 @@
-//! The hub on an engine slot, with a real inline Smith domain and fake LLM.
+//! The hub on an engine slot, with a inline Smith domain and fake LLM.
 
 use jig_charter::{Budget, Prices};
 use jig_host::Ending;

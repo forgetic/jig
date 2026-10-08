@@ -136,7 +136,7 @@ fn sections_that_do_not_fit_are_cut_in_their_kinds_order_and_say_how_much() {
         33,
     );
     assert!(referee::within_budget(&asked, 33));
-    let [GatherRequest::Complete { order, .. }] = asked.as_slice() else { panic!("completed typed brief: {asked:?}") };
+    let [GatherRequest::Complete { order, .. }] = asked.as_slice() else { panic!("completed brief: {asked:?}") };
     let [
         GatherPlaced::CoreMissing { kind: Core::TranscriptTail, why: GatherMissing::Budget },
         GatherPlaced::Core { kind: Core::Task, text: task },

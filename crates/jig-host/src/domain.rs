@@ -102,7 +102,7 @@ impl Domain {
         hosted::owns_relay(self, run, attempt, call)
     }
 
-    /// Whether a typed engine answer names this pending delivery and its opaque call name.
+    /// Whether an engine answer names this pending delivery and its opaque call name.
     #[must_use]
     pub fn is_relayed_for(&self, run: Token, attempt: Token, delivery: Token, call: &[u8]) -> bool {
         if !self.owns_relay(run, attempt, delivery) {

@@ -1,4 +1,4 @@
-//! Version-two worker host peers: engine commits, a lossy link, and an
+//!  Worker host peers: engine commits, a lossy link, and an
 //! agent and workspace that settle through the host's requests.
 
 use jig_host::{AnsweredCall, DeliveryOutcome, Ending, Failure, Reason, SettledAnswer};

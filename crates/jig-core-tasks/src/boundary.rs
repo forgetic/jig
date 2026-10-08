@@ -106,7 +106,7 @@ pub enum MessageKind {
     Result(ResultKind),
 }
 
-/// Typed terminal shape carried with a delegate's bounded message words.
+/// Terminal shape carried with a delegate's bounded message words.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum ResultKind {
     Report,
@@ -124,7 +124,7 @@ pub struct Word {
     pub number: u64,
     /// Root-verified sender, checked against requester or live delegate.
     pub from: Party,
-    /// Typed reason this message entered the inbox.
+    /// Reason this message entered the inbox.
     pub kind: MessageKind,
     /// Whole bounded words, never cut while in the inbox.
     pub words: Box<[u8]>,
@@ -151,7 +151,7 @@ pub struct QuestionCredit {
     pub answerer: u64,
 }
 
-/// Root-verified requester/creator identity; requester topology and actual financial source are
+/// Root-verified requester/creator identity; requester topology and financial source are
 /// separate values. (domain/tasks.md, sections 2–3).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Party {
@@ -234,25 +234,25 @@ pub enum ProcedureDecision {
     Wait,
 }
 
-/// Bounded typed semantic parameter carrier; tasks does not interpret names or resources, and the
+/// Bounded semantic parameter carrier; tasks does not interpret names or resources, and the
 /// current root chat constructor supplies no parameters. (domain/tasks.md, section 3).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Parameter {
-    /// Typed numeric specification carrier; current chat construction supplies no parameters.
+    /// Numeric specification carrier; current chat construction supplies no parameters.
     Number {
         /** Opaque semantic parameter name, carried without interpretation by tasks. */
         name: u32,
         /** Numeric parameter value, carried without interpretation here. */
         value: u64,
     },
-    /// Typed bounded byte specification carrier; current chat construction supplies no parameters.
+    /// Bounded byte specification carrier; current chat construction supplies no parameters.
     Bytes {
         /** Opaque semantic parameter name, carried without interpretation by tasks. */
         name: u32,
         /** Owned parameter bytes; these and `Spec::words` share `Limits::spec_bytes`. */
         value: Box<[u8]>,
     },
-    /// Typed connector/resource carrier; no connector lookup or effect is performed by tasks.
+    /// Connector/resource carrier; no connector lookup or effect is performed by tasks.
     Resource {
         /** Opaque semantic parameter name, carried without interpretation by tasks. */
         name: u32,
@@ -270,10 +270,10 @@ pub struct Spec {
     /// Owned specification words; combined with byte-valued parameters, bounded by
     /// `Limits::spec_bytes`.
     pub words: Box<[u8]>,
-    /// Typed parameters bounded by `Limits::parameters`; tasks does not interpret their names, and
+    /// Parameters bounded by `Limits::parameters`; tasks does not interpret their names, and
     /// current root chat construction supplies an empty slice.
     pub parameters: Box<[Parameter]>,
-    /// Typed historical input identities, bounded by `Limits::inputs` for shape measurement;
+    /// Historical input identities, bounded by `Limits::inputs` for shape measurement;
     /// current `Make` and live restore require this slice empty.
     pub inputs: Box<[u64]>,
 }
@@ -364,7 +364,7 @@ pub enum InvalidResult {
     Followups,
 }
 
-/// Durable final outcome, or a pending closing outcome; requester notification follows actual
+/// Durable final outcome, or a pending closing outcome; requester notification follows
 /// settlement. (domain/tasks.md, sections 5.1 and 5.6).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Ending {
@@ -508,7 +508,7 @@ pub enum Active {
     Idle,
     /// An activation is requested and root owns preparation.
     Due,
-    /// Root is gathering the actual brief/resources; a claim or preparation failure follows.
+    /// Root is gathering the brief/resources; a claim or preparation failure follows.
     Preparing,
     /// Root committed the fenced attempt before assignment/start.
     Claimed {
@@ -536,7 +536,7 @@ pub enum Stage {
         /** `Live` attempt whose terminal must be heard before closing advances. */
         attempt: u64,
     },
-    /// Wait for all live delegates and actual incoming financial allocations to settle.
+    /// Wait for all live delegates and incoming financial allocations to settle.
     Delegates,
     /// `Close` output is owed settlement of all prior effects from root.
     Effects,
@@ -662,7 +662,7 @@ pub struct Kind {
 }
 
 /// Root-authorized member of an atomic creation batch; tasks preflights the whole graph, payloads,
-/// capacity and actual finite reservations before mutation. (domain/tasks.md, sections 3–4).
+/// capacity and finite reservations before mutation. (domain/tasks.md, sections 3–4).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct New {
     /// Fresh never-reused task number supplied by the root; live or within-batch duplicates refuse.
@@ -679,7 +679,7 @@ pub struct New {
     pub authority: Authority,
     /// Fresh allotment: budget equals authority spend, with all spend/reservation counters zero.
     pub numbers: Numbers,
-    /// Actual finite source; task sources must be live ancestors of the task creator and external
+    /// Finite source; task sources must be live ancestors of the task creator and external
     /// sources must belong to this project.
     pub funder: Funder,
     /// Distinct immutable dependencies, at most `Limits::dependencies`: members of this batch or
@@ -720,7 +720,7 @@ pub struct TaskRecord {
     /// Stable never-reused deployment task identity.
     pub number: u64,
     pub project: u32,
-    /// Original current requester topology, distinct from the actual financial funder.
+    /// Original current requester topology, distinct from the financial funder.
     pub requester: Party,
     /// Committed cumulative expense of the current attempt; a `new` `Claim` resets only this
     /// attempt baseline, not total direct spend.
@@ -745,7 +745,7 @@ pub struct TaskRecord {
     pub authority: Authority,
     /// Authentic current-allotment accounting, updated atomically with lifecycle admission.
     pub numbers: Numbers,
-    /// Actual source of the current allotment, kept separate from requester ancestry.
+    /// Source of the current allotment, kept separate from requester ancestry.
     pub funder: Funder,
     /// Immutable admitted dependency identities, bounded by `Limits::dependencies`.
     pub dependencies: Box<[u64]>,
@@ -798,7 +798,7 @@ pub struct TaskRecord {
     pub phase: Phase,
 }
 
-/// Typed logical store `key` for task state or financial history, with no byte encoding performed
+/// Logical store `key` for task state or financial history, with no byte encoding performed
 /// in this child. (domain/tasks.md, section 2).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Key {
@@ -813,7 +813,7 @@ pub enum Key {
     /// Working-set pointer retained only while a live task names the ending.
     Stub(u64),
     /// Logical finite period/pool row.
-    Ledger(/** Actual period/pool source identity. */ Funder),
+    Ledger(/** Period/pool source identity. */ Funder),
     /// One occupied writer slot for a held resource.
     Writer(u64),
     /// Last known capacity for a connector pool.
@@ -833,7 +833,7 @@ pub enum Stored {
         /** Owned boxed bounded live task row; startup validates its shape and later validates graph/financial links. */
          Box<TaskRecord>,
     ),
-    /// Historical final task state; root loads it for actual authenticated result reads, never as
+    /// Historical final task state; root loads it for authenticated result reads, never as
     /// live startup state.
     Ended(
         /** Owned boxed historical ending retained in root storage; never a live restore input or a replayed result delivery. */
@@ -923,14 +923,14 @@ pub enum Refusal {
     /// Valid finishing declines to cancel still-live delegates; activation and charge remain
     /// unadmitted.
     LiveDelegates,
-    /// `Live` startup row shape, graph or actual financial links are invalid; historical rows
+    /// `Live` startup row shape, graph or financial links are invalid; historical rows
     /// cannot be restored live.
     Restore,
     /// A turn's read fence was not an offered unread message.
     Read,
     /// `Turn` is not the next contiguous current-attempt turn, or cumulative expense decreases.
     Turn,
-    /// Authentic finite source/reservation or eventual actual-chain arithmetic cannot admit the
+    /// Authentic finite source/reservation or eventual funding-chain arithmetic cannot admit the
     /// whole decision.
     Funding,
     /// A task names an unknown, malformed, or mismatched resource kind.
@@ -1072,7 +1072,7 @@ pub enum Event {
     /// Root verified a newly named historical input against its ended store row.
     RememberStub { stub: Stub },
     /// Root `SetRoles` preflight: inspect only current person-requested `Waiting`
-    /// contexts without mutation; one typed terminal even before readiness.
+    /// contexts without mutation; one terminal even before readiness.
     InspectEscalations {
         /// Stage-local root right consumed once by `EscalationsInspected`
         reply_to: ReplyTo,
@@ -1087,7 +1087,7 @@ pub enum Event {
         /// Same preflight project; rejected/currently unheld tasks stay inert
         project: u32,
     },
-    /// Root queries one bounded held view for actual named reads/decisions;
+    /// Root queries one bounded held view for named reads/decisions;
     /// returns one `EscalationInspected`, including absent.
     InspectEscalation {
         /// Root-owned synchronous correlation, echoed once.
@@ -1100,7 +1100,7 @@ pub enum Event {
     RoutedEscalation {
         /// Held person chat.
         task: u64,
-        /// Exact positive semantic revision.
+        /// Positive semantic revision.
         revision: u64,
         /// Root-verified eligible requester or final policy role.
         holder: crate::EscalationHolder,
@@ -1171,12 +1171,12 @@ pub enum Event {
         /// from this attempt's reserved run allowance.
         cumulative: u64,
     },
-    /// Create an authorized whole batch and actual reservations atomically, producing `Made` or
+    /// Create an authorized whole batch and reservations atomically, producing `Made` or
     /// `Refused` plus bounded persistence/lifecycle outputs.
     Make {
         /// Root-issued destination owed one `Made` or `Refused` terminal for the whole batch.
         reply_to: ReplyTo,
-        /// Root-verified creator/requester of every `new` task; task creator and actual `funding`
+        /// Root-verified creator/requester of every `new` task; task creator and `funding`
         /// ancestry are checked separately.
         creator: Party,
         /// Owned nonempty batch bounded by `Limits::batch`; all graph, payload and reservation
@@ -1191,7 +1191,7 @@ pub enum Event {
         proposer: u64,
         /// Exact still-pending result proposal being accepted in this decision.
         proposal: u64,
-        /// Whole authorized batch with its final actual funding source.
+        /// Whole authorized batch with its final funding source.
         batch: Box<[New]>,
     },
     /// `Due`-to-`Preparing` admission, producing `Done` or `Refused`.
@@ -1291,7 +1291,7 @@ pub enum Event {
     Restored,
 }
 
-/// Tasks-to-root typed persistence, lifecycle and terminal reply outputs; root groups resulting
+/// Tasks-to-root persistence, lifecycle and terminal reply outputs; root groups resulting
 /// saves/erases with effects and delays outward replies until durability. (domain/tasks.md, section 5).
 #[derive(PartialEq, Eq, Debug)]
 pub enum Request {
@@ -1345,7 +1345,7 @@ pub enum Request {
     /// Tasks asks root to resolve its new held person chat in this atomic
     /// decision; no outward notice precedes commitment.
     EscalationNeeded {
-        /// Temporary bounded held context; root drops it after routing
+        /// Bounded held context; root drops it after routing
         context: Box<crate::EscalationContext>,
     },
     /// Terminal for one `InspectEscalation`; query owns no durable task copy
@@ -1356,7 +1356,7 @@ pub enum Request {
         context: Option<Box<crate::EscalationContext>>,
     },
     /// One semantic decision terminal; root commits accepted child writes,
-    /// its typed history and people's keyed answer together.
+    /// its history and people's keyed answer together.
     EscalationDecided {
         /// Echoed root correlation, consumed once.
         reply_to: ReplyTo,
@@ -1409,10 +1409,10 @@ pub enum Request {
         /** Current charged-turn route emits `Accepted::New`; root owns replay acknowledgement without re-entering this route. */
         accepted: Accepted,
     },
-    /// Actual bounded semantic preparation request to root, not a rendered brief or a raw mutable
+    /// Bounded semantic preparation request to root, not a rendered brief or a raw mutable
     /// task peek.
     Activate {
-        /** Owned bounded semantic preparation snapshot; root selects the actual route and drops the temporary snapshot on claim/failure. */
+        /** Owned bounded semantic preparation snapshot; root selects the route and drops the snapshot on claim/failure. */
         context: Box<RunContext>,
     },
     /// Ask root/fleet to stop one exact live attempt; its lifecycle terminal is still owed.
@@ -1422,9 +1422,9 @@ pub enum Request {
         /** `Exact` live attempt to stop; its terminal remains owed before closing can advance. */
         attempt: u64,
     },
-    /// Ask root/fleet to reconcile a restored actual claim and highest committed turn.
+    /// Ask root/fleet to reconcile a restored claim and highest committed turn.
     Adopt {
-        /** `Restored` live task whose actual claim the root must reconcile with fleet. */
+        /** `Restored` live task whose claim the root must reconcile with fleet. */
         task: u64,
         /** `Restored` committed attempt identity to adopt; no `new` attempt is minted here. */
         attempt: u64,
@@ -1447,19 +1447,19 @@ pub enum Request {
     Ended {
         /** Task removed from the live arena and saved as a historical ended row. */
         task: u64,
-        /** Actual requester identifying this notification; current root consumes person result notices, and tasks retains no delivery credit or inbox. */
+        /** Requester identifying this notification; current root consumes person result notices, and tasks retains no delivery credit or inbox. */
         requester: Party,
-        /** Bounded final result/reason; emitted with ended/actual-funder writes in one root decision. */
+        /** Bounded final result/reason; emitted with ended/funder writes in one root decision. */
         ending: Ending,
     },
-    /// Typed owned persistence output for the parent's current atomic decision.
+    /// Owned persistence output for the parent's current atomic decision.
     Save {
-        /** Owned typed row joining the root's atomic decision; not an `IO` submission or a durable acknowledgement by itself. */
+        /** Owned row joining the root's atomic decision; not an `IO` submission or a durable acknowledgement by itself. */
         record: Stored,
     },
-    /// Typed logical-row removal for the parent's current atomic decision.
+    /// Logical-row removal for the parent's current atomic decision.
     Erase {
-        /** Typed row removal joining the same atomic decision as related saves and outputs. */
+        /** Row removal joining the same atomic decision as related saves and outputs. */
         key: Key,
     },
     /// Terminal startup failure; this instance cannot become ready through more
@@ -1478,7 +1478,7 @@ pub enum Cause {
     /// financial arithmetic before admitting the `new` delta together.
     Priced {
         /// Authentic whole attempt expense, monotonic relative to `run_spent` and preflighted
-        /// against eventual actual-chain representability.
+        /// against eventual funding-chain representability.
         cumulative: u64,
     },
     /// Loss, fleet refusal or invalid-answer normalization supplied by root; performs lifecycle
@@ -1486,7 +1486,7 @@ pub enum Cause {
     Unpriced,
 }
 
-/// Temporary owned semantic preparation snapshot emitted to root, bounded by task limits; not a
+/// Owned semantic preparation snapshot emitted to root, bounded by task limits; not a
 /// second mutable `TaskRecord` or `funding` ledger. (domain/tasks.md, section 3).
 /// (domain/engine.md, sections 7.1 and 9).
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -1511,13 +1511,13 @@ pub struct RunContext {
     /// Contract reason given to this next run after an invalid terminal.
     pub invalid_result: Option<InvalidResult>,
     pub project: u32,
-    /// Implemented task executor, currently an agent charter selected by root.
+    /// Task executor selected by the root.
     pub executor: Executor,
     /// Bounded owned semantic description; not rendered brief bytes.
     pub spec: Spec,
     /// Bounded result contract root includes in the brief.
     pub contract: Contract,
-    /// Actual requester included in preparation semantics.
+    /// Requester included in preparation semantics.
     pub requester: Party,
     /// `Exact` carried permission value root translates to authority's independent vocabulary.
     pub authority: Authority,
@@ -1533,7 +1533,7 @@ pub struct DelegateState {
     pub phase: Phase,
 }
 
-/// Temporary authority and accounting view for a run's delegation call.
+/// Authority and accounting view for a run's delegation call.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct DelegationContext {
     pub project: u32,

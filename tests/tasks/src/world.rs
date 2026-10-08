@@ -818,7 +818,7 @@ impl World {
         self.terminal_cause(task, end, Cause::Unpriced)
     }
 
-    /// Submit a real priced or recovery terminal (domain/tasks.md, 5).
+    /// Submit a priced or recovery terminal (domain/tasks.md, 5).
     pub fn terminal_cause(&mut self, task: u64, end: End, cause: Cause) -> Reply {
         let attempt = self.runs[&task];
         let reply_to = self.to();

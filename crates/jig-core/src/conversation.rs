@@ -1,11 +1,11 @@
-//! Typed host handoffs and opaque settled answers (domain/engine.md, 7.2–7.3;
+//! Host handoffs and opaque settled answers (domain/engine.md, 7.2–7.3;
 //! domain/hosts.md, 2). Protocol decoding and rendering remain with the root.
 
 use crate::{CallKey, CallRecord, Core, CoreRecord, Held, Limits, Now, Record, Request, Requests, Write};
 use alloc::boxed::Box;
 use skein_lib::{Queue, ReplyTo};
 
-/// The original host call and the exact answer given to its agent.
+/// The original host call and the answer given to its agent.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct SettledCall {
     /// Core-issued order of this settled answer; the protocol supplies zero.

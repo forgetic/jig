@@ -1,4 +1,4 @@
-//! A full typed inventory fits the child's declared worst case.
+//! A full inventory fits the child's declared worst case.
 
 use jig_brief_world::LIMITS;
 use jig_core_brief::{Core, GatherDomain, GatherEvent, Planned, gather_max_out, gather_step, gather_worst_case};
@@ -39,6 +39,6 @@ fn full_sections_fit_the_declared_worst_case() {
     );
     let measured = meter.end();
     while out.pop().is_some() {}
-    meter.check(measured, bound, &"full typed sections");
+    meter.check(measured, bound, &"full sections");
     assert!(meter.held() <= bound);
 }

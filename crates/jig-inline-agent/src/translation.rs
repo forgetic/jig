@@ -1,6 +1,6 @@
 //! Pure translations between Smith's composed domain and its host-facing
 //! boundary (domain/hosts.md, sections 5.2 and 8). Only charter and saved turns
-//! cross as bytes; callback names and settled results remain typed.
+//! cross as bytes; callback names and settled results retain their boundary types.
 
 use alloc::boxed::Box;
 use skein_lib::{List, ReplyTo, Token};

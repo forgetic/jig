@@ -1,5 +1,5 @@
 //! The brief's section inventory and byte plan (domain/engine.md, section 9).
-//! Core sections arrive as typed text. A connector's section is only its
+//! Core sections arrive as text. A connector's section is only its
 //! number, kind, token and reported size; its bytes stay with the connector.
 //! The plan gives required sections first claim on the budget, then visits
 //! optional sections by priority. A connector cuts its own content to the

@@ -1,4 +1,4 @@
-//! A version-two peer world for the worker host (domain/hosts.md, sections
+//! A peer world for the worker host (domain/hosts.md, sections
 //! 6.4-6.7 and 11). The parent plays a workspace and agent; the engine's
 //! fake store commits turns before acknowledging them. The link may lose
 //! contact and replays the host's retained turns before its held answer.
@@ -188,13 +188,13 @@ impl World {
         assert!(self.owner.is_some() && self.agent_live && self.reading);
     }
 
-    /// The typed activation and committed state the scripted agent received.
+    /// The activation and committed state the scripted agent received.
     #[must_use]
     pub fn started_state(&self) -> Option<&StartedState> {
         self.started_state.as_ref()
     }
 
-    /// The typed call the engine saw.
+    /// The call the engine saw.
     #[must_use]
     pub fn relayed_call(&self) -> Option<&RelayedCall> {
         self.relayed_call.as_ref()
@@ -206,7 +206,7 @@ impl World {
         self.answered_call.as_deref()
     }
 
-    /// The typed message the agent saw.
+    /// The message the agent saw.
     #[must_use]
     pub fn received_message(&self) -> Option<&ReceivedMessage> {
         self.received_message.as_ref()

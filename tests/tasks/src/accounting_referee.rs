@@ -232,7 +232,7 @@ impl Accounting {
                 && (task.numbers.spent != old.numbers.spent + self.delta(old.number)
                     || task.numbers.spent_below != old.numbers.spent_below + posted)
             {
-                return Err("task expense or actual descendant posting differs");
+                return Err("task expense or descendant posting differs");
             }
             if task.attempt == old.attempt && task.run_spent != old.run_spent + self.delta(old.number) {
                 return Err("cumulative attempt expense differs");
@@ -258,7 +258,7 @@ impl Accounting {
                         })
                         .sum();
                     if reserved.checked_add(task.run_reserved) != Some(task.numbers.reserved) {
-                        return Err("task reservation differs from actual funding links");
+                        return Err("task reservation differs from funding links");
                     }
                     if task
                         .numbers
@@ -316,7 +316,7 @@ impl Accounting {
                         || ledger.numbers.spent != 0
                         || ledger.numbers.spent_below != before_posted + posted + retired + transferred
                     {
-                        return Err("external reservation or actual settlement posting differs");
+                        return Err("external reservation or settlement posting differs");
                     }
                     if let Some(Stored::Ledger(old)) = self.before.get(key)
                         && (ledger.funder != old.funder

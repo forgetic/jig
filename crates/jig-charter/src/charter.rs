@@ -78,7 +78,7 @@ fn outcome(contract: boundary::Contract) -> Option<run::outcome::OutcomeSpec> {
     })
 }
 
-/// Move the core's bounded charter and ordered brief into Smith's typed start.
+/// Move the core's bounded charter and ordered brief into Smith's start.
 /// `resumed` is true only when a validated transcript accompanies the start.
 #[must_use]
 pub fn charter(charter: Charter, brief: Box<[Section]>, resumed: bool) -> Option<run::Charter> {

@@ -24,7 +24,7 @@ pub enum Event {
         call: Box<[u8]>,
         ask: Ask,
     },
-    /// The agent withdrew its typed call after its deadline.
+    /// The agent withdrew its call after its deadline.
     Withdrawn {
         owner: Token,
         call: Box<[u8]>,
@@ -50,7 +50,7 @@ pub enum Event {
         attempt: Token,
         turn: u32,
     },
-    /// Version-two last word, with cumulative accounting.
+    /// Last word, with cumulative accounting.
     Finished {
         owner: Token,
         turns: u32,
@@ -306,7 +306,7 @@ pub enum ToAgent {
 /// the application agent's own vocabulary into these events.
 #[derive(PartialEq, Eq, Debug)]
 pub enum FromAgent {
-    /// A named host or delivery call with typed arguments.
+    /// A named host or delivery call with arguments.
     Called {
         owner: Token,
         call: Box<[u8]>,

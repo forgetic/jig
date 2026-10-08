@@ -1,4 +1,4 @@
-//! Typed host records used by the lifecycle scripts. Callback tokens are encoded
+//! Host records used by the lifecycle scripts. Callback tokens are encoded
 //! as opaque names; names are opaque bytes.
 use jig_host::{Ask, Assignment, Event, Finish, RunAssignment};
 use skein_lib::{Duration, Reader, ReplyTo, Token};

@@ -749,7 +749,7 @@ impl Observer {
                 // The named settled body must already occur in a durable call.
                 assert!(
                     self.settled_calls.contains(&(*task, *attempt, settled.serial)),
-                    "typed answer preceded its durable named-call record"
+                    "answer preceded its durable named-call record"
                 );
             }
             root::Delivery::Core(core::Held::PeopleReply { to, sign_in, reply }) => match reply {

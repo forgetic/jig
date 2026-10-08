@@ -133,9 +133,9 @@ pub struct Budget {
 /// sections 3–7).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Numbers {
-    /// Full amount of this allotment reserved against its actual funder.
+    /// Full amount of this allotment reserved against its funder.
     pub budget: u64,
-    /// Actual direct expense posted here, within this allotment's budget.
+    /// Direct expense posted here, within this allotment's budget.
     pub spent: u64,
     /// Expense of funded allotments already settled here, posted once when each task ends.
     pub spent_below: u64,
@@ -144,7 +144,7 @@ pub struct Numbers {
     pub reserved: u64,
 }
 
-/// Actual financial source, distinct from requester topology; original period identities survive
+/// Financial source, distinct from requester topology; original period identities survive
 /// later period openings. (domain/tasks.md, sections 2–3). (domain/authority.md, sections
 /// 3–7).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

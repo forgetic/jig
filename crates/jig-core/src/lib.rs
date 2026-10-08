@@ -3,7 +3,7 @@
 //! application's root to route the store, hosts, parties and connectors.
 //! See `domain/engine.md`, sections 3 to 5.
 //!
-//! The core never holds a connector's typed value or a store encoding.
+//! The core never holds a connector's value or a store encoding.
 
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
@@ -236,7 +236,7 @@ pub struct Core {
     /// Durable live named-call decisions, with connector payloads retained by
     /// their owner and represented here only by connector number.
     pub call_parts: Map<CallKey, CallPart>,
-    /// Exact settled host answers and opaque delivery evidence under the same retained names.
+    /// Settled host answers and opaque delivery evidence under the same retained names.
     pub call_settled: Map<CallKey, SettledCall>,
     /// Calls routed among the core children.
     pub routing_calls: Map<Token, RoutedCall>,

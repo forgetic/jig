@@ -474,7 +474,7 @@ fn contract_text(contract: &tasks::Contract) -> Box<[u8]> {
     writer.finish()
 }
 
-/// Render an agent task's spec and typed contract from its activation snapshot.
+/// Render an agent task's spec and contract from its activation snapshot.
 fn task_read(record: &tasks::RunContext, parts: u32, bytes: u32) -> BriefRead {
     if parts == 0 {
         return BriefRead::Failed;

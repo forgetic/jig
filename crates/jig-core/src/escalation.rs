@@ -61,7 +61,7 @@ fn supported(core: &Core, task: &tasks::TaskRecord) -> bool {
     }
 }
 
-/// Pure recipient selection for actual startup/live routing and candidate-roster
+/// Pure recipient selection for startup/live routing and candidate-roster
 /// preflight; preserves a final-role holder.
 fn recipient(
     core: &Core,

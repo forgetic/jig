@@ -981,7 +981,7 @@ fn fitting_laws_needs_and_holder_depth_use_separate_current_inputs() {
     assert!(
         needed.delegation.kinds.contains(&crate::Executor::Charter(1))
             && needed.delegation.kinds.contains(&crate::Executor::Procedure(2)),
-        "actual executors are among needs"
+        "executors are among needs"
     );
     let holder = Holder::Task { project: 1, authority: creator, numbers: numbers(100), tasks_left: 10 };
     assert!(covers(&domain, &needed, &holder, 2), "depth includes action depth plus verified distance");
@@ -992,7 +992,7 @@ fn fitting_laws_needs_and_holder_depth_use_separate_current_inputs() {
     assert!(!covers(&domain, &needed, &holder, 0), "task capacity cannot come from the four funding numbers");
     let holder =
         Holder::Person { project: 1, role: 7, proposal: ProposalKind::Batch, pool: numbers(100), tasks_left: 10 };
-    assert!(covers(&domain, &needed, &holder, 0), "role coverage checks actual funding and action needs");
+    assert!(covers(&domain, &needed, &holder, 0), "role coverage checks funding and action needs");
     let holder =
         Holder::Person { project: 1, role: 99, proposal: ProposalKind::Batch, pool: numbers(100), tasks_left: 10 };
     assert!(!covers(&domain, &needed, &holder, 0), "an absent role cannot cover a proposal");

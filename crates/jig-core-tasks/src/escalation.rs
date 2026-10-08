@@ -215,7 +215,7 @@ pub enum EscalationDecision {
 }
 
 /// Semantic terminal for one root decision call. Root commits accepted state
-/// and its own typed archive with people's keyed answer.
+/// and its own archive with people's keyed answer.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum EscalationOutcome {
     /// Hold lifted, with normal activation consequences.
@@ -235,7 +235,7 @@ pub enum EscalationOutcome {
     Limit,
 }
 
-/// Temporary task-to-root held view; not a second task/funding ledger. Root
+/// Task-to-root held view; not a second task/funding ledger. Root
 /// authenticates reads and decisions against this exact context.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EscalationContext {

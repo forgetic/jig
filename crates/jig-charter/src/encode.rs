@@ -1,4 +1,4 @@
-//! Write the Smith charter codec from the shared typed charter
+//! Write the Smith charter codec from the shared charter
 //! (domain/hosts.md, section 8; smith's `protocol/charter.md`, section 5).
 //! The configured endpoint table supplies names; the charter keeps numbers.
 
@@ -162,7 +162,7 @@ fn tools(source: run::charter::Grants, limits: &wire::Limits) -> Option<wire::To
     .ok()
 }
 
-/// Encode the complete typed charter for worker transport or an inline start.
+/// Encode the complete charter for worker transport or an inline start.
 /// The endpoint identities must match their configured Smith wire names.
 #[must_use]
 pub fn encode(source: run::Charter, names: &[EndpointName], limits: &wire::Limits) -> Option<Box<[u8]>> {

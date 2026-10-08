@@ -12,7 +12,7 @@
 //! ended rows remain in root storage and cannot re-enter live state
 
 //!
-//! `step` receives root-authorized batches, finite-source inputs and actual
+//! `step` receives root-authorized batches, finite-source inputs and
 //! lifecycle notifications. Reply-bearing inputs have one terminal reply;
 //! notifications can be ignored when stale. Priced turns/terminals preflight
 //! the whole lifecycle/financial admission before posting the new cumulative
@@ -20,9 +20,9 @@
 //! tasks keeps no replay receipt or result-delivery credit
 
 //!
-//! `Request::Activate` carries a temporary bounded `RunContext`, not rendered
-//! bytes or a second mutable task ledger. Root gathers the actual brief and
-//! claims the task. `Request::Close` awaits root's actual closing obligations;
+//! `Request::Activate` carries a bounded `RunContext`, not rendered
+//! bytes or a second mutable task ledger. Root gathers the brief and
+//! claims the task. `Request::Close` awaits root's closing obligations;
 //! `Ended`, the historical task row, and original-source
 //! posting share one atomic decision. The current root exposes person result notices and
 //! delays outward replies/effects until durability; historical result reads
@@ -36,11 +36,11 @@
 //! creating a mutable root shadow (domain/tasks.md, section 10).
 //! Current chat construction supplies a report contract and empty parameters.
 //! A held person chat owns one bounded semantic escalation revision/recipient
-//! or rejected reason. Root authenticates its actual read/decision route, resolves
+//! or rejected reason. Root authenticates its read/decision route, resolves
 //! eligibility and owns immutable transport history; this child accepts/rejects/
 //! passes only the authorized exact revision.
 //! Agent and procedure executors are routed. The root checks historical inputs
-//! before delegation; person executor routes are added in later increments.
+//! before delegation.
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 extern crate alloc;

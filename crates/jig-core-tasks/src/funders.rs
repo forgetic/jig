@@ -1,7 +1,7 @@
-//! Authentic finite periods/pools and actual task-allotment accounting
+//! Authentic finite periods/pools and task-allotment accounting
 //! (domain/tasks.md, section 2; domain/authority.md, section 7).
 //! Root authorizes new allocations; tasks reserves, charges and closes their
-//! real financial links once, emitting rows for one root decision. No move
+//! financial links once, emitting rows for one root decision. No move
 //! and retires superseded sources after their last reservations settle.
 use crate::domain::{Domain, publish, record, refused, task_mut};
 use crate::{Funder, Limits, Numbers, Refusal, Request, Stored};
@@ -55,7 +55,7 @@ pub(crate) fn charge_effect(
     }
 }
 
-/// Actual task sources cannot end while any incoming allocation remains live.
+/// Task sources cannot end while any incoming allocation remains live.
 pub(crate) fn funded_live(domain: &Domain, funder: u64) -> bool {
     for (number, _) in &domain.names {
         if *number != funder && record(domain, *number).expect("live name").funder == Funder::Task(funder) {
@@ -165,7 +165,7 @@ pub(crate) fn reserve(domain: &mut Domain, env: &Env<Limits>, batch: &[crate::Ne
     for new in batch {
         match new.funder {
             Funder::Task(number) => {
-                let task = task_mut(domain, number).expect("actual funder admitted");
+                let task = task_mut(domain, number).expect("funder admitted");
                 task.record.numbers.reserved =
                     task.record.numbers.reserved.checked_add(new.numbers.budget).expect("reservation admitted");
                 publish(domain, env, number, out);
@@ -250,8 +250,7 @@ pub(crate) fn end(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut
     match funder {
         Funder::Task(parent) => {
             let parent_number = parent;
-            let parent =
-                task_mut(domain, parent_number).expect("actual funder remains live until its allocations close");
+            let parent = task_mut(domain, parent_number).expect("funder remains live until its allocations close");
             parent.record.numbers.reserved =
                 parent.record.numbers.reserved.checked_sub(budget).expect("allotment reserved on admission");
             parent.record.numbers.spent_below = parent
@@ -262,9 +261,9 @@ pub(crate) fn end(domain: &mut Domain, env: &Env<Limits>, number: u64, out: &mut
                 .expect("root ensures priced aggregates fit accounting unit");
             publish(domain, env, parent_number, out);
         }
-        // Post once against the actual original source in the task-end commit.
+        // Post once against the original source in the task-end commit.
         Funder::Pool { .. } | Funder::Period { .. } | Funder::Recurring { .. } => {
-            let ledger = domain.funding.get_mut(&funder).expect("actual source preserved");
+            let ledger = domain.funding.get_mut(&funder).expect("source preserved");
             ledger.numbers.reserved = ledger.numbers.reserved.checked_sub(budget).expect("allotment reserved");
             ledger.numbers.spent_below =
                 ledger.numbers.spent_below.checked_add(spent).expect("priced aggregate fits unit");
@@ -362,7 +361,7 @@ pub(crate) fn links(domain: &Domain, bound: u32) -> bool {
 }
 
 /// Owned finite external period or person-pool accounting; tasks mutates the authentic counters and
-/// emits typed ledger saves for the root's atomic commit. (domain/tasks.md, sections 2–3).
+/// emits ledger saves for the root's atomic commit. (domain/tasks.md, sections 2–3).
 /// (domain/authority.md, section 7).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct FundingRecord {

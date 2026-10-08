@@ -1,4 +1,4 @@
-//! Typed person amendment payloads (domain/people.md, 5.1; domain/tasks.md, 6).
+//! Person amendment payloads (domain/people.md, 5.1; domain/tasks.md, 6).
 //! People retains these only with keyed requests. The root translates them to
 //! tasks and checks current policy; this child never sees task records.
 use alloc::boxed::Box;
@@ -15,7 +15,7 @@ pub struct Amendment {
     pub reason: Box<[u8]>,
 }
 
-/// Human supplied words, typed parameters and historical inputs.
+/// Human supplied words, parameters and historical inputs.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Spec {
     pub words: Box<[u8]>,
@@ -23,7 +23,7 @@ pub struct Spec {
     pub inputs: Box<[u64]>,
 }
 
-/// One typed human supplied specification parameter.
+/// One human supplied specification parameter.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Parameter {
     Number { name: u32, value: u64 },

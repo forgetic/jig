@@ -30,7 +30,7 @@ pub struct Limits {
     /// Relayed calls the parent serves at once. A call beyond them is
     /// dropped, and its run withdraws it past its own deadline.
     pub calls: u32,
-    /// Maximum bytes of a run's opaque call name retained for each typed relay.
+    /// Maximum bytes of a run's opaque call name retained for each relay.
     pub call_name_bytes: u64,
     /// Turns awaiting adoption or the parent's commitment, across all
     /// attempts. Bodies are the parent's tokens, never bytes held here.

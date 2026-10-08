@@ -1,4 +1,4 @@
-//! Seeded V2 host, parent and committing engine histories across channel loss.
+//! Seeded host, parent and committing engine histories across channel loss.
 
 use jig_host_world::turn_world::World;
 use skein_lib::Rng;

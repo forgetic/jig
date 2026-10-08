@@ -1,5 +1,5 @@
 //! Brief gathering across owners (domain/engine.md, section 9). The brief
-//! keeps the core's typed text, but a connector's section is only its number,
+//! keeps the core's text, but a connector's section is only its number,
 //! kind, token and size. Its owner keeps the bytes through assignment.
 //!
 //! One deadline covers gathering and cuts. A required section that does not
@@ -120,7 +120,7 @@ pub fn max_out(limits: &Limits) -> u32 {
     limits.sections.saturating_add(1)
 }
 
-/// The active inventory and its typed core text, including a whole input
+/// The active inventory and its core text, including a whole input
 /// inventory temporarily held during admission.
 #[must_use]
 pub fn worst_case(limits: &Limits) -> Option<u64> {

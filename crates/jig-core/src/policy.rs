@@ -167,7 +167,7 @@ fn map_valid(policy: &authority::Policy, mappings: &[people::PermissionRole]) ->
     true
 }
 
-/// Apply one typed mutable edit, keeping the ceiling and deployment rules.
+/// Apply one mutable edit, keeping the ceiling and deployment rules.
 pub(crate) fn apply(
     policy: &mut authority::Policy,
     permissions: &mut Box<[people::PermissionRole]>,

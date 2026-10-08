@@ -39,7 +39,7 @@ pub enum Record {
 }
 
 impl Record {
-    /// The row's stable typed store address.
+    /// The row's stable store address.
     #[must_use]
     pub fn key(&self) -> Key {
         match self {
@@ -91,7 +91,7 @@ pub enum Delivery {
     Restart(core::RestartStep),
     /// Core-held party, host, task or view output.
     Core(core::Held),
-    /// A typed settled answer with its original opaque call name.
+    /// A settled answer with its original opaque call name.
     CallAnswer { channel: Token, task: u64, attempt: u64, name: Box<[u8]>, call: core::SettledCall },
     /// A prepared worker assignment, after the claim is durable.
     Assigned { channel: Token, assignment: Assignment },
@@ -105,7 +105,7 @@ pub enum Delivery {
     Procedure { task: u64, step: u64, connector: u16, code: u16 },
 }
 
-/// The root's assembled, typed worker assignment.
+/// The root's assembled, worker assignment.
 #[derive(Debug)]
 pub struct Assignment {
     /// Claimed task and activation fence.

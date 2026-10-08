@@ -176,7 +176,7 @@ fn authority_rejects_grants_tools_note_scopes_and_delegation_outside_policy() {
 }
 
 #[test]
-fn authority_checks_policy_at_the_effects_decision_and_the_actual_payload() {
+fn authority_checks_policy_at_the_effects_decision_and_the_admitted_payload() {
     let mut fake = Fake::new(Recovery::Keyed);
     let mut rows = snapshot();
     rows.decisions.clear();

@@ -7,20 +7,20 @@ use crate::{Core, Counters, Deployment, Family, Limits, fresh};
 pub enum CallReplay {
     /// The core kept the whole answer in its own vocabulary.
     Core(CallPart),
-    /// The numbered connector kept the typed answer under the same key.
+    /// The numbered connector kept the answer under the same key.
     Connector { connector: u16 },
 }
 use alloc::boxed::Box;
 use skein_lib::Wall;
 
 /// The core's retained part of a named call answer. A connector owns its
-/// typed answer; the core keeps only its number, while it keeps complete
+/// answer; the core keeps only its number, while it keeps complete
 /// answers for calls routed among its children (domain/engine.md, 7.3).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum CallPart {
     /// An effect kept in the same decision; its settled connector answer may follow.
     Effect { connector: u16, entry: u64, deadline: Wall, outcome: Option<crate::connector::OutboxOutcome> },
-    /// The application connector owns the typed answer.
+    /// The application connector owns the answer.
     Connector { connector: u16 },
     /// The core denied a connector effect after checking its authority.
     EffectDenied { answer: jig_core_authority::Answer, findings: Box<[jig_core_authority::Finding]> },
@@ -452,8 +452,7 @@ pub struct TurnRecord {
     pub turn: u32,
     /// Cumulative accepted spend for this attempt, not an additional charge; represented by `u64`.
     pub spent: u64,
-    /// No message fence is admitted in this current route; tasks refuses `Some` before mutation
-    /// until an actual inbox route joins.
+    /// Highest offered inbox message marked read by this turn, or none.
     pub read: Option<u64>,
     /// Injected wall time when the root accepted the turn; it survives restart without depending on
     /// the process clock.
@@ -463,7 +462,7 @@ pub struct TurnRecord {
     pub transcript: Box<[u8]>,
 }
 
-/// Root's accepted terminal identity (worker offer or actual root-translated
+/// Root's accepted terminal identity (worker offer or root-translated
 /// unpriced terminal), saved atomically with task and
 /// financial writes before ACK; result bytes obey root admission (domain/engine.md, 7.4).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -475,7 +474,7 @@ pub struct TerminalRecord {
     /// Accepted cumulative expense for a priced worker offer or unchanged expense for an unpriced
     /// root terminal; child counters change once.
     pub cumulative: u64,
-    /// Exact bounded worker terminal, even when child lifecycle normalizes it; a refused answer
+    /// Original bounded worker terminal, even when child lifecycle normalizes it; a refused answer
     /// archives root's unpriced Invalid normalization. A lost claim is `Failed(Lost)` and spends a
     /// try, whether or not a turn was kept.
     pub end: jig_core_tasks::End,
@@ -513,7 +512,7 @@ pub struct RunProof {
     pub offered: Option<u64>,
     /// Latest accepted turn, or none before the first turn; no historical body is retained.
     pub turn: Option<TurnProof>,
-    /// Typed accepted worker offer or actual root-translated unpriced terminal; present iff the
+    /// Accepted worker offer or root-translated unpriced terminal; present iff the
     /// child answered this current attempt. At most twice task result bytes before normalization;
     /// cleared on replacement/end.
     pub terminal: Option<TerminalRecord>,
@@ -524,10 +523,10 @@ pub struct RunProof {
 /// reason is never restored into a live archive map.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct EscalationDecisionRecord {
-    /// Actual child's project, used to authenticate historical reads rather
+    /// Child's project, used to authenticate historical reads rather
     /// than trust the caller's project.
     pub project: u32,
-    /// Actual person requester from the accepted bounded semantic context;
+    /// Person requester from the accepted bounded semantic context;
     /// current requester/policy-role standing controls replay privacy
     pub requester: u64,
     /// Positive task identity.
@@ -536,7 +535,7 @@ pub struct EscalationDecisionRecord {
     pub revision: u64,
     /// Positive authenticated winning person.
     pub by: u64,
-    /// Exact accepted bounded choice; rejection reason fits journal `result_bytes`/`transcript_bytes`
+    /// Accepted bounded choice; rejection reason fits journal `result_bytes`/`transcript_bytes`
     /// and both child bounds before mutation.
     pub decision: jig_core_people::EscalationDecision,
 }

@@ -365,7 +365,7 @@ pub fn max_out(limits: &Limits) -> u32 {
     output_bound(limits).expect("task limits admit output bound")
 }
 
-/// Apply one root-issued typed event to `domain` using the iteration clocks and immutable limits in
+/// Apply one root-issued event to `domain` using the iteration clocks and immutable limits in
 /// `env`, then advance bounded dependency/closing cascades when ready. Caller reserves `max_out`
 /// free slots. Reply-bearing inputs produce one terminal reply; notifications may emit no output.
 /// Root checks authority, fences exact transport replay and commits saves/erases with resulting
@@ -632,7 +632,7 @@ pub(crate) fn activate(domain: &Domain, number: u64, out: &mut Queue<Request>) {
     let capacity = capacity.checked_add(escalations.len()).expect("bounded inbox and decisions");
     let mut unordered = List::with_capacity(u32::try_from(capacity).expect("bounded inbox and proposals"));
     for word in &task.inbox {
-        unordered.push(word.clone()).expect("actual inbox counted");
+        unordered.push(word.clone()).expect("inbox counted");
     }
     for word in waiting {
         unordered.push(word).expect("virtual proposal counted");

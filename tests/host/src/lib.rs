@@ -26,7 +26,7 @@
 //! admitted and not answered. Once it settles: nothing in flight, every slot
 //! free, no call open, every workspace released and every agent gone.
 //!
-//! The typed peer world in [`turn_world`] adds a committing engine,
+//! The peer world in [`turn_world`] adds a committing engine,
 //! a link that loses and restores contact, and the host's agent and workspace
 //! capabilities. It checks the retained turns, their replay and exact ACKs,
 //! independent agent acknowledgements, answer order, and best-effort agent facts (hosts.md, 11).

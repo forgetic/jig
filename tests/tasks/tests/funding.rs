@@ -256,7 +256,7 @@ fn oversized_terminal_does_not_charge_or_copy_and_sources_refuse_at_capacity() {
 }
 
 #[test]
-fn independent_referee_detects_omitted_ledger_save_and_actual_posting() {
+fn independent_referee_detects_omitted_ledger_save_and_settlement_posting() {
     use jig_tasks_world::accounting_referee::Accounting;
     let mut w = World::new(79, LIMITS);
     let before = w.records.clone();
@@ -288,7 +288,7 @@ fn independent_referee_detects_omitted_ledger_save_and_actual_posting() {
 }
 
 #[test]
-fn delegate_expense_follows_actual_task_funding_chain_once() {
+fn delegate_expense_follows_task_funding_chain_once() {
     let mut w = World::new(81, LIMITS);
     w.make(Party::Person(1), vec![task(1, &[])]);
     let mut child = task(2, &[]);

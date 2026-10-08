@@ -334,7 +334,7 @@ pub enum Request {
     Health { service: Service, healthy: bool, subscribers: Box<[Classed]> },
     /// A watch asks for a triage task from its template and wake batch.
     Triage { watch: u64, template: u16, batch: u64, alerts: Box<[u64]> },
-    /// A typed description for the core's authority check.
+    /// A description for the core's authority check.
     Described { token: Token, effect: Effect },
     /// A refused staged effect or invalid read.
     Refused { token: Token },

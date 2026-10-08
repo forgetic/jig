@@ -1,4 +1,4 @@
-//! Capacity bounds for typed core sections and connector section tokens
+//! Capacity bounds for core sections and connector section tokens
 //! (domain/engine.md, section 9).
 
 /// Limits supplied by the core to the brief child at every step.

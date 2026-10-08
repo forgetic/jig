@@ -19,10 +19,7 @@ pub enum Completion {
 
 /// Upward requests, in the order Smith's domain emitted them.
 #[derive(PartialEq, Eq, Debug)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "the host boundary's sealed typed terminal is carried directly to its root"
-)]
+#[expect(clippy::large_enum_variant, reason = "the host boundary's sealed terminal is carried directly to its root")]
 pub enum Request {
     /// What Smith's process host would tell its parent.
     Host(host::Request),

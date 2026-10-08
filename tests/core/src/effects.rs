@@ -183,7 +183,7 @@ impl World {
             }),
         ]);
         world.drain();
-        assert!(world.assigned.is_some(), "the real task hub and fleet assigned the caller: {:?}", world.trace);
+        assert!(world.assigned.is_some(), "the task hub and fleet assigned the caller: {:?}", world.trace);
         if requirement {
             world.waiting_judge();
         }
@@ -903,7 +903,7 @@ impl World {
                 deadline: Duration::from_secs(2),
             },
         })));
-        self.host_calls.last().expect("fleet authenticated typed call").0
+        self.host_calls.last().expect("fleet authenticated call").0
     }
 }
 

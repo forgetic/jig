@@ -83,7 +83,7 @@ fn owned(domain: &Domain, channel: Token, run: Token, attempt: Token) -> Option<
     }
 }
 
-/// A typed call is passed through whole, with only its bounded name retained
+/// A call is passed through whole, with only its bounded name retained
 /// for the answer. A rejected call is returned whole to its parent.
 pub(crate) fn relay(
     domain: &mut Domain,
@@ -134,7 +134,7 @@ pub(crate) fn relayed(domain: &mut Domain, to: ReplyTo, answer: Token, out: &mut
     }
 }
 
-/// A typed message follows the same host fence as an opaque inbound event.
+/// A message is handed to the claimed host of its fenced attempt.
 pub(crate) fn inbound(domain: &mut Domain, run: Token, attempt: Token, message: Message, out: &mut Queue<Request>) {
     let undelivered = match domain.names.get(&(run, attempt)) {
         Some(&id) => match &domain.attempts.get(id).expect("a named attempt is tracked").state {

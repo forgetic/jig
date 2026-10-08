@@ -1,4 +1,4 @@
-//! Typed root/people messages and durable child records (domain/people.md, sections 3–5). The root supplies authenticated identities, roles and keyed
+//! Root/people messages and durable child records (domain/people.md, sections 3–5). The root supplies authenticated identities, roles and keyed
 //! requests; people returns bounded routes and persistence intentions. Every
 //! routed flight ends with `Decided`; the root commits before releasing replies.
 //! These values contain no credential secrets, task internals or protocol bytes.
@@ -82,7 +82,7 @@ pub struct InitialOwner {
 }
 
 /// People's project membership label; the root translates it to authority policy and performs the
-/// actual action checks. (domain/people.md, section 4).
+/// action checks. (domain/people.md, section 4).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Role {
     /// `Owner` membership; may start chats here, while broader owner actions remain root policy.
@@ -261,7 +261,7 @@ pub enum Ask {
     /// Decide one held chat's exact semantic revision. Root verifies current waiting recipient and
     /// authority; admission authenticates the session and reserves keyed-answer room.
     DecideEscalation {
-        /// Actual policy project, checked against the held task by root.
+        /// Policy project, checked against the held task by root.
         project: u32,
         /// Positive held chat identity.
         task: u64,
@@ -339,7 +339,7 @@ pub enum EscalationChoice {
 /// completed key, while other decided refusals are retained. (domain/people.md, section 5.1).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Refusal {
-    /// The checked request awaits the core route provided by a later session.
+    /// The requested operation has no offered core route.
     NotOffered,
     /// Final policy role cannot pass further; no state mutation.
     NoFurther,
@@ -368,7 +368,7 @@ pub enum Refusal {
     /// Payload, configuration-derived arithmetic or restored record validity exceeds the supported
     /// bound.
     Limit,
-    /// Same person-scoped key names a different typed request.
+    /// Same person-scoped key names a different request.
     KeyConflict,
 }
 
@@ -472,7 +472,7 @@ pub struct RequestKey {
     pub key: [u8; 16],
 }
 
-/// Typed logical store key for a people record; the protocol handles bytes and secrets outside this
+/// Logical store key for a people record; the protocol handles bytes and secrets outside this
 /// domain. (domain/people.md, sections 3–5).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Key {
@@ -490,7 +490,7 @@ pub enum Key {
     Answer(RequestKey),
 }
 
-/// Owned typed durable record submitted to the parent or restored from it; capacities and payload
+/// Owned durable record submitted to the parent or restored from it; capacities and payload
 /// bytes are checked when admitted. (domain/people.md, sections 3–5).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Stored {
@@ -526,7 +526,7 @@ pub enum Stored {
     Answer {
         /** Person-scoped completed key; restoration validates its person reference. */
         key: RequestKey,
-        /** Original typed request with words bounded by `Limits::words`, compared on every retry. */
+        /** Original request with words bounded by `Limits::words`, compared on every retry. */
         ask: Box<Ask>,
         /** Retained permanent outcome returned without remaking the decision. */
         outcome: Outcome,
@@ -536,7 +536,7 @@ pub enum Stored {
 }
 
 impl Stored {
-    /// Pure projection of this typed record's logical key; allocates nothing, emits no request and
+    /// Pure projection of this record's logical key; allocates nothing, emits no request and
     /// changes no state.
     #[must_use]
     pub const fn key(&self) -> Key {
@@ -551,7 +551,7 @@ impl Stored {
     }
 }
 
-/// Root-to-child inputs; authenticated identity, authoritative roles and typed restored records
+/// Root-to-child inputs; authenticated identity, authoritative roles and restored records
 /// cross this boundary without protocol secrets. (domain/people.md, sections 3–5).
 #[derive(PartialEq, Eq, Debug)]
 pub enum Event {
@@ -615,7 +615,7 @@ pub enum Event {
         sign_in: u64,
         /// Opaque web key, scoped to the sign-in's stable person.
         key: [u8; 16],
-        /// Typed request with payload bounds checked before lookup, route or mutation.
+        /// Request with payload bounds checked before lookup, route or mutation.
         ask: Ask,
     },
     /// Complete a live `Route` exactly once, retire its flight and answer each waiter; permanent
@@ -631,7 +631,7 @@ pub enum Event {
     /// Load one saved row while restoring; invalid input emits one `RestoreRefused` and permanently
     /// fails this instance.
     Restore {
-        /// One typed saved row, admitted once during restoring; duplicate/oversized rows fail
+        /// One saved row, admitted once during restoring; duplicate/oversized rows fail
         /// restoration.
         record: Stored,
     },
@@ -664,7 +664,7 @@ pub enum Request {
         request: Token,
 
         person: u64,
-        /** Project selected by the typed request. */
+        /** Project selected by the request. */
         project: u32,
         /** Current membership at admission: Some is required for chat; an escalation decision may carry None so root can check named-person standing. Root still checks authority. */
         role: Option<Role>,
@@ -678,13 +678,13 @@ pub enum Request {
         /** Answer to deliver only after any state-changing decision is durable. */
         reply: Reply,
     },
-    /// Typed persistence output to join the parent's atomic decision, including task creation and
+    /// Persistence output to join the parent's atomic decision, including task creation and
     /// keyed answer together.
     Save {
         /** Owned replacement row for the parent's current atomic decision, not a standalone IO submission. */
         record: Stored,
     },
-    /// Typed removal output for an ended or expired sign-in, with durability handled by the parent.
+    /// Removal output for an ended or expired sign-in, with durability handled by the parent.
     Erase {
         /** Logical row to remove with the parent's decision; secret cleanup remains below the domain. */
         key: Key,

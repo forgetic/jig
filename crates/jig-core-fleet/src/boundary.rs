@@ -275,7 +275,7 @@ pub enum Event {
 /// fleet -> parent
 #[derive(PartialEq, Eq, Debug)]
 pub enum Request {
-    /// Place the attempt with its typed conversation state.
+    /// Place the attempt with its conversation state.
     Assign {
         channel: Token,
         kind: HostKind,
@@ -292,14 +292,14 @@ pub enum Request {
         attempt: Token,
         message: Message,
     },
-    /// Pass a typed host call to the parent for an answer.
+    /// Pass a host call to the parent for an answer.
     Relay {
         reply_to: ReplyTo,
         run: Token,
         attempt: Token,
         call: Call,
     },
-    /// Answer a typed call under the name its agent gave it.
+    /// Answer a call under the name its agent gave it.
     Relayed {
         channel: Token,
         run: Token,
@@ -307,7 +307,7 @@ pub enum Request {
         call: Box<[u8]>,
         answer: Token,
     },
-    /// Return a typed call that cannot be relayed; the parent owns its bytes.
+    /// Return a call that cannot be relayed; the parent owns its bytes.
     DropCall {
         call: Call,
     },
@@ -435,7 +435,7 @@ pub enum Request {
         name: Token,
         bounce: Bounce,
     },
-    /// A typed message reached no live host; all its values remain the parent's.
+    /// A message reached no live host; all its values remain the parent's.
     Undelivered {
         run: Token,
         attempt: Token,
@@ -501,7 +501,7 @@ pub enum Answer {
     Ended,
     /// It parked.
     Parked,
-    /// It failed, for a typed failure.
+    /// It failed.
     Failed,
     /// Refused at the entrance, every slot taken or the worker shutting
     /// down: the fleet places the attempt again, and nothing more on that

@@ -95,7 +95,7 @@ pub enum ProposalAction {
 pub enum ProposalHolder {
     /// Ancestor task.
     Task(u64),
-    /// Actual person requester above the root.
+    /// Person requester above the root.
     Person(u64),
     /// People whose project role permits this kind of decision; there is no further holder.
     Policy { project: u32, kind: ProposalKind },

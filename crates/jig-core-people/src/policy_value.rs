@@ -1,4 +1,4 @@
-//! Typed owner policy amendments and committed snapshots (domain/people.md,
+//! Owner policy amendments and committed snapshots (domain/people.md,
 //! section 5.2; domain/authority.md, sections 6 and 10). The people child
 //! retains requests by key; the root checks and applies these values.
 

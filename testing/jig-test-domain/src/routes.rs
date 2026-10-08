@@ -39,7 +39,7 @@ pub(super) fn route_core(
                 }
                 core::Held::Relayed { channel, run, attempt, call: name, answer } => {
                     let Some(crate::Payload::SettledCall(call)) = domain.payloads.remove(&answer) else {
-                        unreachable!("typed answer payload")
+                        unreachable!("answer payload")
                     };
                     hold(
                         decision,
@@ -406,7 +406,7 @@ fn route_now(
                     Some(core::PayloadRefusal::Answer { task, attempt })
                 }
                 Some(crate::Payload::InboxWord(_) | crate::Payload::SettledCall(_)) => {
-                    unreachable!("typed answer is not a turn or terminal")
+                    unreachable!("answer is not a turn or terminal")
                 }
                 None => None,
             };

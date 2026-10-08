@@ -302,13 +302,13 @@ pub enum PersonRequest {
     Policy,
 }
 
-/// Root-gathered person-role question with the actual funding snapshot and separate available
+/// Root-gathered person-role question with the funding snapshot and separate available
 /// lifetime capacity. (domain/authority.md, section 8.4).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct PersonAsk {
     pub project: u32,
     pub role: u32,
-    /// Actual person-period pool snapshot; funding requests check its budget against role period
+    /// Person-period pool snapshot; funding requests check its budget against role period
     /// spend.
     pub pool: Numbers,
     /// Current lifetime task capacity available to this funding decision.
@@ -390,7 +390,7 @@ pub enum Holder {
         project: u32,
         /// Ancestor's admitted current authority.
         authority: Authority,
-        /// Ancestor's current actual funding snapshot.
+        /// Ancestor's current funding snapshot.
         numbers: Numbers,
         /// Ancestor's remaining lifetime task capacity.
         tasks_left: u32,
@@ -401,7 +401,7 @@ pub enum Holder {
         role: u32,
         /// Proposal kind this role must be allowed to decide.
         proposal: ProposalKind,
-        /// Actual person-period funding snapshot.
+        /// Person-period funding snapshot.
         pool: Numbers,
         /// Current lifetime task capacity available to acceptance.
         tasks_left: u32,

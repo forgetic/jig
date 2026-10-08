@@ -589,7 +589,7 @@ fn restore_order_is_independent_and_bad_or_oversized_records_refuse_start() {
 }
 
 #[test]
-fn actual_role_success_restores_before_identities_and_replays_after_roster_changes() {
+fn role_success_restores_before_identities_and_replays_after_roster_changes() {
     let mut live = Test::new(LIMITS);
     live.signin_bounded(1, 10, identity(0, 1));
     live.signin_bounded(2, 20, identity(0, 2));
@@ -725,7 +725,7 @@ fn restored_role_success_checks_historical_people_and_project_after_all_rows_arr
 }
 
 #[test]
-fn actual_refused_role_requests_restore_invalid_rosters_and_unknown_targets_for_replay() {
+fn refused_role_requests_restore_invalid_rosters_and_unknown_targets_for_replay() {
     for (role, project, holdings, refusal) in [
         (
             Role::Observer,

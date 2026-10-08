@@ -24,7 +24,7 @@ pub struct Assignment {
 /// A classified run failure, in the host fake's own terms.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
-    /// Temporary failure.
+    /// Transient failure.
     Transient,
     /// External correction required.
     Permanent,
@@ -62,7 +62,7 @@ pub enum Script {
     Park,
     /// Finish with a report.
     Finish { report: Box<[u8]> },
-    /// End with a typed failure.
+    /// End with a failure.
     Fail(Failure),
     /// Lose the agent, reported as an agent failure.
     Crash,

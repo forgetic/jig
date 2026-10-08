@@ -235,7 +235,7 @@ fn dependency_progress_survives_restore_without_loading_historical_ends() {
 }
 
 #[test]
-fn restore_refuses_unrepresentable_eventual_actual_funding_postings() {
+fn restore_refuses_unrepresentable_eventual_funding_postings() {
     use jig_core_tasks::{Cause, Domain, Funder, Request, step};
     use skein_lib::Queue;
     let mut source = World::new(30, LIMITS);

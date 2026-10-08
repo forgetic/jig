@@ -277,9 +277,7 @@ fn a_message_and_host_call_keep_their_fields_across_the_fleet() {
         deadline: Duration::from_secs(3),
     };
     let mut emitted = h.step(Event::Relay { channel: C1, run: R1, attempt: A1, call }).into_iter();
-    let Some(Request::Relay { reply_to, run, attempt, call }) = emitted.next() else {
-        panic!("the typed call is relayed")
-    };
+    let Some(Request::Relay { reply_to, run, attempt, call }) = emitted.next() else { panic!("the call is relayed") };
     assert!(emitted.next().is_none());
     assert_eq!((run, attempt), (R1, A1));
     assert_eq!(&*call.name, b"call-one");

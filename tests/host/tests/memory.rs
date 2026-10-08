@@ -371,7 +371,7 @@ fn ordered_transcripts_and_delivery_feedback_fit_the_hosts_bound() {
         let [Asked::Prepare { owner }] =
             host.step(Event::Assign { reply_to: ReplyTo::new(Token::new(run)), assignment: next })[..]
         else {
-            panic!("typed prepare")
+            panic!("prepare")
         };
         owners.push(owner);
     }
@@ -384,7 +384,7 @@ fn ordered_transcripts_and_delivery_feedback_fit_the_hosts_bound() {
             Token::new(51),
             Ask::Deliver { title: bytes(9), body: bytes(23) },
         ))[..] else {
-            panic!("typed delivery")
+            panic!("delivery")
         };
         let delivery = Delivery { outcome: DeliveryOutcome::Refused, left: Token::new(7), changed: false };
         assert_eq!(host.step(Event::Delivered { owner: call, delivery }), [Asked::Other]);

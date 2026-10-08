@@ -182,7 +182,7 @@ fn authority_value(spend: u64, kinds: Box<[authority::Executor]>) -> authority::
     }
 }
 
-/// Real authority policy and an authenticated owner, rather than allow flags.
+/// Authority policy and an authenticated owner.
 #[must_use]
 #[expect(clippy::too_many_lines, reason = "the walking fixture states the whole deployment")]
 pub fn config(seed: u64) -> root::Config {
@@ -214,7 +214,7 @@ pub fn config(seed: u64) -> root::Config {
     };
     let mut out = Queue::with_capacity(authority::POLICY_MAX_OUT);
     authority::step(&mut domain, authority::Event::Policy { project: 1, policy }, &mut out);
-    assert_eq!(out.pop(), Some(authority::PolicyFact::Added { project: 1 }), "real policy admitted");
+    assert_eq!(out.pop(), Some(authority::PolicyFact::Added { project: 1 }), "policy admitted");
     let mut chat_authority = authority_value(100, Box::new([authority::Executor::Procedure(1)]));
     chat_authority.delegation.tasks = 1;
     chat_authority.delegation.depth = 1;

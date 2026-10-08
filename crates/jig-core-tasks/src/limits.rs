@@ -46,11 +46,11 @@ pub struct Limits {
     pub hold_waiters: u32,
     /// Wall-clock bound before a task waiting for holds is held for review.
     pub hold_wait: skein_lib::Duration,
-    /// Shape bound for typed historical input identities checked by the root before delegation.
+    /// Shape bound for historical input identities checked by the root before delegation.
     pub inputs: u32,
     /// Maximum combined specification words and byte-valued parameter bytes per task.
     pub spec_bytes: u32,
-    /// Maximum typed parameters per specification.
+    /// Maximum parameters per specification.
     pub parameters: u32,
     /// Maximum result/reason bytes; contracts cannot allow larger results and cancellation may
     /// retain one bounded reason plus one bounded partial result.

@@ -14,7 +14,7 @@
 //! keeps cookie secrets or their digests separately, named by the root-issued
 //! sign-in number (domain/people.md, section 3; domain/engine.md, sections 4 and 5.4).
 //!
-//! `Domain::new` starts restoring. `step` admits typed rows, then `Restored`
+//! `Domain::new` starts restoring. `step` admits rows, then `Restored`
 //! validates references and arms deadlines; failed restoration stays unready.
 //! Ready requests share person-scoped keys across sign-ins: identical pending
 //! copies join bounded waiters, saved copies replay the outcome, and conflicting

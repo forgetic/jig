@@ -391,7 +391,7 @@ pub fn max_out(limits: &Limits) -> u32 {
 }
 
 /// Apply one root-issued `event` with iteration clocks and immutable configured bounds in `env`;
-/// caller reserves at least `max_out(&env.limits)` free `out` slots. Emits typed
+/// caller reserves at least `max_out(&env.limits)` free `out` slots. Emits
 /// routing/persistence/replies, never IO; root completes each `Route` once and withholds replies
 /// until required atomic writes are durable. Restore admission validates role-success shape;
 /// `Restored` checks its project/person references without rechecking current membership or

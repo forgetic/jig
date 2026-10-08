@@ -115,7 +115,7 @@ pub enum Held {
     MakeEffect { connector: u16, entry: u64 },
     /// A rendered answer and all opaque evidence have reached the store.
     SettledCall { to: ReplyTo, key: CallKey, call: crate::SettledCall },
-    /// A claimed host receives the parent's typed conversation references.
+    /// A claimed host receives the parent's conversation references.
     Assign { channel: Token, run: Token, attempt: Token, activation: u64, assignment: fleet::Assignment },
     /// The host receives an answer under its original opaque call name.
     Relayed { channel: Token, run: Token, attempt: Token, call: Box<[u8]>, answer: Token },
@@ -170,9 +170,9 @@ pub enum Now {
     SettledCallRefused { to: ReplyTo, key: CallKey, name: Box<[u8]>, tool: Box<[u8]> },
     /// The protocol layer decodes this attested tool and input at the root boundary.
     Call { to: ReplyTo, run: Token, attempt: Token, call: fleet::Call },
-    /// A fenced or over-capacity typed call changed nothing.
+    /// A fenced or over-capacity call changed nothing.
     DropCall { call: fleet::Call },
-    /// The host did not take this typed message; its durable inbox word remains unread.
+    /// The host did not take this message; its durable inbox word remains unread.
     Undelivered { run: Token, attempt: Token, message: fleet::Message },
     /// A sign-in whose core-owned person or session counter is exhausted.
     SignInRefused { to: ReplyTo },
@@ -4526,14 +4526,14 @@ fn tag_people(
                 }
                 if let people::Ask::Amend { .. } = &*ask {
                     let people::Ask::Amend { task, amendment, .. } = *ask else {
-                        unreachable!("amendment route retains its typed payload")
+                        unreachable!("amendment route retains its payload")
                     };
                     amend_route(core, env, work, request, person, role, project, task, amendment);
                     continue;
                 }
                 if let people::Ask::ChangePolicy { .. } = &*ask {
                     let people::Ask::ChangePolicy { change, .. } = *ask else {
-                        unreachable!("policy route retains its typed edit")
+                        unreachable!("policy route retains its edit")
                     };
                     if work.room() < env.limits.tasks.tasks.checked_add(1).expect("task recheck bound")
                         || out.room() < 2
@@ -5193,13 +5193,13 @@ fn tag_fleet(core: &mut Core, env: &Env<Limits>, mut child: Queue<fleet::Request
             | fleet::Request::Bounced { .. }
             | fleet::Request::Told { .. } => unreachable!("account and diagnostic host routes are handled separately"),
             fleet::Request::Turned { run, attempt, turn, body } => {
-                assert!(core.current_proof(run.raw(), attempt.raw()), "actual current turn has reserved proof");
+                assert!(core.current_proof(run.raw(), attempt.raw()), "current turn has reserved proof");
                 Request::Now(Box::new(Now::TurnPayload { run, attempt, turn, body }))
             }
             fleet::Request::Answered { run, attempt, payload, to, .. } => {
                 let _answered = to.into_token();
                 let _: Option<u64> = core.unreported_restored.remove(&run.raw());
-                assert!(core.current_proof(run.raw(), attempt.raw()), "actual current answer has reserved proof");
+                assert!(core.current_proof(run.raw(), attempt.raw()), "current answer has reserved proof");
                 Request::Now(Box::new(Now::AnswerPayload { run, attempt, payload }))
             }
         };
@@ -5564,7 +5564,7 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
             tag_fleet(core, env, out, fleet::max_out(&env.limits.fleet))
         }
         Event::TurnPayload { run, attempt, turn, body, read, cumulative } => {
-            assert!(core.current_proof(run.raw(), attempt.raw()), "actual current turn has reserved proof");
+            assert!(core.current_proof(run.raw(), attempt.raw()), "current turn has reserved proof");
             let offered = core.proofs.get(&run.raw()).expect("current proof").offered;
             work.push(Event::Tasks(tasks::Event::Turn {
                 reply_to: ReplyTo::new(body),
@@ -5580,7 +5580,7 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
             Requests::Out(out)
         }
         Event::AnswerPayload { run, attempt, payload, cumulative, end, saved, invalid_saved } => {
-            assert!(core.current_proof(run.raw(), attempt.raw()), "actual current answer has reserved proof");
+            assert!(core.current_proof(run.raw(), attempt.raw()), "current answer has reserved proof");
             let (cumulative, end, saved) = match core.committed_terminal(run.raw(), attempt.raw()) {
                 Some(terminal) => (terminal.cumulative, terminal.end, None),
                 None => {
@@ -5608,7 +5608,7 @@ fn step_one(core: &mut Core, env: &Env<Limits>, event: Event, work: &mut Queue<E
         }
         Event::AcceptedTurn { task, attempt, turn, accepted, cumulative, read, transcript } => {
             let proof = core.proofs.get_mut(&task).expect("turn proof reserved before child mutation");
-            assert!(proof.attempt == attempt, "turn callback retains its actual claim");
+            assert!(proof.attempt == attempt, "turn callback retains its claim");
             let mut out = Queue::with_capacity(env.limits.call_records.checked_add(6).expect("turn route room"));
             match accepted {
                 tasks::Accepted::New => {

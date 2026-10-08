@@ -144,7 +144,7 @@ fn turns_stay_in_the_host_until_their_own_ack_and_credit_returns() {
         assignment: crate::Assignment { assignment, turns: Box::new([]), answered: Box::new([]) },
     });
     let [Request::Start { owner, workspace: None, .. }] = &*requests else {
-        panic!("an itemless version-two run starts: {requests:?}");
+        panic!("an itemless run starts: {requests:?}");
     };
     let owner = *owner;
     let agent = Token::new(301);
@@ -218,7 +218,7 @@ fn a_preparation_failure_answers_without_starting_an_agent() {
         },
     ] = &*requests
     else {
-        panic!("expected typed preparation failure: {requests:?}")
+        panic!("expected preparation failure: {requests:?}")
     };
     assert_eq!(*resource, Token::new(77));
 }
@@ -379,7 +379,7 @@ fn cancellation_returns_messages_held_before_the_agent_starts() {
 }
 
 mod fixtures {
-    // Typed host records used by the lifecycle scripts. Callback tokens are encoded
+    // Host records used by the lifecycle scripts. Callback tokens are encoded
     // as opaque names; names are opaque bytes.
     use crate::{Ask, Assignment, Event, Finish, RunAssignment};
     use skein_lib::{Reader, ReplyTo, Token};

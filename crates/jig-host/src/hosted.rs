@@ -53,7 +53,7 @@ fn reply(agent: Token, call: CallName, reply: Reply, out: &mut Queue<Request>) {
 }
 
 fn take_name(call: &mut Call) -> CallName {
-    call.name.take().expect("one reply for each typed call")
+    call.name.take().expect("one reply for each named call")
 }
 
 #[derive(Debug)]
@@ -223,7 +223,7 @@ fn assign_runtime(
     }
 }
 
-#[expect(clippy::too_many_arguments, reason = "one typed message's fields enter through the host boundary")]
+#[expect(clippy::too_many_arguments, reason = "one message's fields enter through the host boundary")]
 pub(crate) fn inbound(
     domain: &mut Domain,
     env: &Env<Limits>,
@@ -745,7 +745,7 @@ pub(crate) fn delivered(domain: &mut Domain, owner: Token, delivery: Delivery, o
     }
     match state {
         call::State::Delivering { agent } => {
-            let name = name.expect("a delivery retains its typed name");
+            let name = name.expect("a delivery retains its opaque name");
             reply(agent, name, Reply::Delivered(delivery), out);
         }
         call::State::Relayed { .. } | call::State::Settling | call::State::Closed => {

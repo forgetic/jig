@@ -119,7 +119,7 @@ pub(crate) struct Attempt {
     pub(crate) listed: bool,
     /// The contiguous committed turn prefix, restored atomically on adoption.
     pub(crate) kept: u32,
-    /// The parent's conversation state references for a typed assignment.
+    /// The parent's conversation state references for an assignment.
     pub(crate) assignment: Assignment,
     pub(crate) state: State,
 }

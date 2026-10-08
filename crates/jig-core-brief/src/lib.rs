@@ -1,6 +1,6 @@
 //! Brief planning and gathering (domain/engine.md, section 9).
 //!
-//! The core gives the brief typed text and connector section tokens with
+//! The core gives the brief text and connector section tokens with
 //! reported sizes. The brief keeps core text, tokens and sizes; connector
 //! bytes stay with their owners. It plans cuts by priority within one byte
 //! budget and one deadline, then tells the core which sections to take.

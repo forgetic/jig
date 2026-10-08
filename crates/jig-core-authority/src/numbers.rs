@@ -4,7 +4,7 @@
 //! and the root translates their values. An arithmetic or accounting
 //! refusal returns `None` without changing any caller's state. Batch slices
 //! have already been admitted under the caller's task limit. The caller
-//! checks actual funder links and commits a task's settlement once; these
+//! checks funder links and commits a task's settlement once; these
 //! snapshots cannot recognize a duplicate settlement.
 
 /// The four numbers against one current allotment. Every recorded charge fits within its budget.
@@ -14,7 +14,7 @@
 pub struct Numbers {
     /// Full amount reserved for this current allotment.
     pub budget: u64,
-    /// Actual spend charged directly to this allotment.
+    /// Spend charged directly to this allotment.
     pub spent: u64,
     /// Settled spend from allotments funded below it, counted once by the caller.
     pub spent_below: u64,

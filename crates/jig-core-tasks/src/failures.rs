@@ -7,7 +7,7 @@ use skein_lib::{Duration, Rng};
 /// counter. (domain/tasks.md, section 5.5).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Class {
-    /// Temporary peer/read/transcript failure reported by the root.
+    /// Transient peer/read/transcript failure reported by the root.
     Transient,
     /// Failure requiring an external correction, such as an unavailable resource or invalid
     /// assignment.
@@ -22,7 +22,7 @@ pub enum Class {
     Invalid,
 }
 
-/// Task's per-class failure counters, updated with saturation; typed counts describe history rather
+/// Task's per-class failure counters, updated with saturation; counts describe history rather
 /// than a retry permission. (domain/tasks.md, section 5.5).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Tries {

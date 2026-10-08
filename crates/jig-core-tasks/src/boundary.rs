@@ -1004,6 +1004,8 @@ pub enum Event {
     },
     /// A newly opened project period makes the core recurring procedure due.
     TickRecurring { task: u64, period: u64 },
+    /// A subscribed top-level procedure receives its next period's task and spend allotment.
+    RenewStanding { task: u64, period: u64 },
     /// Root supplies fresh identities for the template batch requested by the core procedure.
     RecurringBatch { task: u64, period: u64, numbers: Box<[u64]> },
     /// Fenced decision from the owner of one due procedure task.

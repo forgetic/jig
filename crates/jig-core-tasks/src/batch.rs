@@ -94,8 +94,10 @@ fn check_with_result_proposal(
             if parent.depth.saturating_add(1) > limits.depth {
                 return Err(problem(Some(number), Refusal::Depth));
             }
-            let root = record(domain, parent.root).expect("a live task's root is live");
-            if match root.made.checked_add(size) {
+            let Some(made) = crate::funders::tree_made(domain, number, parent.root) else {
+                return Err(problem(Some(number), Refusal::Funding));
+            };
+            if match made.checked_add(size) {
                 Some(total) => total > limits.tree_tasks,
                 None => true,
             } {

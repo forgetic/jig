@@ -597,7 +597,7 @@ pub(crate) fn restore(domain: &mut Domain, env: &Env<Limits>, stored: Stored, ou
         Stored::Ended(task) => failed(domain, Some(task.number), Refusal::Restore, out),
         Stored::History(row) => failed(domain, Some(row.task), Refusal::Restore, out),
         Stored::Ledger(record) => {
-            if !crate::funders::restore_funding(domain, record) {
+            if record.made > env.limits.tree_tasks || !crate::funders::restore_funding(domain, record) {
                 failed(domain, None, Refusal::Restore, out);
             }
         }
@@ -609,6 +609,7 @@ fn failed(domain: &mut Domain, task: Option<u64>, why: Refusal, out: &mut Queue<
     out.push(Request::RestoreRefused { problem: Problem { task, why, blocked_by: None } });
 }
 
+#[expect(clippy::too_many_lines, reason = "restore validates complete task topology and period allotments together")]
 fn links(domain: &Domain, env: &Env<Limits>, task: &TaskRecord) -> bool {
     match task.requester {
         Party::Task(number) => {
@@ -636,7 +637,29 @@ fn links(domain: &Domain, env: &Env<Limits>, task: &TaskRecord) -> bool {
     let Some(root) = record(domain, task.root) else {
         return false;
     };
-    if root.depth != 0 || root.made < task.made {
+    let mut archived = false;
+    for (funder, _) in &domain.funding {
+        match *funder {
+            crate::Funder::Recurring { task: source, .. } if source == root.number => archived = true,
+            crate::Funder::Task(_)
+            | crate::Funder::Pool { .. }
+            | crate::Funder::Period { .. }
+            | crate::Funder::Recurring { .. } => {}
+        }
+    }
+    let standing = root.recurring.is_none()
+        && match root.executor {
+            Executor::Procedure { .. } => !root.subscriptions.is_empty() || archived,
+            Executor::Agent { .. } | Executor::Person(_) => false,
+        };
+    let period = crate::funders::original_period(domain, task.number);
+    let made = if standing { crate::funders::tree_made(domain, task.number, task.root) } else { Some(root.made) };
+    if root.depth != 0
+        || match made {
+            Some(made) => made < task.made,
+            None => true,
+        }
+    {
         return false;
     }
     let mut project_count = 0_u32;
@@ -646,11 +669,11 @@ fn links(domain: &Domain, env: &Env<Limits>, task: &TaskRecord) -> bool {
         if other.project == task.project {
             project_count = project_count.saturating_add(1);
         }
-        if other.root == task.root {
+        if other.root == task.root && (!standing || crate::funders::original_period(domain, other.number) == period) {
             subtree = subtree.saturating_add(1);
         }
     }
-    if project_count > env.limits.project_tasks || subtree > root.made {
+    if project_count > env.limits.project_tasks || subtree > made.expect("checked tree allotment") {
         return false;
     }
     let mut descendants_made = 1_u32;
@@ -658,10 +681,12 @@ fn links(domain: &Domain, env: &Env<Limits>, task: &TaskRecord) -> bool {
         let Some(child) = record(domain, *delegate) else {
             return false;
         };
-        let Some(total) = descendants_made.checked_add(child.made) else {
-            return false;
-        };
-        descendants_made = total;
+        if !standing || crate::funders::original_period(domain, child.number) == period {
+            let Some(total) = descendants_made.checked_add(child.made) else {
+                return false;
+            };
+            descendants_made = total;
+        }
         if child.requester != Party::Task(task.number) {
             return false;
         }

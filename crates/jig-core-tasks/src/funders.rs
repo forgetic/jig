@@ -339,6 +339,8 @@ pub struct FundingRecord {
     /// Authentic finite accounting owned by tasks; external ledgers have zero direct spent and
     /// receive settled expense in `spent_below`. Root borrows these values for policy checks.
     pub numbers: Numbers,
+    /// Lifetime task allotment used by a standing root's archived period; zero for other ledgers.
+    pub made: u32,
     /// A superseded source is closed after its last reservation settles; its saved row retains
     /// the period's history and cannot fund new work.
     pub closed: bool,
@@ -375,6 +377,7 @@ pub(crate) fn open(domain: &mut Domain, to: ReplyTo, project: u32, period: u64, 
         funder,
         parent: None,
         numbers: Numbers { budget, spent: 0, spent_below: 0, reserved: 0 },
+        made: 0,
         closed: false,
     };
     assert!(domain.funding.insert(funder, record) == Ok(None), "period admitted");
@@ -418,6 +421,7 @@ pub(crate) fn carve(
         funder,
         parent: Some(parent),
         numbers: Numbers { budget, spent: 0, spent_below: 0, reserved: 0 },
+        made: 0,
         closed: false,
     };
     assert!(domain.funding.insert(funder, record) == Ok(None), "pool admitted");
@@ -498,6 +502,7 @@ pub(crate) fn carve_recurring(
         funder,
         parent: Some(parent),
         numbers: Numbers { budget, spent: 0, spent_below: 0, reserved: 0 },
+        made: 1,
         closed: false,
     };
     assert!(domain.funding.insert(funder, record) == Ok(None), "recurring allotment admitted");
@@ -514,6 +519,7 @@ pub(crate) fn restore_funding(domain: &mut Domain, ledger: FundingRecord) -> boo
         || available(ledger.numbers).is_none()
         || (ledger.closed && ledger.numbers.reserved != 0)
         || ledger.numbers.spent != 0
+        || ledger.made > domain.names.capacity()
     {
         return false;
     }
@@ -601,7 +607,7 @@ pub(crate) fn retire(domain: &mut Domain, out: &mut Queue<Request>) {
 // The final period will eventually receive every still-open aggregate under
 // it. Counting each live node's own/closed spend once bounds every intermediate
 // task and pool posting as well. No accepted charge can overflow settlement.
-fn original_period(domain: &Domain, number: u64) -> Option<Funder> {
+pub(crate) fn original_period(domain: &Domain, number: u64) -> Option<Funder> {
     let mut funder = record(domain, number)?.funder;
     for _ in 0..domain.names.len().checked_add(2)? {
         match funder {
@@ -611,6 +617,20 @@ fn original_period(domain: &Domain, number: u64) -> Option<Funder> {
         }
     }
     None
+}
+
+/// Lifetime tree allotment for the creator's own funding period.
+pub(crate) fn tree_made(domain: &Domain, creator: u64, root: u64) -> Option<u32> {
+    let source = original_period(domain, creator)?;
+    let current = original_period(domain, root)?;
+    if source == current {
+        return Some(record(domain, root)?.made);
+    }
+    let (project, period) = match source {
+        Funder::Period { project, period } => (project, period),
+        Funder::Task(_) | Funder::Pool { .. } | Funder::Recurring { .. } => return None,
+    };
+    Some(domain.funding.get(&Funder::Recurring { project, task: root, period })?.made)
 }
 
 pub(crate) fn representable(domain: &Domain, number: u64, delta: u64) -> bool {

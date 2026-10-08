@@ -189,6 +189,28 @@ impl Domain {
         numbers.into_boxed()
     }
 
+    /// Current subscribed top-level connector procedures eligible for period renewal.
+    #[must_use]
+    pub fn standing_tasks(&self, project: u32) -> Box<[u64]> {
+        let mut numbers = List::with_capacity(self.names.capacity());
+        for (number, _) in &self.names {
+            let row = record(self, *number).expect("live name");
+            let procedure = match row.executor {
+                crate::Executor::Procedure { .. } => true,
+                crate::Executor::Agent { .. } | crate::Executor::Person(_) => false,
+            };
+            if row.project == project
+                && row.root == *number
+                && procedure
+                && row.recurring.is_none()
+                && !row.subscriptions.is_empty()
+            {
+                numbers.push(*number).expect("one identity per task");
+            }
+        }
+        numbers.into_boxed()
+    }
+
     /// Borrow a recurring task's durable template for root authority checks.
     #[must_use]
     pub fn recurring_template(&self, task: u64) -> Option<&crate::RecurringTemplate> {
@@ -335,6 +357,7 @@ pub fn step(domain: &mut Domain, env: &Env<Limits>, event: Event, out: &mut Queu
             crate::proposals::decide_person(domain, env, reply_to, proposer, proposal, by, message, decision, out);
         }
         Event::TickRecurring { task, period } => crate::recurring::tick(domain, env, task, period, out),
+        Event::RenewStanding { task, period } => crate::standing::renew(domain, env, task, period, out),
         Event::RecurringBatch { task, period, numbers } => {
             crate::recurring::make_batch(domain, env, task, period, &numbers, out);
         }
@@ -792,20 +815,59 @@ pub(crate) fn make_admitted(
         task_mut(domain, number).expect("creator admitted").record.holdings = remaining.into_boxed();
         let old = task_mut(domain, number).expect("creator admitted");
         old.record.delegates = append(env.limits.delegates, &old.record.delegates, &batch);
-        // Count each made task in all ancestors, so ending a delegate does not
-        // make lifetime tree capacity reappear.
+        let root_number = root.expect("task creator has a tree root");
+        let source_period = crate::funders::original_period(domain, number).expect("admitted creator has a period");
+        let current_period = crate::funders::original_period(domain, root_number).expect("live root has a period");
+        let archived = if source_period == current_period {
+            None
+        } else {
+            match source_period {
+                crate::Funder::Period { project, period } => {
+                    Some(crate::Funder::Recurring { project, task: root_number, period })
+                }
+                crate::Funder::Task(_) | crate::Funder::Pool { .. } | crate::Funder::Recurring { .. } => {
+                    unreachable!("resolved original period")
+                }
+            }
+        };
+        // Count each made task in its own period, so a standing root's old
+        // delegates retain their old allotment after that root renews.
         let mut ancestor = Some(number);
         for _ in 0..env.limits.tasks {
             let Some(number) = ancestor else {
                 break;
             };
             let task = task_mut(domain, number).expect("all ancestors of live task are live");
-            task.record.made = task.record.made.checked_add(count).expect("tree count admitted");
+            if number != root_number || archived.is_none() {
+                task.record.made = task.record.made.checked_add(count).expect("tree count admitted");
+            }
             ancestor = match task.record.requester {
                 Party::Task(parent) => Some(parent),
                 Party::Person(_) | Party::Deployment { .. } => None,
             };
             publish(domain, env, number, out);
+        }
+        let ledger = match archived {
+            Some(funder) => Some(funder),
+            None => {
+                if record(domain, root_number).expect("live root").recurring.is_some() {
+                    match current_period {
+                        crate::Funder::Period { project, period } => {
+                            Some(crate::Funder::Recurring { project, task: root_number, period })
+                        }
+                        crate::Funder::Task(_) | crate::Funder::Pool { .. } | crate::Funder::Recurring { .. } => {
+                            unreachable!("resolved original period")
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(funder) = ledger {
+            let ledger = domain.funding.get_mut(&funder).expect("period tree allotment admitted");
+            ledger.made = ledger.made.checked_add(count).expect("period tree count admitted");
+            crate::funders::save_funding(domain, funder, out);
         }
     }
     for new in batch {

@@ -355,6 +355,7 @@ impl World {
             | Event::EffectSettled { .. }
             | Event::OpenPeriod { .. }
             | Event::TickRecurring { .. }
+            | Event::RenewStanding { .. }
             | Event::RecurringBatch { .. }
             | Event::Procedure { .. }
             | Event::WakeProcedure { .. }
@@ -415,6 +416,7 @@ impl World {
             | Event::EffectSettled { .. }
             | Event::OpenPeriod { .. }
             | Event::TickRecurring { .. }
+            | Event::RenewStanding { .. }
             | Event::RecurringBatch { .. }
             | Event::Procedure { .. }
             | Event::WakeProcedure { .. }
@@ -594,7 +596,7 @@ impl World {
         self.priced = None;
         self.project_deadlines();
         if !self.restoring {
-            self.accounting_referee.committed(&self.records).expect("independent conservation");
+            self.accounting_referee.committed(&self.records, &self.pending).expect("independent conservation");
         }
         self.observe(Seen::Durable { commit: self.commit });
         let made = self

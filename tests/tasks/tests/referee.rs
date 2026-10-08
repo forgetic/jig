@@ -298,7 +298,7 @@ fn accounting_referee_rejects_expense_reservation_and_settlement_corruption() {
         let mut judge = Accounting::default();
         judge.reset(&before);
         judge.charged(1, 7);
-        assert!(judge.committed(&bad).is_err(), "expense fault {fault}");
+        assert!(judge.committed(&bad, &[]).is_err(), "expense fault {fault}");
     }
     let before = w.records.clone();
     w.settle(1);
@@ -337,11 +337,42 @@ fn accounting_referee_rejects_expense_reservation_and_settlement_corruption() {
         }
         let mut judge = Accounting::default();
         judge.reset(&before);
-        assert!(judge.committed(&bad).is_err(), "settlement fault {fault}");
+        assert!(judge.committed(&bad, &[]).is_err(), "settlement fault {fault}");
     }
     let mut bad = w.records.clone();
     bad.remove(&Key::Ended(1));
     let mut judge = Accounting::default();
     judge.reset(&w.records);
-    assert_eq!(judge.committed(&bad), Err("immutable accounting row changed"));
+    assert_eq!(judge.committed(&bad, &[]), Err("immutable accounting row changed"));
+}
+
+#[test]
+fn message_and_escalation_referee_rejects_lost_delivery_and_missing_holder() {
+    use jig_core_tasks::{Escalation, EscalationHolder, Key, MessageKind, Request, Stored, Word};
+    use jig_tasks_world::{LIMITS, World, accounting_referee::Accounting, task};
+    use skein_lib::{ReplyTo, Token, Wall};
+
+    let mut world = World::new(216, LIMITS);
+    world.make(Party::Person(9), vec![task(1, &[])]);
+    let before = world.records.clone();
+    let message = Word {
+        number: 1,
+        from: Party::Person(9),
+        kind: MessageKind::Words,
+        words: Box::new([1]),
+        at: Wall::EPOCH,
+        hits: 1,
+        eligible: false,
+    };
+    let mut judge = Accounting::default();
+    judge.reset(&before);
+    let sent = Request::Sent { reply_to: ReplyTo::new(Token::new(1)), task: 1, word: message };
+    assert_eq!(judge.committed(&before, &[sent]), Err("accepted message missing from durable inbox"));
+
+    let mut bad = before.clone();
+    if let Some(Stored::Live(row)) = bad.get_mut(&Key::Live(1)) {
+        row.escalation =
+            Escalation::Waiting { revision: 1, holder: EscalationHolder::Task(99), entry: 1, since: Wall::EPOCH };
+    }
+    assert_eq!(judge.committed(&bad, &[]), Err("escalation has no deciding holder"));
 }

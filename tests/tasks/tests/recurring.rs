@@ -1,5 +1,6 @@
 use jig_core_tasks::{
-    self as tasks, Contract, Event, Executor, Funder, New, Numbers, Party, RecurringOverlap, RecurringTemplate,
+    self as tasks, Cause, Contract, Event, Executor, Funder, Key, New, Numbers, Party, RecurringOverlap,
+    RecurringTemplate, Stored, Subscription, SubscriptionKind,
 };
 use jig_tasks_world::{LIMITS, Reply, World, task};
 
@@ -81,4 +82,125 @@ fn a_recurring_template_waits_for_its_old_batch_before_the_new_period() {
     world.send(Event::RecurringBatch { task: 9, period: 2, numbers: Box::new([11]) });
     assert_eq!(world.record(9).recurring.as_ref().expect("template").pending_period, None);
     assert_eq!(world.record(11).funder, Funder::Recurring { project: 1, task: 9, period: 2 });
+}
+
+#[test]
+fn a_standing_task_makes_delegates_across_many_periods_its_allotment_renewed_each_time() {
+    let mut world = World::new(213, LIMITS);
+    let mut master = recurring(9, RecurringOverlap::Skip);
+    master.authority.budget.spend = 30;
+    assert_eq!(world.make(Party::Deployment { project: 1 }, vec![master]), Reply::Made(vec![9]));
+    for period in 1..=5 {
+        world.open_period(period, 30);
+        let child = period + 9;
+        batch(&mut world, 9, period, child);
+        let funder = Funder::Recurring { project: 1, task: 9, period };
+        assert_eq!(world.record(child).funder, funder);
+        assert!(matches!(world.records.get(&Key::Ledger(funder)),
+            Some(Stored::Ledger(row)) if row.numbers.budget == 30 && row.numbers.reserved == 30));
+        world.claim(child, child);
+        world.terminal_cause(
+            child,
+            tasks::End::Finished {
+                result: tasks::TaskResult::Report { words: Box::new([1]) },
+                cancel_delegates: false,
+            },
+            Cause::Priced { cumulative: 10 },
+        );
+        world.settle(child);
+        assert!(matches!(world.records.get(&Key::Ledger(funder)),
+            Some(Stored::Ledger(row)) if row.numbers.spent_below == 10 && row.numbers.reserved == 0));
+        world.restart();
+    }
+    for period in 1..5 {
+        let old = Funder::Period { project: 1, period };
+        assert!(matches!(world.records.get(&Key::Ledger(old)),
+            Some(Stored::Ledger(row)) if row.closed && row.numbers.spent_below == 10));
+    }
+    assert_eq!(world.record(9).recurring.as_ref().expect("standing template").last_period, 5);
+}
+
+#[test]
+fn a_subscribed_procedure_renews_while_its_old_delegate_remains_live() {
+    let mut world = World::new(214, LIMITS);
+    let mut watch = task(20, &[]);
+    watch.executor = Executor::Procedure { connector: 1, code: 1 };
+    watch.authority.budget.spend = 30;
+    watch.numbers.budget = 30;
+    assert_eq!(world.make(Party::Deployment { project: 1 }, vec![watch]), Reply::Made(vec![20]));
+    let reply_to = world.to();
+    world.send(Event::SubscribeTopic {
+        reply_to,
+        task: 20,
+        subscription: Subscription { number: 100, kind: SubscriptionKind::Topic { connector: 1, topic: 1 } },
+    });
+    let mut old = task(21, &[]);
+    old.authority.budget.spend = 30;
+    old.numbers.budget = 30;
+    old.funder = Funder::Task(20);
+    assert_eq!(world.make(Party::Task(20), vec![old]), Reply::Made(vec![21]));
+    world.open_period(1, 30);
+    world.send(Event::RenewStanding { task: 20, period: 1 });
+    let old_source = Funder::Recurring { project: 1, task: 20, period: 0 };
+    assert_eq!(world.record(21).funder, old_source);
+    assert_eq!(world.record(20).funder, Funder::Period { project: 1, period: 1 });
+    assert_eq!(world.record(20).numbers, Numbers { budget: 30, spent: 0, spent_below: 0, reserved: 0 });
+    let mut fresh = task(22, &[]);
+    fresh.authority.budget.spend = 30;
+    fresh.numbers.budget = 30;
+    fresh.funder = Funder::Task(20);
+    assert_eq!(world.make(Party::Task(20), vec![fresh]), Reply::Made(vec![22]));
+    let mut old_grandchild = task(23, &[]);
+    old_grandchild.authority.budget.spend = 5;
+    old_grandchild.numbers.budget = 5;
+    old_grandchild.funder = Funder::Task(21);
+    assert_eq!(world.make(Party::Task(21), vec![old_grandchild]), Reply::Made(vec![23]));
+    assert_eq!(world.record(20).made, 2, "old work leaves the fresh period's task allotment alone");
+    assert!(matches!(world.records.get(&Key::Ledger(old_source)), Some(Stored::Ledger(row)) if row.made == 3));
+    world.claim(23, 23);
+    world.terminal(
+        23,
+        tasks::End::Finished { result: tasks::TaskResult::Report { words: Box::new([1]) }, cancel_delegates: false },
+    );
+    world.settle(23);
+    world.claim(21, 21);
+    world.terminal_cause(
+        21,
+        tasks::End::Finished { result: tasks::TaskResult::Report { words: Box::new([1]) }, cancel_delegates: false },
+        Cause::Priced { cumulative: 10 },
+    );
+    world.settle(21);
+    assert!(matches!(world.records.get(&Key::Ledger(Funder::Period { project: 1, period: 0 })),
+        Some(Stored::Ledger(row)) if row.closed && row.numbers.spent_below == 10));
+    world.open_period(2, 30);
+    world.send(Event::RenewStanding { task: 20, period: 2 });
+    assert_eq!(world.record(22).funder, Funder::Recurring { project: 1, task: 20, period: 1 });
+    world.restart();
+    assert_eq!(world.record(20).funder, Funder::Period { project: 1, period: 2 });
+    assert_eq!(world.record(22).funder, Funder::Recurring { project: 1, task: 20, period: 1 });
+}
+
+#[test]
+fn a_persons_standing_procedure_renews_from_the_project_after_its_first_period() {
+    let mut world = World::new(215, LIMITS);
+    world.carve_pool(0, 30);
+    let mut watch = task(30, &[]);
+    watch.executor = Executor::Procedure { connector: 1, code: 1 };
+    watch.authority.budget.spend = 30;
+    watch.numbers.budget = 30;
+    watch.funder = Funder::Pool { project: 1, person: 9, period: 0 };
+    assert_eq!(world.make(Party::Person(9), vec![watch]), Reply::Made(vec![30]));
+    let reply_to = world.to();
+    world.send(Event::SubscribeTopic {
+        reply_to,
+        task: 30,
+        subscription: Subscription { number: 101, kind: SubscriptionKind::Topic { connector: 1, topic: 1 } },
+    });
+    world.open_period(1, 30);
+    world.send(Event::RenewStanding { task: 30, period: 1 });
+    assert_eq!(world.record(30).funder, Funder::Period { project: 1, period: 1 });
+    assert!(matches!(world.records.get(&Key::Ledger(Funder::Pool { project: 1, person: 9, period: 0 })),
+        Some(Stored::Ledger(row)) if row.numbers.budget == 0 && row.numbers.reserved == 0));
+    world.restart();
+    assert_eq!(world.record(30).funder, Funder::Period { project: 1, period: 1 });
 }

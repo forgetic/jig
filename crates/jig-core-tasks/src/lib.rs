@@ -65,6 +65,7 @@ mod proposals;
 mod recurring;
 mod refs;
 mod run;
+mod standing;
 mod stored;
 mod subscriptions;
 #[cfg(test)]

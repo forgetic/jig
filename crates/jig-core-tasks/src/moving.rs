@@ -202,6 +202,7 @@ pub(crate) fn apply(
             funder: period_source,
             parent: None,
             numbers: Numbers { budget: period_budget, spent: 0, spent_below: 0, reserved: 0 },
+            made: 0,
             closed: false,
         };
         assert!(domain.funding.insert(period_source, record) == Ok(None), "period room preflighted");
@@ -215,6 +216,7 @@ pub(crate) fn apply(
             funder: destination,
             parent: Some(period_source),
             numbers: Numbers { budget: pool_budget, spent: 0, spent_below: 0, reserved: 0 },
+            made: 0,
             closed: false,
         };
         assert!(domain.funding.insert(destination, record) == Ok(None), "pool room preflighted");

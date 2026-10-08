@@ -264,12 +264,12 @@ fn independent_referee_detects_omitted_ledger_save_and_actual_posting() {
     let source = Funder::Period { project: 1, period: 0 };
     let mut good = Accounting::default();
     good.reset(&before);
-    assert_eq!(good.committed(&w.records), Ok(()));
+    assert_eq!(good.committed(&w.records, &[]), Ok(()));
     let mut bad = w.records.clone();
     bad.insert(Key::Ledger(source), before[&Key::Ledger(source)].clone());
     let mut judge = Accounting::default();
     judge.reset(&before);
-    assert!(judge.committed(&bad).is_err());
+    assert!(judge.committed(&bad, &[]).is_err());
     w.claim(1, 1);
     w.terminal_cause(
         1,
@@ -284,7 +284,7 @@ fn independent_referee_detects_omitted_ledger_save_and_actual_posting() {
     }
     let mut judge = Accounting::default();
     judge.reset(&before);
-    assert!(judge.committed(&bad).is_err());
+    assert!(judge.committed(&bad, &[]).is_err());
 }
 
 #[test]

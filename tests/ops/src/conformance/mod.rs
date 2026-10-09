@@ -113,8 +113,8 @@ impl Application for Ops {
             asked_accept: std::collections::BTreeSet::new(),
         }
     }
-    fn policy(peers: &Peers) -> r::Policy {
-        peers.policy.clone()
+    fn policy(peers: &Peers) -> &r::Policy {
+        &peers.policy
     }
     fn recovery(_: &Config, connector: u16, kind: u16) -> r::Recovery {
         match (connector, kind) {

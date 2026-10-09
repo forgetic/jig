@@ -63,8 +63,8 @@ pub trait Application {
     fn systems(config: &Self::Config, seed: u64) -> Self::Systems;
     /// Construct scripted hosts, parties and observation translations.
     fn peers(config: &Self::Config, seed: u64) -> Self::Peers;
-    /// Read the scenario policy, including independently requested edits.
-    fn policy(peers: &Self::Peers) -> Policy;
+    /// Borrow the complete scenario policy, including independently requested edits.
+    fn policy(peers: &Self::Peers) -> &Policy;
     /// Declare each configured effect kind’s recovery class.
     fn recovery(config: &Self::Config, connector: u16, kind: u16) -> Recovery;
     /// Prepare the initial durable fixture and begin the cold-load script.
@@ -167,7 +167,7 @@ impl<A: Application> Harness<A> {
         let systems = A::systems(&config, seed);
         let mut store = Store::new();
         let events = A::start(&config, &mut store).into_iter().map(Input::Event).collect();
-        let policy = A::policy(&peers);
+        let policy = A::policy(&peers).clone();
         for (&(connector, kind), entry) in &policy.kinds {
             assert_eq!(entry.recovery, A::recovery(&config, connector, kind), "declared recovery class");
         }
@@ -328,7 +328,12 @@ impl<A: Application> Harness<A> {
 
     fn inspect(&mut self) -> Result<(), Violation> {
         let observations = A::observed(&mut self.peers, &self.systems, &self.store, self.clock);
-        self.referee.policy = A::policy(&self.peers);
+        let policy = A::policy(&self.peers);
+        // Keep an independent snapshot; copy a new value only when scenario
+        // policy changes, before processing this inspection's observations.
+        if self.referee.policy != *policy {
+            self.referee.policy.clone_from(policy);
+        }
         for observed in observations {
             self.referee.observe(self.clock.now, observed)?;
         }

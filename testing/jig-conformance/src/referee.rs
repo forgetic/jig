@@ -232,7 +232,7 @@ pub struct Snapshot {
 }
 
 /// Policy and time limits provided by the scenario, before the root exists.
-#[derive(Clone, Debug)]
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Policy {
     pub deployment: Scope,
     pub projects: BTreeMap<u32, Scope>,

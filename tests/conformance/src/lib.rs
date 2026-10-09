@@ -343,8 +343,8 @@ impl Application for Testing {
         }
     }
 
-    fn policy(peers: &Neighbours) -> jig_conformance::referee::Policy {
-        peers.observer.referee.policy.clone()
+    fn policy(peers: &Neighbours) -> &jig_conformance::referee::Policy {
+        &peers.observer.referee.policy
     }
 
     fn recovery(config: &Config, number: u16, kind: u16) -> jig_conformance::referee::Recovery {

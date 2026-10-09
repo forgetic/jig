@@ -1,0 +1,172 @@
+# Profiles and lints follow skein's docs/foundation/programming-model.md, section 10.
+
+[workspace]
+resolver = "3"
+members = [
+    "crates/jig-core-accounts",
+    "testing/jig-test-connector",
+    "testing/jig-test-domain",
+    "testing/jig-conformance",
+    "tests/conformance",
+    "testing/jig-fake-store",
+    "testing/jig-fake-workers",
+    "testing/jig-fake-parties",
+    "testing/jig-test-system",
+    "testing/jig-ops-fake-production",
+    "examples/ops/domain",
+    "examples/ops/domain-observability",
+    "examples/ops/domain-infrastructure",
+    "tests/ops",
+    "tests/test-connector",
+    "tests/core",
+    "crates/jig-core-authority",
+    "crates/jig-core-brief",
+    "crates/jig-core-fleet",
+    "crates/jig-core-notes",
+    "crates/jig-core-people",
+    "crates/jig-core-tasks",
+    "crates/jig-core-views",
+    "crates/jig-host",
+    "crates/jig-charter",
+    "crates/jig-inline-agent",
+    "tests/accounts",
+    "tests/brief",
+    "tests/fleet",
+    "tests/notes",
+    "tests/people",
+    "tests/tasks",
+    "tests/views",
+    "tests/host",
+    "tests/boundary",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.95"
+publish = false
+
+[workspace.dependencies]
+skein-lib = { git = "https://git.ekanayaka.io/ai/skein.git" }
+skein-json = { git = "https://git.ekanayaka.io/ai/skein.git" }
+skein-world = { git = "https://git.ekanayaka.io/ai/skein.git" }
+skein-fake-checkout = { git = "https://git.ekanayaka.io/ai/skein.git" }
+skein-fake-llm-domain = { git = "https://git.ekanayaka.io/ai/skein.git" }
+smith-agent-world = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-domain = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-domain-run = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-domain-session = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-domain-tools = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-channel = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-host-domain = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-charter = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-protocol-channel = { git = "https://git.ekanayaka.io/ai/smith.git" }
+smith-transcript = { git = "https://git.ekanayaka.io/ai/smith.git" }
+sha2 = { version = "=0.10.9", default-features = false }
+jig-core-accounts = { path = "crates/jig-core-accounts" }
+jig-test-connector = { path = "testing/jig-test-connector" }
+jig-test-domain = { path = "testing/jig-test-domain" }
+jig-conformance = { path = "testing/jig-conformance" }
+jig-fake-store = { path = "testing/jig-fake-store" }
+jig-fake-workers = { path = "testing/jig-fake-workers" }
+jig-fake-parties = { path = "testing/jig-fake-parties" }
+jig-test-system = { path = "testing/jig-test-system" }
+jig-ops-fake-production = { path = "testing/jig-ops-fake-production" }
+jig-ops-domain = { path = "examples/ops/domain" }
+jig-ops-domain-observability = { path = "examples/ops/domain-observability" }
+jig-ops-domain-infrastructure = { path = "examples/ops/domain-infrastructure" }
+jig-core-authority = { path = "crates/jig-core-authority" }
+jig-core = { path = "crates/jig-core" }
+jig-core-notes = { path = "crates/jig-core-notes" }
+jig-core-people = { path = "crates/jig-core-people" }
+jig-core-tasks = { path = "crates/jig-core-tasks" }
+jig-core-brief = { path = "crates/jig-core-brief" }
+jig-core-fleet = { path = "crates/jig-core-fleet" }
+jig-core-views = { path = "crates/jig-core-views" }
+jig-host = { path = "crates/jig-host" }
+jig-charter = { path = "crates/jig-charter" }
+jig-inline-agent = { path = "crates/jig-inline-agent" }
+
+# Panics are fail-stop and overflow traps, in every profile. (The test harness
+# needs unwinding, so cargo ignores `panic` for test targets.)
+[profile.dev]
+panic = "abort"
+overflow-checks = true
+
+[profile.release]
+panic = "abort"
+overflow-checks = true
+
+# The lints for the step crates (every domain, protocol and io layer: lib is skein's).
+# Disallowed types, macros and methods are listed in clippy.toml. Ordinary Rust
+# (simulators, test harnesses) declares its own [lints] table.
+[workspace.lints.rust]
+unsafe_code = "deny"                  # and forbid at every step crate's root
+elided_lifetimes_in_paths = "deny"    # a type that borrows says so: Reader<'_>
+unused_must_use = "deny"
+non_ascii_idents = "deny"
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unit_bindings = "deny"
+let_underscore_drop = "deny"          # drop explicitly, or bind a name
+missing_debug_implementations = "deny" # state is inspectable in tests and traces
+unused_lifetimes = "deny"
+redundant_lifetimes = "deny"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that fight the domain.
+module_name_repetitions = "allow"     # llm::LlmX reads fine next to agent::X
+missing_errors_doc = "allow"          # errors are enum values, documented on the enum
+missing_panics_doc = "allow"          # panics are assertions, named by expect("...")
+needless_pass_by_value = "allow"      # cell handlers take the source state by value
+single_match_else = "allow"           # a two-armed match on Option is as clear as if let
+
+# What is out of step code (programming-model.md, 10.3).
+wildcard_enum_match_arm = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+as_conversions = "deny"
+float_arithmetic = "deny"
+unwrap_used = "deny"
+let_underscore_must_use = "deny"
+mem_forget = "deny"
+todo = "deny"
+unimplemented = "deny"
+impl_trait_in_params = "deny"
+disallowed_types = "deny"
+disallowed_macros = "deny"
+
+# Beyond the table of 10.3: the rest of what the subset leaves out.
+allow_attributes_without_reason = "deny"
+undocumented_unsafe_blocks = "deny"
+multiple_unsafe_ops_per_block = "deny"
+disallowed_methods = "deny"           # closure-taking combinators, panicking slice ops, ...
+allow_attributes = "deny"             # #[expect(.., reason = "..")], which fails once it is stale
+match_wildcard_for_single_variants = "deny"
+enum_glob_use = "deny"                # a variant is named with its enum
+wildcard_imports = "deny"
+panic = "deny"                        # assert!, unreachable!("why") or expect("invariant")
+missing_assert_message = "deny"       # an assertion names what it relies on
+assertions_on_result_states = "deny"
+unused_result_ok = "deny"
+let_underscore_untyped = "deny"
+mixed_read_write_in_expression = "deny"  # one side effect per statement
+infinite_loop = "deny"
+empty_drop = "deny"
+exit = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+use_debug = "deny"
+host_endian_bytes = "deny"            # byte order is chosen, not inherited from the host
+fn_to_numeric_cast_any = "deny"
+default_numeric_fallback = "deny"     # every integer has a stated width
+std_instead_of_core = "deny"
+std_instead_of_alloc = "deny"
+alloc_instead_of_core = "deny"
+partial_pub_fields = "deny"           # a struct is plain data or opaque, not both
+mod_module_files = "deny"
+tests_outside_test_module = "deny"
+iter_over_hash_type = "deny"

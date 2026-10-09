@@ -36,6 +36,5 @@ jig's design starts at [docs/design/README.md](docs/design/README.md).
 
 ## Where jig is
 
-jig is built inside temper's repository, under `jig/`, until its boundary
-settles, and then moves to a repository of its own as it is. See
+jig is a repository of its own; temper is its first application. See
 [AGENTS.md](AGENTS.md).

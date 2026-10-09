@@ -1,22 +1,15 @@
 # Agent guidance for jig
 
+- Before merging anything to main, run the checks in
+  `docs/development/workflow.md`; main moves only when they all pass. A
+  change to Markdown files only skips them (same document).
+- The default test suite (unit tests and the worlds' focused tests under
+  `tests/`) takes at most 15 seconds; the fuzzy suite (the worlds'
+  `tests/fuzzy_*.rs`, randomized tests) at most 1 minute. Keep new tests within these budgets: see the same
+  document.
 - **jig is a kit for agentic applications;** temper is its first
   application. Read [README.md](README.md), then
   [docs/design/README.md](docs/design/README.md).
-- **While jig is built inside temper's repository** (under `jig/`):
-  - temper's `docs/development/workflow.md` applies to jig. Its checks
-    and test budgets cover jig's crates, which are members of temper's
-    workspace.
-  - **Nothing under `jig/` depends on or names temper:** no dependency on
-    a temper crate, and no citation of temper's documents or code. temper
-    may appear in jig's documents only as an example of an application,
-    and says so. A check in the gate enforces the dependency rule once
-    jig has crates.
-  - **Everything under `jig/` is written as it will be in jig's own
-    repository:** paths relative to `jig/`, crates named `jig-*`, and
-    citations in the form they will keep.
-
-  This item is removed when jig moves.
 - **jig follows skein's foundation documents:** `programming-model.md`,
   `testing-strategy.md` and `notes.md`. Read them before writing code.
   Citations use those file names and their sections.

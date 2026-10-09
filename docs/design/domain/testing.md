@@ -224,9 +224,9 @@ missing in skein's world harness goes into skein first.
 
 jig's tests fit the suites' budgets (testing-strategy.md, section 8):
 the focused suite runs a few cuts and seeds per scenario, the fuzzy
-suite sweeps. While jig is built inside temper, its tests count against
-temper's budgets; an application's conformance scenarios count against
-the application's.
+suite sweeps. jig's tests count against jig's budgets
+(`docs/development/workflow.md`); an application's conformance scenarios
+count against the application's.
 
 ## 10. Open questions
 

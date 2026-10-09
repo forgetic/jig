@@ -206,7 +206,19 @@ for its agents.
 
 `jig-host` hosts runs on a fixed number of slots: a worker's, or the
 engine's own, a configured number. It is the same hub in both places;
-what differs is its root and its capabilities.
+what differs is its root and its capabilities. One hub, rather than one
+per shape, buys:
+
+- **one lifecycle:** admission, fencing, relays, turns and answers kept
+  until acknowledged, and cancel are written, reviewed and tested once,
+  in one world, with smith's scripted agent processes and with smith's
+  real domain; the open questions of section 12 are answered once for
+  both shapes;
+- **one root shape:** the engine's root and a worker's compose the same
+  three kinds of child: the hub, an agent capability, and a workspace
+  where there is one;
+- **one process when wanted:** the engine, a worker's hub and agents
+  share a process (section 3) with no code of their own.
 
 ### 6.1 The link to the core
 
@@ -498,10 +510,26 @@ The hub carries the charter as bytes it never reads.
   since the run's last save.
 - **Before the first channel:** whether a worker's failed dials, before
   it ever reached the engine, want a grace of their own.
-- **Who owns the inline agent.** jig's for now, beside the hub; smith's
+- **Who owns the inline agent.** jig's for now, beside the hub. It
+  composes smith's domains and knows nothing of the core, and smith's
   local host (smith's `host.md`, section 8) needs the same for its
-  one-process form, and it may move to smith, as the one-process form of
-  smith's host domain, when it does.
+  one-process form. The ways on:
+  - **smith owns it,** a crate beside `smith-host-domain` sharing its
+    vocabulary, composed by jig's engine and smith's local host alike
+    (smith's draft `one-host.md`); jig retires `jig-inline-agent` at a
+    repin of smith. The leaning;
+  - **a mode of `smith-host-domain`,** one child running a run as a
+    process or in memory: one boundary, but two jobs mixed, every host
+    carrying both, and a worst case and a world that are their sum. A
+    vocabulary crate shared by two children keeps the one boundary
+    without the rest;
+  - **no agents in memory:** an engine's root composes
+    `smith-host-domain` for its slots, as the hub already allows. The
+    engine's runs are then contained and its LLM traffic leaves its loop,
+    at the cost of a process per run, grants leaving the engine, and the
+    engine's agent processes to prove ended with it. Whether jig offers
+    it as an application's composition, and whether `ops` uses it, is
+    open.
 - **Bytes across the hub in the engine.** The hub carries what it does
   not read as bytes: the charter, turns, call inputs and answers. In the
   engine, the charter and each call are encoded and decoded once more

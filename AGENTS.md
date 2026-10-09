@@ -5,8 +5,8 @@
   change to Markdown files only skips them (same document).
 - The default test suite (unit tests and the worlds' focused tests under
   `tests/`) takes at most 15 seconds; the fuzzy suite (the worlds'
-  `tests/fuzzy_*.rs`, randomized tests) at most 1 minute. Keep new tests within these budgets: see the same
-  document.
+  `tests/fuzzy_*.rs`, randomized tests) at most 1 minute. Keep new tests
+  within these budgets: see the same document.
 - **jig is a kit for agentic applications;** temper is its first
   application. Read [README.md](README.md), then
   [docs/design/README.md](docs/design/README.md).

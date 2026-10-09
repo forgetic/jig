@@ -31,7 +31,8 @@ documentation in this sense: they are code, and clippy checks them.
 ## 2. The two test suites
 
 The suites are those of skein's `docs/foundation/testing-strategy.md`
-(section 8); `docs/design/domain/testing.md` (section 9) says what they hold in jig.
+(section 8); `docs/design/domain/testing.md` (section 9) says what they
+hold in jig.
 
 - **The default suite** is every crate's unit tests and each world's
   focused tests (`tests/<name>/tests/*.rs`): focused tests of

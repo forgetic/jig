@@ -6,8 +6,8 @@ do, what they ask of the engine and what waits for them, the chats they
 hold with agents, the tasks they carry out themselves, and how they hear
 of what waits. Parties are requesters and executors, as tasks are
 (core.md, section 9); this document is that party in depth. The clients
-they use are jig's client and the application's (`../client/`). What is
-still open is listed in section 12.
+they use are jig's client and the application's (`../README.md`,
+section 10). What is still open is listed in section 12.
 
 ## 1. In one page
 
@@ -230,8 +230,7 @@ A task whose executor is a party, or a role (core.md, 3.2):
 What a client's protocol layer, on the engine's side, owes this domain:
 
 - **Requests and pages** over HTTP, **live streams** for views and
-  inbox changes, as jig's client documents and the application's
-  (`../client/`).
+  inbox changes, as jig's client documents and the application's.
 - **Signing in:** each provider's exchange, the sign-ins' tokens held by
   the protocol layer, named in the domain by a sign-in's number;
   services' credentials issued and checked there.

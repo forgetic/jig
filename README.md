@@ -33,8 +33,3 @@ jig's design starts at [docs/design/README.md](docs/design/README.md).
 - **Built when pulled,** as skein is. temper's needs decide what jig
   holds and in what order; a second, small application keeps jig from
   being temper's in disguise.
-
-## Where jig is
-
-jig is a repository of its own; temper is its first application. See
-[AGENTS.md](AGENTS.md).

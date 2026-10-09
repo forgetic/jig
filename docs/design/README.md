@@ -323,7 +323,7 @@ to watchers and answers to a run's read tools.
   generic over the application. The application's domain stays concrete.
 - **The referee looks from outside.** Before a fake system saw any
   effect, that effect's record was durable. No run was assigned without
-  a durable claim.No person was answered ahead of their commit. Every
+  a durable claim. No person was answered ahead of their commit. Every
   effect was made as its recovery class allows.
 
 ### 6.7 A reference root

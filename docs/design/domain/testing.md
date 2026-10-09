@@ -169,9 +169,9 @@ becomes observations:
   durable commit that holds it; after a crash, nothing seen is missing
   from the store.
 - **Order:** no task started before its dependencies were done and
-closed; no two runs held one resource's writer slot at once; no pool
-admitted a holder beyond the slots it was known to have; no task ended
-before its delegates.
+  closed; no two runs held one resource's writer slot at once; no pool
+  admitted a holder beyond the slots it was known to have; no task ended
+  before its delegates.
 - **Nothing lost:** liveness deadlines for every result to reach its
   requester, every person's words to reach their task or the task to end,
   every proposal to be decided, withdrawn, or waiting where a holder sees

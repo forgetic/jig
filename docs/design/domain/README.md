@@ -4,8 +4,8 @@ Provisional, 2026-10-07. The design of jig's domain layer: the core an
 application's engine composes, the contract its connectors meet, what
 its root does, where its agents run, and how all of it is tested. jig as
 a whole, and why it is a kit, is `../README.md`; the client's domain is
-`../client/domain/`, designed separately. The mechanics are those of
-skein's `programming-model.md`.
+yet to be designed (`../README.md`, section 10). The mechanics are those
+of skein's `programming-model.md`.
 
 ## 1. Reading order
 
@@ -191,9 +191,6 @@ where each is answered:
   again (connectors.md, 4.5).
 - **Restart:** a script the core runs, step by step, through the root
   (engine.md, section 6; root.md, section 8).
-
-Decisions taken after the design's first review (2026-10-07):
-
 - **Once, by recovery class:** each kind of effect is keyed, conditional,
   idempotent or unrecoverable, as its system allows, and the promise of
   once is stated per class; an uncertain unrecoverable effect holds its

@@ -35,8 +35,8 @@ What is still open is listed in section 11.
   shape). Their tools are reads, so `ops` has no worker. One story has no
   agent at all (the first shape).
 - **Its systems are fakes** first: one fake production that both
-  connectors see. A real backend comes later, and may be the local machine's own
-  services.
+  connectors see. A real backend comes later, and may be the local
+  machine's own services.
 - **It stays an example.** It is small, its systems are fakes, and no
   application imports it. temper may one day drive production too, with
   connectors of its own.
@@ -53,9 +53,10 @@ testing/jig-ops-fake-production       jig-ops-fake-production          the fake 
 tests/ops                             jig-ops-world                    its worlds, on jig's conformance world
 ```
 
-The protocol layers, `iterate` and `main` come with a real backend
-(section 9). Until then `ops` is its domains and its worlds, as an
-application is before its protocol layer (`README.md`, section 11).
+The client's crates come with jig's client domain (`README.md`,
+section 10); the protocol layers, `iterate` and `main` with a real
+backend (section 9). Until then `ops` is its domains and its worlds, as
+an application is before its protocol layer (`README.md`, section 11).
 
 ## 3. Its connectors
 
@@ -194,8 +195,8 @@ jig-ops-domain                    the engine's root
 - **Money:** each team has a budget per month, spent by environments,
   and a person's pool within it.
 
-These are policies as data, in authority's terms (`domain/authority.md`). `ops`
-writes no rule of its own in code.
+These are policies as data, in authority's terms
+(`domain/authority.md`). `ops` writes no rule of its own in code.
 
 ## 7. Its stories
 

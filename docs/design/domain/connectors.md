@@ -108,7 +108,11 @@ application root            routes between the core and every connector
   effects on many resources at once (authority.md, section 4).
 - **Kinds of effect and read** are the connector's, numbered, each with
   the resource kinds it applies to, and the order among them that
-  authority holds as data.
+  authority holds as data. A kind of effect has one form and one
+  recovery class (4.1, 4.3): writes that differ in either are different
+  kinds, even on one object (creating an issue, editing it). A grant
+  that should cover several names each, or one the order says implies
+  the others.
 - **Names after a task:** a connector may define resources named after
   the task that makes them, under a prefix of the deployment's, which a
   batch names symbolically (authority.md, section 4).
